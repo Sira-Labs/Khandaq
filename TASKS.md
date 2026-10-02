@@ -60,7 +60,13 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
 - [ ] S3-3 — bundled intentionally-vulnerable local target
 
 ### Sprint 4 — console + adapters + report
-- [ ] S4-1 — spec 007 web console (engagements, run launcher, findings inbox)
+- [x] S4-1 — spec 007 web console — Vite + React 19 + TanStack Query + Tailwind v4 SPA (engagements
+      list/create, engagement detail with scope-pre-flight run launcher + ledger status, findings inbox
+      with severity filter + drawer). API read endpoints added (list engagements/targets/scope/members).
+      web Dockerfile (multi-stage) + CI `web` job. 3 web tests (XSS-escaping, scope pre-flight) + 35 api
+      tests pass. Bundled vulnerable target at `deploy/targets/vulnerable-llm/`. Deviations: minimal
+      in-app router (TanStack Router later); echo launcher in-browser (garak via Docker in deploy);
+      UI role-hiding deferred (enforced API-side).
 - [ ] S4-2 — spec 009 (to write) PyRIT adapter
 - [ ] S4-3 — spec 010 (to write) promptfoo adapter
 - [ ] S4-4 — spec 008 (to write) OIDC (Keycloak) BFF + real roles

@@ -73,6 +73,12 @@ class ScopeCheckOut(BaseModel):
     reason: str | None = None
 
 
+class MemberOut(BaseModel):
+    user_id: str
+    role: str
+    email: str | None = None
+
+
 class RunCreate(BaseModel):
     adapter: str
     target_id: str
