@@ -76,7 +76,10 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
       red-team tests → mapped findings by plugin family. release.yml publishes
       `khandaq-adapter-promptfoo`. 8 adapter contract tests pass.
 - [ ] S4-4 — spec 008 (to write) OIDC (Keycloak) BFF + real roles
-- [ ] S4-5 — spec 011 (to write) first management + technical report (Navigator export)
+- [x] S4-5 — spec 011 first report — `reports.py` builds a management summary (counts by severity +
+      framework, evidence-ledger root + verify) and a technical finding list; endpoints `GET /report`
+      (JSON), `/report.html` (escaped HTML), `/report/navigator` (ATLAS Navigator via the core). 38 api
+      tests pass.
 
 ## Owner / external dependencies (not software; do not block sprints on these)
 
