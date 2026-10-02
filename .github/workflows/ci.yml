@@ -58,7 +58,7 @@ jobs:
       - run: pip install pyyaml jsonschema pytest
       - run: python adapters/_tooling/validate_manifests.py
       # Adapter contract tests: each adapter's parser must still emit schema-valid findings.
-      - run: pytest adapters/*/tests -q
+      - run: pytest --import-mode=importlib adapters/*/tests -q
 
   api:
     name: python api

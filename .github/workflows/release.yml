@@ -31,6 +31,9 @@ jobs:
           - name: khandaq-adapter-garak
             file: adapters/garak/Dockerfile
             context: adapters/garak
+          - name: khandaq-adapter-pyrit
+            file: adapters/pyrit/Dockerfile
+            context: adapters/pyrit
     steps:
       - uses: actions/checkout@v7
       - uses: docker/setup-buildx-action@v3

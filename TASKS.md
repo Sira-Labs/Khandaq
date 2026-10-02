@@ -67,7 +67,10 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
       tests pass. Bundled vulnerable target at `deploy/targets/vulnerable-llm/`. Deviations: minimal
       in-app router (TanStack Router later); echo launcher in-browser (garak via Docker in deploy);
       UI role-hiding deferred (enforced API-side).
-- [ ] S4-2 — spec 009 (to write) PyRIT adapter
+- [x] S4-2 — spec 009 PyRIT adapter — `adapters/pyrit/` (Dockerfile pinned to pyrit 1.1.0, wrap.py
+      parser for scored conversations, adapter.yaml, fixture, contract test); successful attacks →
+      high findings. Adapter contract tests now run with `--import-mode=importlib`; release.yml
+      publishes `khandaq-adapter-pyrit`. 5 adapter contract tests pass.
 - [ ] S4-3 — spec 010 (to write) promptfoo adapter
 - [ ] S4-4 — spec 008 (to write) OIDC (Keycloak) BFF + real roles
 - [ ] S4-5 — spec 011 (to write) first management + technical report (Navigator export)
