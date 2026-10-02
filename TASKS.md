@@ -122,6 +122,12 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
   (no image existed at R0). `khandaq-api` boots with `/api/health` + `/api/version`, fail-closed in
   prod (settings.validate_runtime); `khandaq-web` serves the landing and proxies `/api`; both built and
   pushed to GHCR by `release.yml` on push to main. Domain features still land spec by spec.
+- 2026-10-02 — Scope lock hardening (code review): on the old code 8 of 10 crafted targets/requests
+  were allowed (e.g. `host` allowed while `base_url` pointed at a denied host; trailing-dot host
+  dodging a `*.` deny; missing model under a model restriction; params overriding the model; an
+  undeclared rate under a cap; a midnight window opening the previous night; a mistyped zone read as
+  UTC) and a string rate crashed with a 500 and no audit record. Targets are now canonicalised and
+  must be unambiguous; scope documents are validated on write; evaluation never raises. Spec 002 §6.
 - 2026-10-02 — Staging naming + worker boot fix: staging is deployed as `khandaq-stg-<role>` on
   `https://khandaq-stg.siralabs.org` (the one-click's `<app>-<role>` shape); the docs said
   `khandaq-<role>-stg` and showed only production values. `deploy/caprover.md` now has a
