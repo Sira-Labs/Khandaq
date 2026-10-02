@@ -1,0 +1,17 @@
+[package]
+name = "khandaq-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Khandaq canonical finding model: validate, fingerprint, dedup, severity, framework mapping."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+
+[lib]
+name = "khandaq_core"
+path = "src/lib.rs"

@@ -12,9 +12,42 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# Jobs are added as each part of the tree lands (see docs/roadmap/sprints.md):
-#   api (now) → core + bindings (Rust, spec 003) → adapters (spec 005) → web (SPA, spec 007).
+# Jobs come online as each part of the tree lands (see docs/roadmap/sprints.md):
+#   api + core + bindings (now) → adapters (spec 005) → web (SPA, spec 007).
 jobs:
+  core:
+    name: rust core
+    runs-on: ubuntu-latest
+    defaults:
+      run: { working-directory: core }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with: { components: "rustfmt, clippy" }
+      - uses: Swatinem/rust-cache@v2
+        with: { workspaces: core }
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+      - uses: taiki-e/install-action@cargo-audit
+      - run: cargo audit || true   # advisory until deps are baselined
+
+  bindings:
+    name: python bindings
+    runs-on: ubuntu-latest
+    defaults:
+      run: { working-directory: core/khandaq-py }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with: { workspaces: core }
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.12" }
+      - run: python -m venv .venv && . .venv/bin/activate && pip install "maturin>=1.5,<2" pytest
+      - run: . .venv/bin/activate && maturin develop
+      - run: . .venv/bin/activate && pytest -q
+
   api:
     name: python api
     runs-on: ubuntu-latest

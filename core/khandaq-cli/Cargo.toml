@@ -1,0 +1,17 @@
+[package]
+name = "khandaq-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Offline CLI for the Khandaq core: validate, normalise and export findings."
+
+[[bin]]
+name = "khandaq-core"
+path = "src/main.rs"
+
+[dependencies]
+khandaq-core = { path = "../khandaq-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+clap = { version = "4", features = ["derive"] }

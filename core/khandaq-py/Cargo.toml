@@ -1,0 +1,17 @@
+# Built by maturin (excluded from the workspace so `cargo test` never links libpython).
+[package]
+name = "khandaq-py"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+license = "Apache-2.0"
+description = "Python bindings (PyO3) for the Khandaq core."
+
+[lib]
+name = "khandaq_core"
+crate-type = ["cdylib"]
+
+[dependencies]
+kcore = { path = "../khandaq-core", package = "khandaq-core" }
+pyo3 = { version = "0.22", features = ["extension-module"] }
+serde_json = "1"
