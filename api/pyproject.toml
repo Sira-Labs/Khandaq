@@ -39,6 +39,8 @@ src = ["src", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
+# B008: calling Depends()/Header()/Path() in argument defaults is the standard FastAPI pattern.
+ignore = ["B008"]
 
 [tool.mypy]
 python_version = "3.12"

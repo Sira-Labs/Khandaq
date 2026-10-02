@@ -24,7 +24,10 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
       migration packaged in the wheel, entrypoint migrates on boot, 8 tests pass against Postgres.
       Decisions: append-only `audit_log` via a DB trigger (portable, single-role); `dedup_of` same-
       engagement via composite FK; enums as CHECKs; SQLAlchemy/psycopg pinned to 2.0.x / 3.2.x.
-- [ ] S1-2 — spec 002 engagements, scope lock, audit log (auth stubbed)
+- [x] S1-2 — spec 002 engagements, scope lock, audit log (auth stubbed) — full lifecycle API,
+      server-side scope lock (pure `scope.evaluate` + pre-flight route), append-only audit, per-
+      engagement authz. 24 tests pass. Decisions: dev-auth stub refuses in prod (501) pending OIDC
+      (spec 008); org admins act as owner; `run.rejected` audit lands with the run path (spec 005).
 - [~] S1-3 — repo plumbing: `api/` uv skeleton (done, CI `api` job green), Dockerfiles for api + web,
       `release.yml` publishing images to GHCR (done); `core/` cargo + `web/` pnpm skeletons still to do
 

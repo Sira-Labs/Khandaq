@@ -118,7 +118,7 @@ class Scope(Base):
     engagement_id: Mapped[str] = mapped_column(ForeignKey("engagements.id"), primary_key=True)
     version: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
     allow: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default="{}")
-    deny: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default="[]")
+    deny: Mapped[list] = mapped_column(JSONB, nullable=False, server_default="[]")
     roe: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default="{}")
     locked: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
     created_at: Mapped[dt.datetime] = _created_at()

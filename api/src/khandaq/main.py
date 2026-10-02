@@ -13,6 +13,7 @@ from fastapi import FastAPI
 
 from . import __version__
 from .db import schema_revision
+from .routers import engagements
 from .settings import get_settings
 
 logging.basicConfig(level=logging.INFO)
@@ -46,6 +47,8 @@ def create_app() -> FastAPI:
             "status": "ok",
             "note": "authorised AI red-team orchestration — see /api/version",
         }
+
+    app.include_router(engagements.router)
 
     log.info("khandaq-api %s starting (env=%s, role=%s)", __version__, settings.env, settings.role)
     return app
