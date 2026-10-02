@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 
-import { api } from "../api";
+import { api, type RunParams } from "../api";
 import { navigate } from "../router";
 
 export function Engagement({ engagementId }: { engagementId: string }) {
@@ -12,7 +12,12 @@ export function Engagement({ engagementId }: { engagementId: string }) {
   const ledger = useQuery({ queryKey: ["ledger", engagementId], queryFn: () => api.ledger(engagementId) });
 
   const [targetId, setTargetId] = useState("");
+  const [rate, setRate] = useState("");
   const [preflight, setPreflight] = useState<{ allowed: boolean; reason: string | null } | null>(null);
+  // The same params go to the pre-flight and the run, so what was checked is what runs. A rate is
+  // required when the rules of engagement cap it (spec 002 §6).
+  const params: RunParams = rate.trim() === "" ? {} : { rate_per_minute: Number(rate) };
+  const paramsKey = JSON.stringify(params);
 
   useEffect(() => {
     if (!targetId) {
@@ -20,16 +25,21 @@ export function Engagement({ engagementId }: { engagementId: string }) {
       return;
     }
     let active = true;
-    api.scopeCheck(engagementId, targetId).then((r) => {
-      if (active) setPreflight(r);
-    });
+    api
+      .scopeCheck(engagementId, targetId, JSON.parse(paramsKey) as RunParams)
+      .then((r) => {
+        if (active) setPreflight(r);
+      })
+      .catch((err: Error) => {
+        if (active) setPreflight({ allowed: false, reason: `pre-flight failed: ${err.message}` });
+      });
     return () => {
       active = false;
     };
-  }, [engagementId, targetId]);
+  }, [engagementId, targetId, paramsKey]);
 
   const run = useMutation({
-    mutationFn: () => api.createRun(engagementId, "echo", targetId),
+    mutationFn: () => api.createRun(engagementId, "echo", targetId, params),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["runs", engagementId] });
       qc.invalidateQueries({ queryKey: ["ledger", engagementId] });
@@ -67,6 +77,14 @@ export function Engagement({ engagementId }: { engagementId: string }) {
               </option>
             ))}
           </select>
+          <input
+            aria-label="rate per minute"
+            className="w-28 rounded border border-white/15 bg-black/30 px-2 py-1 text-sm"
+            inputMode="numeric"
+            placeholder="rate / min"
+            value={rate}
+            onChange={(e) => setRate(e.target.value.replace(/[^0-9]/g, ""))}
+          />
           <button
             className="rounded bg-[var(--ember)] px-4 py-1.5 font-medium text-black disabled:opacity-40"
             disabled={!targetId || preflight?.allowed !== true || run.isPending}
@@ -83,6 +101,14 @@ export function Engagement({ engagementId }: { engagementId: string }) {
         {preflight?.allowed && <p className="mt-2 text-sm text-green-400">In scope ✓</p>}
         {run.data?.state === "rejected" && (
           <p className="mt-2 text-sm text-red-400">Run rejected: {run.data.reject_reason}</p>
+        )}
+        {run.data?.state === "failed" && (
+          <p className="mt-2 text-sm text-red-400">Run failed: {run.data.reject_reason}</p>
+        )}
+        {run.error && (
+          <p className="mt-2 text-sm text-red-400" role="alert">
+            Could not start the run: {run.error.message}
+          </p>
         )}
       </section>
 

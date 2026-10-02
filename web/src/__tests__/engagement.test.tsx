@@ -16,6 +16,7 @@ vi.mock("../api", async (orig) => {
       listRuns: vi.fn(async () => []),
       ledger: vi.fn(async () => ({ root: null, verify: { ok: true } })),
       scopeCheck: vi.fn(async () => ({ allowed: false, reason: "host 'gw.acme.test' is not in the allow-list" })),
+      createRun: vi.fn(async () => ({ id: "run_1", adapter: "echo", state: "succeeded", reject_reason: null, target_id: "tgt_1" })),
     },
   };
 });
@@ -38,5 +39,43 @@ describe("Engagement run launcher", () => {
 
     await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Out of scope"));
     expect(screen.getByRole("button", { name: "Run" })).toBeDisabled();
+  });
+
+  it("shows a failed pre-flight instead of leaving Run stuck", async () => {
+    const { api } = await import("../api");
+    vi.mocked(api.scopeCheck).mockRejectedValueOnce(new Error("missing or invalid CSRF token"));
+    const { Engagement } = await import("../pages/Engagement");
+    const { fireEvent } = await import("@testing-library/react");
+    render(wrap(<Engagement engagementId="eng_1" />));
+
+    await screen.findByText("Acme");
+    fireEvent.change(screen.getByLabelText("target"), { target: { value: "tgt_1" } });
+
+    await waitFor(() =>
+      expect(screen.getByRole("alert")).toHaveTextContent("pre-flight failed: missing or invalid CSRF token"),
+    );
+    expect(screen.getByRole("button", { name: "Run" })).toBeDisabled();
+  });
+
+  it("checks and runs with the same declared rate", async () => {
+    const { api } = await import("../api");
+    vi.mocked(api.scopeCheck).mockResolvedValue({ allowed: true, reason: null });
+    const { Engagement } = await import("../pages/Engagement");
+    const { fireEvent } = await import("@testing-library/react");
+    render(wrap(<Engagement engagementId="eng_1" />));
+
+    await screen.findByText("Acme");
+    fireEvent.change(screen.getByLabelText("rate per minute"), { target: { value: "30" } });
+    fireEvent.change(screen.getByLabelText("target"), { target: { value: "tgt_1" } });
+
+    await waitFor(() =>
+      expect(api.scopeCheck).toHaveBeenLastCalledWith("eng_1", "tgt_1", { rate_per_minute: 30 }),
+    );
+    const run = screen.getByRole("button", { name: "Run" });
+    await waitFor(() => expect(run).toBeEnabled());
+    fireEvent.click(run);
+    await waitFor(() =>
+      expect(api.createRun).toHaveBeenCalledWith("eng_1", "echo", "tgt_1", { rate_per_minute: 30 }),
+    );
   });
 });

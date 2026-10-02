@@ -15,7 +15,7 @@ const SEV_CLASS: Record<string, string> = {
 
 export function Findings({ engagementId }: { engagementId: string }) {
   const [severity, setSeverity] = useState<string>("");
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, error } = useQuery({
     queryKey: ["findings", engagementId, severity],
     queryFn: () => api.listFindings(engagementId, severity || undefined),
   });
@@ -44,6 +44,11 @@ export function Findings({ engagementId }: { engagementId: string }) {
       </div>
 
       {isLoading && <p className="text-[var(--muted)]">Loading…</p>}
+      {error && (
+        <p className="text-red-400" role="alert">
+          Could not load findings: {error.message}
+        </p>
+      )}
       <ul className="divide-y divide-white/10">
         {data?.map((f) => (
           <li key={f.id}>

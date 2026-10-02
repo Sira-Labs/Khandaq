@@ -46,7 +46,12 @@ export function Engagements() {
       </form>
 
       {isLoading && <p className="text-[var(--muted)]">Loading…</p>}
-      {error && <p className="text-red-400">Could not load engagements. Sign in above.</p>}
+      {error && <p className="text-red-400">Could not load engagements: {error.message}</p>}
+      {create.error && (
+        <p className="text-red-400" role="alert">
+          Could not create the engagement: {create.error.message}
+        </p>
+      )}
       <ul className="divide-y divide-white/10">
         {data?.map((e) => (
           <li key={e.id}>
