@@ -364,3 +364,75 @@ fn navigator_counts_each_technique_once_per_finding() {
         [("AML.T0051".to_string(), 2), ("AML.T0054".to_string(), 1)]
     );
 }
+
+// --- review on #26: total determinism and no data loss in merges ---------------------------------
+
+#[test]
+fn members_that_agree_on_every_named_field_still_pick_one_canonical() {
+    let mut a = llm01("garak", "high");
+    a["message"] = json!({"text": "first"});
+    let mut b = llm01("garak", "high");
+    b["message"] = json!({"text": "second"});
+    let (a, b) = (validate(&a).unwrap(), validate(&b).unwrap());
+    let one = dedup(vec![a.clone(), b.clone()]);
+    let two = dedup(vec![b, a]);
+    assert_eq!(one.canonical, two.canonical);
+}
+
+#[test]
+fn groups_come_out_in_the_same_order_whatever_the_input_order() {
+    let a = validate(&llm01("garak", "high")).unwrap();
+    let mut other = llm01("pyrit", "low");
+    other["target_ref"] = json!("tgt_2"); // a different fingerprint
+    let b = validate(&other).unwrap();
+    let one = dedup(vec![a.clone(), b.clone()]);
+    let two = dedup(vec![b, a]);
+    assert_eq!(one.canonical.len(), 2);
+    assert_eq!(one.canonical, two.canonical);
+}
+
+#[test]
+fn unnamed_fields_survive_from_every_merged_member() {
+    let mut a = llm01("garak", "high");
+    a["message"] = json!({"text": "from garak"});
+    a["x-khandaq"]["probe_detail"] = json!("garak only");
+    let mut b = llm01("pyrit", "medium");
+    b["message"] = json!({"text": "from pyrit"});
+    b["properties"] = json!({"tags": ["pyrit only"]});
+    b["x-khandaq"]["conversation"] = json!("pyrit only");
+    let out = dedup(vec![validate(&b).unwrap(), validate(&a).unwrap()]);
+    let canon = serde_json::to_value(&out.canonical[0]).unwrap();
+    assert_eq!(canon["source"]["tool"], "garak"); // the higher severity
+    assert_eq!(canon["message"]["text"], "from garak"); // a conflict: the canonical member wins
+    assert_eq!(canon["properties"]["tags"][0], "pyrit only"); // a gap: filled from the other
+    assert_eq!(canon["x-khandaq"]["probe_detail"], "garak only");
+    assert_eq!(canon["x-khandaq"]["conversation"], "pyrit only");
+}
+
+#[test]
+fn sources_that_differ_only_in_unnamed_fields_are_both_kept() {
+    let mut a = llm01("garak", "high");
+    a["source"]["informationUri"] = json!("https://example.test/a");
+    let mut b = llm01("garak", "high");
+    b["source"]["informationUri"] = json!("https://example.test/b");
+    b["run_id"] = json!("run_2");
+    let out = dedup(vec![validate(&a).unwrap(), validate(&b).unwrap()]);
+    let uris: Vec<_> = out.canonical[0]
+        .x_khandaq
+        .sources
+        .iter()
+        .map(|s| s.extra["informationUri"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(uris, ["https://example.test/a", "https://example.test/b"]);
+}
+
+#[test]
+fn schema_types_the_sources_items_like_the_validator() {
+    let schema: Value =
+        serde_json::from_str(include_str!("../schema/finding.schema.json")).unwrap();
+    let item = &schema["properties"]["x-khandaq"]["properties"]["sources"]["items"];
+    for field in ["tool", "version", "native_severity"] {
+        assert_eq!(item["properties"][field]["type"], "string", "{field}");
+    }
+    assert_eq!(item["required"], json!(["tool", "version"]));
+}

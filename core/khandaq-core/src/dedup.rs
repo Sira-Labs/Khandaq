@@ -8,6 +8,9 @@
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
+use serde::Serialize;
+use serde_json::{Map, Value};
+
 use crate::finding::{Finding, Source};
 use crate::fingerprint::fingerprint;
 use crate::severity::Severity;
@@ -24,8 +27,15 @@ fn sev_rank(s: &str) -> Severity {
     Severity::parse(s).unwrap_or(Severity::Info)
 }
 
-/// Total order used to pick the canonical member of a group: highest severity first, then a
-/// stable tie-break on (tool, version, run, rule), so the pick never depends on input order.
+/// The value as canonical JSON (serde_json maps serialise with sorted keys): a total, stable key
+/// for whole records, so two records that differ anywhere never compare equal.
+fn canonical_json<T: Serialize>(value: &T) -> String {
+    serde_json::to_string(value).unwrap_or_default()
+}
+
+/// Total order used to pick the canonical member of a group: highest severity first, then
+/// (tool, version, run, rule), and finally the whole record, so the pick never depends on input
+/// order even between members that agree on every named field.
 fn canonical_order(a: &Finding, b: &Finding) -> Ordering {
     sev_rank(&b.severity)
         .cmp(&sev_rank(&a.severity))
@@ -33,32 +43,32 @@ fn canonical_order(a: &Finding, b: &Finding) -> Ordering {
         .then_with(|| a.source.version.cmp(&b.source.version))
         .then_with(|| a.run_id.cmp(&b.run_id))
         .then_with(|| a.rule_id.cmp(&b.rule_id))
+        .then_with(|| canonical_json(a).cmp(&canonical_json(b)))
 }
 
-fn source_key(s: &Source) -> (&str, &str, Option<&str>) {
-    (&s.tool, &s.version, s.native_severity.as_deref())
+/// Add the fields `from` has and `into` lacks. Fields `into` already has win: the canonical
+/// member's own values are kept, and other members fill gaps in canonical order.
+fn fill_missing(into: &mut Map<String, Value>, from: &Map<String, Value>) {
+    for (key, value) in from {
+        into.entry(key.clone()).or_insert_with(|| value.clone());
+    }
 }
 
 /// Deduplicate a batch of findings by fingerprint.
+///
+/// Groups are emitted in fingerprint order, so the output does not depend on the input order.
 pub fn dedup(findings: Vec<Finding>) -> DedupResult {
-    // Preserve first-seen order of groups for deterministic output.
-    let mut order: Vec<String> = Vec::new();
     let mut groups: BTreeMap<String, Vec<Finding>> = BTreeMap::new();
-
     for mut f in findings {
         let fp = fingerprint(&f);
         f.fingerprint = Some(fp.clone());
-        if !groups.contains_key(&fp) {
-            order.push(fp.clone());
-        }
         groups.entry(fp).or_default().push(f);
     }
 
     let total: usize = groups.values().map(|v| v.len()).sum();
     let mut canonical = Vec::new();
 
-    for fp in order {
-        let mut group = groups.remove(&fp).expect("group present");
+    for (_, mut group) in groups {
         group.sort_by(canonical_order);
         let mut canon = group[0].clone();
 
@@ -76,6 +86,11 @@ pub fn dedup(findings: Vec<Finding>) -> DedupResult {
             sources.push(f.source.clone());
             sources.extend(f.x_khandaq.sources.iter().cloned());
         }
+        // Fields the model does not name (the SARIF superset) survive from every member.
+        for f in &group[1..] {
+            fill_missing(&mut canon.extra, &f.extra);
+            fill_missing(&mut canon.x_khandaq.extra, &f.x_khandaq.extra);
+        }
         evidence.sort();
         evidence.dedup();
         mappings.sort();
@@ -84,8 +99,9 @@ pub fn dedup(findings: Vec<Finding>) -> DedupResult {
         tools.dedup();
         // "also_found_by" is every contributing tool except the canonical's own.
         tools.retain(|t| t != &canon.source.tool);
-        sources.sort_by(|a, b| source_key(a).cmp(&source_key(b)));
-        sources.dedup_by(|a, b| source_key(a) == source_key(b));
+        // Only identical records collapse: a source differing in any field (extras included) stays.
+        sources.sort_by_cached_key(canonical_json);
+        sources.dedup();
 
         canon.x_khandaq.evidence = evidence;
         canon.x_khandaq.mappings = mappings;

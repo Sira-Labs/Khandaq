@@ -64,8 +64,10 @@ CLI: `khandaq-core validate <file>`, `… normalize <raw> --adapter garak`, `…
 > on the finding, `source` and `x-khandaq`, so validation and dedup no longer drop SARIF/tool data.
 > `severity` must be the lowercase canonical value, as in the published schema (`HIGH` was
 > accepted and stored verbatim). Every `locations` item must be an object. Dedup picks the
-> canonical member by severity, then (tool, version, run, rule), so the pick does not depend on
-> input order. `also_found_by` is a union, which includes the members' own lists on a re-dedup.
+> canonical member by severity, then (tool, version, run, rule), then the whole record, and emits
+> groups in fingerprint order, so nothing depends on input order. Unnamed fields from every
+> member survive (the canonical member's value wins a conflict), and per-tool `sources` collapse
+> only when identical. `also_found_by` is a union, which includes the members' own lists on a re-dedup.
 > `x-khandaq.sources` keeps each contributing tool's source, including its native severity. The
 > Navigator counts a technique once per finding, with ids upper-cased. The fingerprint recipe is
 > unchanged; making it independent of mappings is proposed in ADR-0013.

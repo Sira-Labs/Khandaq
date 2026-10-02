@@ -44,7 +44,7 @@
         "first_seen_run": {"type": ["string", "null"]},
         "status": {"enum": ["open", "triaged", "accepted_risk", "fixed", "false_positive"], "default": "open"},
         "also_found_by": {"type": "array", "items": {"type": "string"}},
-        "sources": {"type": "array", "description": "Set by dedup: each contributing tool's own source (tool, version, native_severity)", "items": {"type": "object", "required": ["tool", "version"]}}
+        "sources": {"type": "array", "description": "Set by dedup: each contributing tool's own source (tool, version, native_severity)", "items": {"type": "object", "required": ["tool", "version"], "properties": {"tool": {"type": "string"}, "version": {"type": "string"}, "native_severity": {"type": "string"}}}}
       }
     }
   }
