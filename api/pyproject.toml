@@ -12,7 +12,12 @@ dependencies = [
     "sqlalchemy>=2.0,<2.1",
     "psycopg[binary]>=3.2,<3.3",
     "alembic>=1.13",
+    "khandaq-core",
 ]
+
+[tool.uv.sources]
+# The Rust core wheel, built from the workspace via maturin (needs a Rust toolchain).
+khandaq-core = { path = "../core/khandaq-py" }
 
 [project.optional-dependencies]
 dev = [

@@ -4,6 +4,7 @@
 //! array of findings) as JSON and receives JSON back. This keeps the boundary simple and avoids a
 //! Python object-mapping dependency. Invalid input raises ValueError.
 
+use kcore::ledger::{self, LedgerEntry};
 use kcore::{dedup as kdedup, fingerprint as kfingerprint, map_frameworks, navigator_layer, validate, Mappings};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -71,6 +72,38 @@ fn navigator(findings_json: &str) -> PyResult<String> {
     Ok(navigator_layer(&findings).to_string())
 }
 
+// --- Evidence ledger (spec 004) ---
+
+fn parse_entries(entries_json: &str) -> PyResult<Vec<LedgerEntry>> {
+    serde_json::from_str(entries_json)
+        .map_err(|e| PyValueError::new_err(format!("invalid ledger entries JSON: {e}")))
+}
+
+/// Compute the next ledger entry after `prev_json` (None for the first); returns the entry as JSON.
+#[pyfunction]
+#[pyo3(signature = (prev_json, evidence_hash))]
+fn ledger_append(prev_json: Option<&str>, evidence_hash: &str) -> PyResult<String> {
+    let prev: Option<LedgerEntry> = match prev_json {
+        Some(s) => Some(serde_json::from_str(s).map_err(|e| PyValueError::new_err(e.to_string()))?),
+        None => None,
+    };
+    let entry = ledger::append(prev.as_ref(), evidence_hash);
+    serde_json::to_string(&entry).map_err(|e| PyValueError::new_err(e.to_string()))
+}
+
+/// Verify a chain (JSON array of entries); returns a VerifyResult as JSON.
+#[pyfunction]
+fn ledger_verify(entries_json: &str) -> PyResult<String> {
+    let entries = parse_entries(entries_json)?;
+    serde_json::to_string(&ledger::verify(&entries)).map_err(|e| PyValueError::new_err(e.to_string()))
+}
+
+/// Return the chain root (last entry hash) or None for an empty chain.
+#[pyfunction]
+fn ledger_root(entries_json: &str) -> PyResult<Option<String>> {
+    Ok(ledger::root(&parse_entries(entries_json)?))
+}
+
 #[pymodule]
 fn khandaq_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
@@ -79,5 +112,8 @@ fn khandaq_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(dedup, m)?)?;
     m.add_function(wrap_pyfunction!(framework_mappings, m)?)?;
     m.add_function(wrap_pyfunction!(navigator, m)?)?;
+    m.add_function(wrap_pyfunction!(ledger_append, m)?)?;
+    m.add_function(wrap_pyfunction!(ledger_verify, m)?)?;
+    m.add_function(wrap_pyfunction!(ledger_root, m)?)?;
     Ok(())
 }
