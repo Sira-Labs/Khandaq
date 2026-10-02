@@ -128,6 +128,15 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
   `KHANDAQ_ADMIN_EMAIL`), mirroring Sahifa's `SAHIFA_ALLOWED_EMAILS`; `KHANDAQ_ENV` is strict
   (typos such as `production` would have enabled the dev stub); prod reads only the `__Host-` cookie;
   token attribution moved off a `ContextVar` that never crossed FastAPI's threadpool.
+- 2026-10-02 — Adapters fail closed (code review, checked against the pinned upstream packages):
+  garak 0.17 writes `total_evaluated`/`fails`, not `total`, so every real garak result was dropped
+  and the run read as clean (the recorded fixture was hand-written in the wrong shape; re-recorded in
+  the 0.17 shape). PyRIT is now read by `AttackResult.outcome`, with its string `score_value`
+  ("0.9") understood; promptfoo errors (`failureReason` 2) are no longer findings. Each parser
+  refuses a truncated, incomplete (no garak `completion` record, no wrapper completion count, stats
+  mismatch), empty or all-errored report, and `main()` exits non-zero without writing
+  `findings.jsonl`, so a run that produced nothing trustworthy fails instead of reporting zero
+  findings. Invoking the tools inside the sandbox is still the spec 005/006 Docker follow-up.
 - 2026-10-02 — Staging naming + worker boot fix: staging is deployed as `khandaq-stg-<role>` on
   `https://khandaq-stg.siralabs.org` (the one-click's `<app>-<role>` shape); the docs said
   `khandaq-<role>-stg` and showed only production values. `deploy/caprover.md` now has a
