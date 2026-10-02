@@ -43,11 +43,24 @@ target, with its findings normalised and its evidence sealed.
 
 ## Acceptance criteria
 
-- [ ] Manifest schema + validator; CI fails a manifest without an exact version or a severity table.
-- [ ] An authorised run executes the echo adapter, produces canonical findings, seals evidence, persists.
-- [ ] An out-of-scope run is rejected on creation (audited), never launched.
-- [ ] Egress containment proven: the echo adapter cannot reach a second, out-of-scope host (test).
-- [ ] Findings appear in the inbox deduped with framework mappings and sealed evidence refs.
+- [x] Manifest schema + validator; CI fails a manifest without an exact version or a severity table
+      (also rejects floating tags like `latest`).
+- [x] An authorised run executes the echo adapter, produces canonical findings, seals evidence, persists.
+- [x] An out-of-scope run is recorded as `rejected` on creation (audited `run.rejected`), never launched.
+- [~] Egress containment: the run request handed to an adapter carries **only** the one in-scope target
+      (tested), and `DockerRunner` builds a locked-down command (read-only, cap-drop, per-run egress
+      network — tested). The **kernel-level egress block** is enforced by the deploy on that network
+      (ADR-0009) and is deploy-tested, not CI-tested (no Docker daemon in unit CI).
+- [x] Findings appear in the inbox deduped (3 raw → 2 canonical) with framework mappings and sealed
+      evidence refs; the ledger verifies.
+
+> Notes (per CLAUDE.md): R1 runs the built-in **echo** adapter **in-process and synchronously** to prove
+> the pipeline; real tool adapters (Docker) and **asynchronous execution on the Procrastinate worker**
+> are a follow-up (ADR-0008). Evidence **bytes upload to the object store is deferred** — the sealed
+> sha256 + metadata are persisted and chained, which is what the integrity guarantee needs. Runs are
+> nested under the engagement (`/api/engagements/{id}/runs/...`) so authz flows through the engagement
+> role. Duplicate raw findings are collapsed to canonical rows; raw-duplicate rows + DB `dedup_of`
+> linking can be added later if needed.
 
 ## Test cases
 

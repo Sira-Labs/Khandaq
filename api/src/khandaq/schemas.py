@@ -73,6 +73,40 @@ class ScopeCheckOut(BaseModel):
     reason: str | None = None
 
 
+class RunCreate(BaseModel):
+    adapter: str
+    target_id: str
+    params: dict[str, Any] = Field(default_factory=dict)
+
+
+class RunOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: str
+    engagement_id: str
+    adapter: str
+    adapter_version: str | None
+    target_id: str | None
+    state: str
+    reject_reason: str | None
+    started_at: dt.datetime | None
+    ended_at: dt.datetime | None
+    created_at: dt.datetime
+
+
+class FindingOut(BaseModel):
+    id: str
+    fingerprint: str
+    rule_id: str
+    title: str | None
+    severity: str
+    confidence: str
+    status: str
+    phase: str | None = None
+    mappings: list[dict[str, Any]] = Field(default_factory=list)
+    evidence: list[str] = Field(default_factory=list)
+    also_found_by: list[str] = Field(default_factory=list)
+
+
 class AuditOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: str

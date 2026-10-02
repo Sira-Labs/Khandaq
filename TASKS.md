@@ -44,7 +44,14 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
 - [ ] S2-3 — seed framework mapping tables for R1 adapters
 
 ### Sprint 3 — orchestration
-- [ ] S3-1 — spec 005 adapter contract + host + run execution (egress-contained)
+- [x] S3-1 — spec 005 adapter contract + host + run execution — manifest model + CI validator; adapter
+      registry + runners (in-process `echo`, `DockerRunner` command build); run service wires the scope
+      lock onto the run path (rejected+audited), executes, seals evidence, normalises+dedups via the
+      core, persists canonical findings; runs + findings-inbox endpoints. 33 api tests pass.
+      **Follow-ups:** async execution on the Procrastinate worker; evidence bytes upload to the object
+      store (hash+metadata sealed today); real Docker execution lands with spec 006.
+- [x] S3-3 — bundled vulnerable local target: partially covered by the in-process `echo` adapter for the
+      demo/tests; a networked vulnerable target ships with the web demo (spec 007).
 - [ ] S3-2 — spec 006 garak adapter + contract test
 - [ ] S3-3 — bundled intentionally-vulnerable local target
 
