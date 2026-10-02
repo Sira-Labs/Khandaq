@@ -32,7 +32,11 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
       `release.yml` publishing images to GHCR (done); `core/` cargo + `web/` pnpm skeletons still to do
 
 ### Sprint 2 — data spine
-- [ ] S2-1 — spec 003 canonical finding, fingerprint, dedup, severity, mapping (Rust core + wheel)
+- [x] S2-1 — spec 003 canonical finding, fingerprint, dedup, severity, mapping (Rust core + wheel) —
+      `core/` workspace (khandaq-core + khandaq-cli) + PyO3 wheel `khandaq_core`; 7 Rust tests + 5
+      Python binding tests pass; clippy/fmt clean; CI `core` + `bindings` jobs online. Decisions:
+      serde typed model mirrors finding.schema.json; fingerprint identity = mapping-ids+target+location
+      (rule_id fallback); JSON-in/out bindings; `dedup_of` id-linking lands with spec 005.
 - [ ] S2-2 — spec 004 hash-chained evidence ledger
 - [ ] S2-3 — seed framework mapping tables for R1 adapters
 

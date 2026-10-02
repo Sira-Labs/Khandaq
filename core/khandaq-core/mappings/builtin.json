@@ -1,0 +1,34 @@
+{
+  "_meta": {
+    "note": "Seed cross-walk from upstream tool rule ids to framework ids (ADR-0012). Keyed by rule_id. Both OWASP LLM editions are kept in parallel. Extend as adapters land; cite sources per entry upstream.",
+    "owasp_llm_2025_version": "2025",
+    "owasp_llm_2026_version": "2026",
+    "atlas_version": "v2026.09"
+  },
+  "rules": {
+    "garak.promptinject.hijack": [
+      {"framework": "owasp-llm-2025", "id": "LLM01"},
+      {"framework": "owasp-llm-2026", "id": "LLM01"},
+      {"framework": "atlas", "id": "AML.T0051"},
+      {"framework": "nist-ai-rmf", "id": "MEASURE-2.7"}
+    ],
+    "garak.leakreplay": [
+      {"framework": "owasp-llm-2025", "id": "LLM02"},
+      {"framework": "owasp-llm-2026", "id": "LLM02"},
+      {"framework": "atlas", "id": "AML.T0057"}
+    ],
+    "pyrit.crescendo": [
+      {"framework": "owasp-llm-2025", "id": "LLM01"},
+      {"framework": "owasp-llm-2026", "id": "LLM01"},
+      {"framework": "atlas", "id": "AML.T0054"}
+    ],
+    "promptfoo.harmful": [
+      {"framework": "owasp-llm-2026", "id": "LLM07"},
+      {"framework": "atlas", "id": "AML.T0048"}
+    ],
+    "mcp-scanner.tool-poisoning": [
+      {"framework": "owasp-agentic", "id": "ASI04"},
+      {"framework": "atlas", "id": "AML.T0053"}
+    ]
+  }
+}

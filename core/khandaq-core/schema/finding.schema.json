@@ -1,0 +1,50 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/Sira-Labs/Khandaq/schema/finding.schema.json",
+  "title": "Khandaq canonical finding",
+  "description": "A SARIF-superset finding (ADR-0003). Adapters emit this shape; khandaq-core validates it. The Rust typed model in finding.rs is the authoritative validator and mirrors this contract.",
+  "type": "object",
+  "required": ["schema", "engagement_id", "run_id", "rule_id", "severity", "source", "x-khandaq"],
+  "properties": {
+    "schema": {"const": "khandaq.finding/1"},
+    "fingerprint": {"type": "string", "description": "sha256:… ; set by khandaq-core, stable across tools/runs"},
+    "engagement_id": {"type": "string", "minLength": 1},
+    "run_id": {"type": "string", "minLength": 1},
+    "rule_id": {"type": "string", "minLength": 1, "description": "the source tool's rule/probe id"},
+    "title": {"type": "string"},
+    "severity": {"enum": ["info", "low", "medium", "high", "critical"]},
+    "confidence": {"enum": ["tentative", "firm", "confirmed"], "default": "firm"},
+    "target_ref": {"type": "string"},
+    "source": {
+      "type": "object",
+      "required": ["tool", "version"],
+      "properties": {
+        "tool": {"type": "string"},
+        "version": {"type": "string"},
+        "native_severity": {"type": "string"}
+      }
+    },
+    "locations": {"type": "array", "items": {"type": "object"}, "description": "SARIF locations"},
+    "canonical": {"type": "boolean"},
+    "x-khandaq": {
+      "type": "object",
+      "required": ["phase"],
+      "properties": {
+        "phase": {"type": "string"},
+        "mappings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["framework", "id"],
+            "properties": {"framework": {"type": "string"}, "id": {"type": "string"}}
+          }
+        },
+        "evidence": {"type": "array", "items": {"type": "string"}},
+        "dedup_of": {"type": ["string", "null"]},
+        "first_seen_run": {"type": ["string", "null"]},
+        "status": {"enum": ["open", "triaged", "accepted_risk", "fixed", "false_positive"], "default": "open"},
+        "also_found_by": {"type": "array", "items": {"type": "string"}}
+      }
+    }
+  }
+}

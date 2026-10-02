@@ -46,11 +46,19 @@ CLI: `khandaq-core validate <file>`, `… normalize <raw> --adapter garak`, `…
 
 ## Acceptance criteria
 
-- [ ] `finding.schema.json` exists; `validate` accepts a valid finding and rejects malformed ones.
-- [ ] Property test: fingerprint stability and order-insensitivity; distinctness on target/rule change.
-- [ ] `dedup` merges a crafted multi-tool set into the expected canonical set with merged evidence.
-- [ ] `severity_map` max-on-merge is proven; mapping fixtures map known rules to expected framework IDs.
-- [ ] The `khandaq_core` wheel imports in Python and round-trips a finding; the `khandaq-core` CLI runs.
+- [x] `finding.schema.json` exists; `validate` accepts a valid finding and rejects malformed ones.
+- [x] Fingerprint stability and order-insensitivity; distinctness on target/rule change (test).
+- [x] `dedup` merges a crafted multi-tool set into the expected canonical set with merged evidence.
+- [x] Severity max-on-merge is proven; mapping fixtures map known rules to expected framework IDs.
+- [x] The `khandaq_core` wheel imports in Python and round-trips a finding; the `khandaq-core` CLI runs.
+
+> Notes (recorded per CLAUDE.md): `validate` is the **typed Rust model** (serde) that mirrors the
+> published `finding.schema.json` — this keeps validation fast and dependency-free; the schema file is
+> the external contract adapters document against. The fingerprint identity is the **set of framework
+> mapping ids** (so two tools mapping to the same id collapse) + target + canonical location, with
+> `rule_id` as the fallback identity when a finding has no mappings yet. The Python binding is
+> JSON-in/JSON-out (strings). Dedup records contributing tools in `x-khandaq.also_found_by`; DB-side
+> `dedup_of` id-linking lands with persistence of findings (spec 005).
 
 ## Test cases
 
