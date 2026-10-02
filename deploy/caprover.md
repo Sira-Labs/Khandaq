@@ -26,10 +26,11 @@ Arqam ADR-0020). **Engagement data and captured evidence live only on production
 
 | Server | Apps | Domain | Data |
 |---|---|---|---|
-| **Staging & tools** (current server) | `khandaq-db-stg`, `khandaq-api-stg`, `khandaq-worker-stg`, `khandaq-web-stg`, a staging object store; GlitchTip + uptime for both | `khandaq-stg.siralabs.org` | test data only |
-| **Production** (Germany) | `khandaq-db`, `khandaq-api`, `khandaq-worker`, `khandaq-web`, its own object store, Keycloak | `khandaq.siralabs.org` | real engagement data & evidence, only here |
+| **Staging & tools** (current server) | `khandaq-stg-db`, `khandaq-stg-api`, `khandaq-stg-worker`, `khandaq-stg-web`, `khandaq-stg-rustfs`; GlitchTip + uptime for both | `khandaq-stg.siralabs.org` | test data only |
+| **Production** (Germany) | `khandaq-db`, `khandaq-api`, `khandaq-worker`, `khandaq-web`, `khandaq-rustfs`, Keycloak | `khandaq.siralabs.org` | real engagement data & evidence, only here |
 
-Every staging app name and every internal address that names an app gets the `-stg` suffix. Rules:
+App names follow `<app>-<role>` with `<app>` = `khandaq-stg` on staging and `khandaq` on production —
+exactly what the one-click produces when you give it that app name. Rules:
 
 - Real engagement data and captured evidence live **only** on production. Staging holds synthetic data.
 - Staging and production have separate secrets: DB passwords, session secret, object-store keys, OIDC
@@ -39,9 +40,28 @@ Every staging app name and every internal address that names an app gets the `-s
 - Production Postgres is backed up continuously; the evidence object store is versioned and copied,
   encrypted, to a second location; restore drills run into a throwaway DB on production, never staging.
 
-Sections below name the production apps; on staging add `-stg`.
+### Per-environment values
 
-## 1. Database app: `khandaq-db`
+Sections below show the production names; on staging use the right-hand column. The **public origin**
+row is the one that must be identical everywhere it appears — a mismatch makes Keycloak reject sign-in
+with *"Invalid parameter: redirect_uri"*.
+
+| Value | Production | Staging |
+|---|---|---|
+| App names | `khandaq-db`, `-api`, `-worker`, `-web`, `-rustfs` | `khandaq-stg-db`, `-api`, `-worker`, `-web`, `-rustfs` |
+| **Public origin** — the domain on the **web** app, `KHANDAQ_PUBLIC_URL` on the api, and the `render.py` argument | `https://khandaq.siralabs.org` | `https://khandaq-stg.siralabs.org` |
+| Keycloak client redirect URI (set by `render.py`) | `https://khandaq.siralabs.org/api/auth/callback` | `https://khandaq-stg.siralabs.org/api/auth/callback` |
+| `KHANDAQ_API_UPSTREAM` on the web app | `srv-captain--khandaq-api:8000` | `srv-captain--khandaq-stg-api:8000` |
+| Database host in the DB URLs | `srv-captain--khandaq-db:5432` | `srv-captain--khandaq-stg-db:5432` |
+| `KHANDAQ_OBJECT_STORE_ENDPOINT` | `http://srv-captain--khandaq-rustfs:9000` | `http://srv-captain--khandaq-stg-rustfs:9000` |
+| `KHANDAQ_OIDC_ISSUER` | `https://<prod keycloak>/realms/khandaq` | `https://<staging keycloak>/realms/khandaq` |
+| `KHANDAQ_OIDC_CLIENT_ID` | `khandaq-api` | `khandaq-api` — the **OIDC client** in the realm, not the CapRover app; never `khandaq-stg-api` |
+| `KHANDAQ_ENV` | `prod` | `prod` — staging is public too, so the dev login stub must stay off |
+
+If staging and production ever share one Keycloak, give staging its own realm (edit `"realm"` in the
+rendered file to `khandaq-stg`) and use `…/realms/khandaq-stg` as its issuer.
+
+## 1. Database app: `khandaq-db` (staging: `khandaq-stg-db`)
 
 - Create a plain app `khandaq-db` with **Has Persistent Data** ticked.
 - *Deploy via ImageName*: `postgres:17` (pin the digest; bump deliberately with a migration check).
@@ -52,7 +72,7 @@ Sections below name the production apps; on staging add `-stg`.
 - Confirm the persistent directory shows in App Configs **before** any real data — without it a restart
   starts an empty database (CapRover cannot add persistent data to an existing app).
 
-## 2. API app: `khandaq-api`
+## 2. API app: `khandaq-api` (staging: `khandaq-stg-api`)
 
 - Create `khandaq-api` (persistent data ticked if any local cache is used; evidence lives in the object
   store, not here).
@@ -68,19 +88,21 @@ Sections below name the production apps; on staging add `-stg`.
   | `KHANDAQ_OBJECT_STORE_ENDPOINT` | `http://srv-captain--khandaq-rustfs:9000` |
   | `KHANDAQ_OBJECT_STORE_ACCESS_KEY_ID` / `_SECRET_ACCESS_KEY` | the bucket-scoped key (section 4) |
   | `KHANDAQ_EVIDENCE_KEY` | the envelope-encryption key for evidence (ADR-0006); **production-only** |
-  | `KHANDAQ_PUBLIC_URL` | `https://khandaq.siralabs.org` |
+  | `KHANDAQ_PUBLIC_URL` | the public origin: `https://khandaq.siralabs.org` (staging `https://khandaq-stg.siralabs.org`) — the web app's domain, exactly |
   | `KHANDAQ_OIDC_ISSUER` | the realm, e.g. `https://<keycloak>/realms/khandaq` |
+  | `KHANDAQ_OIDC_CLIENT_ID` | `khandaq-api` (the default; the realm's client, not this app's name) |
   | `KHANDAQ_OIDC_CLIENT_SECRET` | the realm's `khandaq-api` client secret (section 5) |
   | `KHANDAQ_ADMIN_EMAIL` | the owner's email; becomes admin at first verified sign-in |
   | `KHANDAQ_SIGSTORE` | `off` (default) or `on` |
 
-  With `KHANDAQ_ENV=prod` the API refuses to start without the DB, session, object-store, evidence-key
-  and OIDC settings (fail closed).
+  With `KHANDAQ_ENV=prod` the API refuses to start without the DB, session, evidence-key and OIDC
+  settings (fail closed). The worker needs the same minus OIDC — it serves no logins and is not given
+  the client secret.
 - The image runs migrations on start before serving; `GET /api/version` reports `schema_revision`.
 - Container HTTP port `8000`. No public domain needed (the web app proxies to it).
 - Deployment tab → **Enable App Token**, copy it into the GitHub secret for CI.
 
-## 3. Worker app: `khandaq-worker`
+## 3. Worker app: `khandaq-worker` (staging: `khandaq-stg-worker`)
 
 Runs execute here, not in the API. Create `khandaq-worker` with the api image and `KHANDAQ_ROLE=worker`
 plus the same DB/object-store/evidence-key/session env as the API. **No HTTP port, no domain.**
@@ -103,7 +125,7 @@ Either way: adapter images are pinned and pulled from GHCR; air-gapped installs 
 registry; egress is **default-deny** with a per-run allow for the target only, and a negative test (the
 echo adapter cannot reach a second host) runs in CI (spec 005).
 
-## 4. Object store: `khandaq-rustfs`
+## 4. Object store: `khandaq-rustfs` (staging: `khandaq-stg-rustfs`)
 
 Evidence lives on S3-compatible storage, append-only. Use RustFS (Apache-2.0).
 
@@ -114,14 +136,19 @@ Evidence lives on S3-compatible storage, append-only. Use RustFS (Apache-2.0).
    guarantee is backed by the store), and a bucket-scoped access key for the API/worker. Enable a
    write-once/retention policy on sealed objects where the store supports it.
 
-## 5. Keycloak (production, before the first real user)
+## 5. Keycloak (each environment, before the first sign-in)
 
-Use the ready-made realm export [`keycloak/khandaq-realm.json`](keycloak/) — it defines the confidential
-`khandaq-api` client (Authorization Code + PKCE, back-channel logout), the Google/GitHub brokers and the
-passkey browser flow, with no secrets baked in. Render it with your origin and import it:
+Both environments run `KHANDAQ_ENV=prod`, so both need a realm — there is no password or dev login on
+a deployed server. Use the ready-made realm export [`keycloak/khandaq-realm.json`](keycloak/) — it
+defines the confidential `khandaq-api` client (Authorization Code + PKCE, back-channel logout), the
+Google/GitHub brokers and the passkey browser flow, with no secrets baked in. Render it with **that
+environment's public origin** (the web app's domain — see the table above) and import it:
 
 ```bash
+# production
 python3 deploy/keycloak/render.py https://khandaq.siralabs.org > khandaq-realm.json
+# staging
+python3 deploy/keycloak/render.py https://khandaq-stg.siralabs.org > khandaq-realm.json
 # Admin console → realm drop-down → Create realm → Resource file: the rendered file → Create.
 # (Or, on a fresh Keycloak's first boot: kc.sh import --file khandaq-realm.json)
 ```
@@ -131,16 +158,19 @@ python3 deploy/keycloak/render.py https://khandaq.siralabs.org > khandaq-realm.j
 `authenticationFlows`, `authenticatorConfig` or the flow bindings, so it produces a broken realm.
 
 Then in the admin console set the `khandaq-api` client secret (→ `KHANDAQ_OIDC_CLIENT_SECRET`) and the
-Google/GitHub client id+secret, and confirm the redirect URI `…/api/auth/callback` matches
-`KHANDAQ_PUBLIC_URL`. `KHANDAQ_OIDC_ISSUER` is `https://<keycloak>/realms/khandaq`. Full steps:
-[`keycloak/README.md`](keycloak/README.md). Single-user staging may run with a local admin bootstrap,
-but production requires the realm.
+Google/GitHub client id+secret, and confirm the client's redirect URI is exactly
+`KHANDAQ_PUBLIC_URL` + `/api/auth/callback`. `KHANDAQ_OIDC_ISSUER` is
+`https://<keycloak>/realms/khandaq`. If you move to a different domain later, re-render (or edit the
+client's redirect URI, web origin and post-logout URI) **and** update `KHANDAQ_PUBLIC_URL` together.
+Full steps: [`keycloak/README.md`](keycloak/README.md).
 
-## 6. Web app: `khandaq-web`
+## 6. Web app: `khandaq-web` (staging: `khandaq-stg-web`)
 
-Create `khandaq-web` with the web image. Env `KHANDAQ_API_UPSTREAM=srv-captain--khandaq-api:8000`.
-Connect the public domain `khandaq.siralabs.org` and enable HTTPS. Caddy serves the SPA and proxies
-`/api` to the API.
+Create `khandaq-web` with the web image. Env `KHANDAQ_API_UPSTREAM=srv-captain--khandaq-api:8000`
+(staging `srv-captain--khandaq-stg-api:8000`). Connect the public domain — `khandaq.siralabs.org`
+(staging `khandaq-stg.siralabs.org`) — to **this web app** and enable HTTPS; the API app stays on *Do
+not expose as web-app*. The web app is the single entrance: Caddy serves the SPA and proxies `/api`, so
+the session cookie and the redirect URI all live on one origin.
 
 ## 7. Backups (production)
 
@@ -153,11 +183,15 @@ Connect the public domain `khandaq.siralabs.org` and enable HTTPS. Caddy serves 
 
 ## 8. CI/CD (GitHub environments)
 
-`release.yml` builds and scans the control-plane and adapter images once per commit, publishes to GHCR,
-and deploys `main` to the `staging` environment's apps. `promote.yml` deploys the **same digests** to
-`production` after the commit is on `main`, staging serves it, and the owner (required reviewer) approves.
-CapRover tokens, the deploy key and server variables live on those environments, not at repo level.
-A tag ruleset limits `v*` tags to org admins.
+Today `release.yml` builds the control-plane, web and adapter images once per commit and publishes them
+to GHCR (`latest` on `main`, a short-SHA tag, and `v*` tags). It does **not** deploy yet: update the
+staging apps by redeploying them in CapRover (they pull `latest`).
+
+Planned (ADR-0010, tracked in `TASKS.md`): a deploy step that pushes `main` to the `staging`
+environment's apps via CapRover app tokens, and `promote.yml` that deploys the **same digests** to
+`production` after the owner (required reviewer) approves. CapRover tokens, the deploy key and server
+variables will live on those GitHub environments, not at repo level. A tag ruleset limits `v*` tags to
+org admins.
 
 ## Local self-host (one box)
 

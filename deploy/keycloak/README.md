@@ -14,8 +14,10 @@ linked by verified email with no review page.
 The export has a `__PUBLIC_URL__` placeholder for your install's origin. Render it, then import:
 
 ```bash
-# 1. Render with your web console's HTTPS origin (no trailing path)
-python3 deploy/keycloak/render.py https://khandaq.siralabs.org > khandaq-realm.json
+# 1. Render with THIS environment's web-console origin (no trailing path) — the domain attached
+#    to the web app, identical to KHANDAQ_PUBLIC_URL on the api:
+python3 deploy/keycloak/render.py https://khandaq-stg.siralabs.org > khandaq-realm.json   # staging
+python3 deploy/keycloak/render.py https://khandaq.siralabs.org > khandaq-realm.json       # production
 
 # 2. Import into Keycloak as a FULL realm import — either:
 #    (a) Admin console → realm drop-down → Create realm → Resource file: the rendered
@@ -34,15 +36,18 @@ Staging and production each import their own copy with their own origin (and the
 
 ## After import — set in the admin console
 
-1. **`khandaq-api` client secret** → put it in the API/worker env as `KHANDAQ_OIDC_CLIENT_SECRET`
-   (and in the one-click form field).
+1. **`khandaq-api` client secret** → put it in the **API** app's env as `KHANDAQ_OIDC_CLIENT_SECRET`
+   (and in the one-click form field). The worker does not need it and should not have it.
 2. **Google** and **GitHub** identity providers → fill in each `clientId`/`clientSecret`, and set the
    redirect/callback URL each requires:
    - Google OAuth client redirect: `https://<keycloak>/realms/khandaq/broker/google/endpoint`
    - GitHub OAuth app callback: `https://<keycloak>/realms/khandaq/broker/github/endpoint`
-3. Confirm the client **redirect URI** `https://<your web origin>/api/auth/callback` matches
-   `KHANDAQ_PUBLIC_URL`, and the **back-channel logout** URL
-   `https://<your web origin>/api/auth/backchannel-logout`.
+3. Confirm the client **redirect URI** is exactly `KHANDAQ_PUBLIC_URL` + `/api/auth/callback` (e.g.
+   `https://khandaq-stg.siralabs.org/api/auth/callback` on staging). A different host — the
+   CapRover default `…-web.<root domain>`, or a missing `-stg` — makes Keycloak answer
+   *"Invalid parameter: redirect_uri"*.
+4. The client ID stays **`khandaq-api`** on every environment: it names the OIDC client in this realm,
+   not the CapRover app (which may be `khandaq-stg-api`).
 
 `KHANDAQ_OIDC_ISSUER` is then `https://<keycloak>/realms/khandaq`.
 

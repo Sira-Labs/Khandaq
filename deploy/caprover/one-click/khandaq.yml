@@ -128,8 +128,9 @@ caproverOneClickApp:
       evidence-encryption key in particular CANNOT be recovered, so copy it from the app's env after
       deploy and back it up; losing it makes captured evidence unreadable.
     end: >
-      Deployed. Next: (1) open the "<app>-web" app, connect your domain and enable HTTPS; (2) set that
-      HTTPS URL as the OIDC redirect in your realm and confirm it matches the Public URL you entered;
+      Deployed. Next: (1) open the "<app>-web" app (not "<app>-api"), connect your domain and enable
+      HTTPS; (2) that HTTPS origin must equal the Public URL you entered and the origin the realm was
+      rendered with — if not, fix KHANDAQ_PUBLIC_URL on "<app>-api" and the realm client's redirect URI;
       (3) sign in with the admin email you set to claim the owner account; (4) back up the generated
       KHANDAQ_EVIDENCE_KEY (in the "<app>-api" and "<app>-worker" env) and set up Postgres + evidence
       backups per deploy/caprover.md. Reminder: run Khandaq only against systems you are authorised to
@@ -147,7 +148,7 @@ caproverOneClickApp:
     - id: $$cap_public_url
       label: Public URL of the web console
       defaultValue: https://$$cap_appname-web.$$cap_root_domain
-      description: The HTTPS URL the web app will serve on (adjust if you connect a custom domain). Used for OIDC redirects.
+      description: 'The exact HTTPS address people will open — enter your custom domain if you will connect one (e.g. https://khandaq-stg.siralabs.org), not the default. It must equal the origin you rendered the Keycloak realm with: the realm''s redirect URI is this URL + /api/auth/callback. Changing domains later means updating KHANDAQ_PUBLIC_URL on <app>-api and the realm client together.'
       validRegex: /^https?:\/\/.{1,}/
     - id: $$cap_oidc_issuer
       label: OIDC issuer URL

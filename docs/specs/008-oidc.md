@@ -23,7 +23,10 @@ runs are authenticated and audited without a browser.
 New/enforced settings (env, `KHANDAQ_` prefix): `oidc_issuer`, `oidc_client_id` (default
 `khandaq-api`), `oidc_client_secret`, `public_url` (base URL, for the redirect URI),
 `session_secret` (already present), `session_ttl_hours` (default `12`). In **prod**,
-`validate_runtime()` additionally requires `oidc_issuer`, `oidc_client_secret` and `public_url`.
+`validate_runtime()` additionally requires `oidc_issuer`, `oidc_client_secret` and `public_url` **for
+the `api` role only**. (Corrected 2026-10-02: the first version applied this to every role, so the
+worker — which calls `validate_runtime()` but serves no logins and is deployed without the client
+secret — would refuse to start. The worker must not need the OIDC secret: least privilege.)
 
 Database — new table `sessions` (migration `0002_sessions`):
 `id` (`ses_…` pk), `user_id` (FK users), `csrf` (text), `created_at`, `expires_at` (timestamptz),

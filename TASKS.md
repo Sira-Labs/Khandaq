@@ -122,6 +122,14 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
   (no image existed at R0). `khandaq-api` boots with `/api/health` + `/api/version`, fail-closed in
   prod (settings.validate_runtime); `khandaq-web` serves the landing and proxies `/api`; both built and
   pushed to GHCR by `release.yml` on push to main. Domain features still land spec by spec.
+- 2026-10-02 — Staging naming + worker boot fix: staging is deployed as `khandaq-stg-<role>` on
+  `https://khandaq-stg.siralabs.org` (the one-click's `<app>-<role>` shape); the docs said
+  `khandaq-<role>-stg` and showed only production values. `deploy/caprover.md` now has a
+  per-environment values table — the public origin must be identical on the web app's domain,
+  `KHANDAQ_PUBLIC_URL` and the realm render, and the OIDC client id stays `khandaq-api`. Also fixed a
+  spec-008 regression: `validate_runtime()` required OIDC settings for every prod role, so the
+  worker (deployed without the client secret) would refuse to start; OIDC is now required for the
+  `api` role only.
 - 2026-10-02 — Keycloak realm import fix: the docs told operators to use **Partial import**, which
   skips `authenticationFlows`/`authenticatorConfig` and the `browserFlow`/`firstBrokerLoginFlow`
   bindings this realm relies on, so the realm came up broken ("could not be created"). Docs now say
