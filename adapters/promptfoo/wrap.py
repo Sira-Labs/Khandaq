@@ -57,8 +57,13 @@ def _failure_reason(res: dict) -> int:
     if not isinstance(res.get("success"), bool):
         raise ReportError(f"a result has no boolean 'success': {str(res)[:120]}")
     reason = res.get("failureReason")
-    if isinstance(reason, int) and not isinstance(reason, bool):
-        return reason
+    if reason is not None:
+        if isinstance(reason, bool) or reason not in (0, FAILURE_ASSERT, FAILURE_ERROR):
+            raise ReportError(f"a result has an unknown failureReason {reason!r}")
+        if (reason == 0) != res["success"]:
+            # A failed test with no reason, or a passed one with one, would silently vanish.
+            raise ReportError(f"a result's success disagrees with failureReason {reason}")
+        return int(reason)
     # Older outputs carry no failureReason: an error message marks an errored test.
     if res.get("error"):
         return FAILURE_ERROR

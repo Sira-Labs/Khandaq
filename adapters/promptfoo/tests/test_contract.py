@@ -94,6 +94,21 @@ def test_untrustworthy_output_is_refused(text, match):
         _parse(text)
 
 
+@pytest.mark.parametrize(
+    "res",
+    [
+        {"success": False, "failureReason": 0},  # failed, yet "no failure": would vanish
+        {"success": True, "failureReason": 1},
+        {"success": False, "failureReason": 3},  # a code this parser does not know
+        {"success": False, "failureReason": "1"},
+        {"success": False, "failureReason": True},
+    ],
+)
+def test_contradictory_or_unknown_failure_reasons_are_refused(res):
+    with pytest.raises(wrap.ReportError, match="failureReason"):
+        _parse(_with([res]))
+
+
 def test_stats_mismatch_is_refused():
     data = json.loads(json.dumps(FIXTURE))
     data["results"]["results"].pop()  # the output lost a result its stats still count

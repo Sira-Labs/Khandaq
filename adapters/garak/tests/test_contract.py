@@ -93,6 +93,12 @@ def test_a_report_without_completion_is_refused():
         _parse(FIXTURE[:-1])
 
 
+def test_records_after_completion_are_refused():
+    # A concatenated report must not contribute another (or a partial) run's results.
+    with pytest.raises(wrap.ReportError, match="after the completion"):
+        _parse(FIXTURE + [FIXTURE[2]])
+
+
 def test_a_report_with_no_evals_is_refused():
     with pytest.raises(wrap.ReportError, match="no eval"):
         _parse([FIXTURE[0], FIXTURE[1], FIXTURE[-1]])

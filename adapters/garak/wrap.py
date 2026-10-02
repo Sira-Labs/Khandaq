@@ -88,6 +88,8 @@ def parse_report(
         if not isinstance(rec, dict):
             raise ReportError(f"line {n} is not a JSON object")
         kind = rec.get("entry_type")
+        if completed:  # garak closes the report right after `completion`: anything later is foreign
+            raise ReportError(f"line {n}: a record after the completion record")
         if kind == "completion":
             completed = True
             continue
