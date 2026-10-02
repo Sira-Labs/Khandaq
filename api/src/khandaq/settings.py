@@ -73,13 +73,16 @@ class Settings(BaseSettings):
         if self.evidence_key in _PLACEHOLDERS:
             problems.append("KHANDAQ_EVIDENCE_KEY must be set to a real value")
         # OIDC BFF is the only authentication path in prod (the dev stub refuses there); without it
-        # no one could log in, so fail closed (spec 008 / ADR-0005).
-        if not self.oidc_issuer:
-            problems.append("KHANDAQ_OIDC_ISSUER must be set")
-        if self.oidc_client_secret in _PLACEHOLDERS:
-            problems.append("KHANDAQ_OIDC_CLIENT_SECRET must be set to a real value")
-        if not self.public_url:
-            problems.append("KHANDAQ_PUBLIC_URL must be set (OIDC redirect URI)")
+        # no one could log in, so the API fails closed (spec 008 / ADR-0005). Only the api role
+        # serves logins: the worker never sees a browser, so it is not given (and must not need)
+        # the client secret — least privilege.
+        if self.role == "api":
+            if not self.oidc_issuer:
+                problems.append("KHANDAQ_OIDC_ISSUER must be set")
+            if self.oidc_client_secret in _PLACEHOLDERS:
+                problems.append("KHANDAQ_OIDC_CLIENT_SECRET must be set to a real value")
+            if not self.public_url:
+                problems.append("KHANDAQ_PUBLIC_URL must be set (OIDC redirect URI)")
         if problems:
             raise RuntimeError(
                 "Refusing to start in prod with insecure configuration: " + "; ".join(problems)
