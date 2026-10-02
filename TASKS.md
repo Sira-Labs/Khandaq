@@ -20,8 +20,10 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
 ## R1 — the spine (specs to implement)
 
 ### Sprint 1 — foundation
-- [~] S1-1 — spec 001 persistence schema + migrations + `/api/version` (bootable `/api/version` +
-      `/api/health` shipped; schema + migrations still to do)
+- [x] S1-1 — spec 001 persistence schema + migrations + `/api/version` — all 12 tables, Alembic
+      migration packaged in the wheel, entrypoint migrates on boot, 8 tests pass against Postgres.
+      Decisions: append-only `audit_log` via a DB trigger (portable, single-role); `dedup_of` same-
+      engagement via composite FK; enums as CHECKs; SQLAlchemy/psycopg pinned to 2.0.x / 3.2.x.
 - [ ] S1-2 — spec 002 engagements, scope lock, audit log (auth stubbed)
 - [~] S1-3 — repo plumbing: `api/` uv skeleton (done, CI `api` job green), Dockerfiles for api + web,
       `release.yml` publishing images to GHCR (done); `core/` cargo + `web/` pnpm skeletons still to do
