@@ -56,5 +56,7 @@ operator). For the **staging + production split with digest promotion** (ADR-001
 app-by-app guide in [`../../caprover.md`](../../caprover.md); do not run client-engagement data on a
 one-click single box without the backup and isolation steps there.
 
-> Images `ghcr.io/sira-labs/khandaq-*` publish from **R1**. Until then the template is ready and will
-> pull once those tags exist.
+> Images `ghcr.io/sira-labs/khandaq-*` are published by CI (`.github/workflows/release.yml`) on every
+> push to `main` (tag `latest`) and on `v*` tags. If the org's package visibility is private, make the
+> `khandaq-api` / `khandaq-web` packages readable by your CapRover host (or add a registry credential),
+> otherwise the pull will 403.

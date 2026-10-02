@@ -1,6 +1,6 @@
 # Single-box self-host bundle (one operator, trusted machine). See deploy/README.md.
-# Images under ghcr.io/sira-labs/khandaq-* are published from R1 onward; until then build locally
-# (uncomment the `build:` lines) once the api/ and web/ Dockerfiles land.
+# Images under ghcr.io/sira-labs/khandaq-* are published by CI on push to main; or build locally
+# from the Dockerfiles with the `build:` lines (uncomment them).
 services:
   postgres:
     image: postgres:17

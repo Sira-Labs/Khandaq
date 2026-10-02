@@ -12,63 +12,16 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Jobs are added as each part of the tree lands (see docs/roadmap/sprints.md):
+#   api (now) → core + bindings (Rust, spec 003) → adapters (spec 005) → web (SPA, spec 007).
 jobs:
-  core:
-    name: rust core
-    runs-on: ubuntu-latest
-    defaults:
-      run: { working-directory: core }
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-        with: { components: "rustfmt, clippy" }
-      - uses: Swatinem/rust-cache@v2
-        with: { workspaces: core }
-      - run: cargo fmt --check
-      - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test
-      - uses: taiki-e/install-action@cargo-audit
-      - run: cargo audit
-
-  bindings:
-    name: python bindings
-    runs-on: ubuntu-latest
-    defaults:
-      run: { working-directory: core/khandaq-py }
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with: { workspaces: core }
-      - uses: actions/setup-python@v7
-        with: { python-version: "3.12" }
-      - run: python -m venv .venv && . .venv/bin/activate && pip install maturin pytest
-      - run: . .venv/bin/activate && maturin develop --release
-      - run: . .venv/bin/activate && pytest -q
-
   api:
     name: python api
     runs-on: ubuntu-latest
     defaults:
       run: { working-directory: api }
-    services:
-      postgres:
-        image: postgres:17
-        env:
-          POSTGRES_USER: khandaq
-          POSTGRES_PASSWORD: khandaq
-          POSTGRES_DB: khandaq
-        ports: ["5432:5432"]
-        options: >-
-          --health-cmd "pg_isready -U khandaq" --health-interval 5s
-          --health-timeout 5s --health-retries 10
-    env:
-      KHANDAQ_TEST_DATABASE_URL: postgresql+psycopg://khandaq:khandaq@localhost:5432/khandaq
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with: { workspaces: core }
       - uses: astral-sh/setup-uv@v7
         with: { python-version: "3.12" }
       - run: uv sync --extra dev
@@ -76,29 +29,3 @@ jobs:
       - run: uv run ruff format --check .
       - run: uv run mypy
       - run: uv run pytest -q
-      - run: uv run pip-audit || true   # advisory until the lockfile is baselined
-
-  adapters:
-    name: adapters (lint + manifests)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
-        with: { python-version: "3.12" }
-      # Validate every adapter.yaml against the manifest schema and confirm each pins an
-      # exact upstream version. Image builds and contract tests run in the release workflow.
-      - run: python adapters/_tooling/validate_manifests.py
-
-  web:
-    name: web
-    runs-on: ubuntu-latest
-    defaults:
-      run: { working-directory: web }
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
-        with: { node-version: "22" }
-      - run: corepack enable
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm lint
-      - run: pnpm build

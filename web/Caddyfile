@@ -1,0 +1,22 @@
+# Khandaq web: serves the static console/landing and proxies /api to the control-plane API.
+# KHANDAQ_API_UPSTREAM is e.g. srv-captain--<app>-api:8000 (CapRover) or api:8000 (compose).
+:80 {
+	encode gzip
+
+	@api path /api/*
+	handle @api {
+		reverse_proxy {$KHANDAQ_API_UPSTREAM:api:8000}
+	}
+
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
+
+	header {
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy strict-origin-when-cross-origin
+	}
+}

@@ -20,9 +20,11 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
 ## R1 — the spine (specs to implement)
 
 ### Sprint 1 — foundation
-- [ ] S1-1 — spec 001 persistence schema + migrations + `/api/version`
+- [~] S1-1 — spec 001 persistence schema + migrations + `/api/version` (bootable `/api/version` +
+      `/api/health` shipped; schema + migrations still to do)
 - [ ] S1-2 — spec 002 engagements, scope lock, audit log (auth stubbed)
-- [ ] S1-3 — repo plumbing: Makefile targets wired, `api/` uv skeleton, `core/` cargo skeleton, `web/` pnpm skeleton, CI green
+- [~] S1-3 — repo plumbing: `api/` uv skeleton (done, CI `api` job green), Dockerfiles for api + web,
+      `release.yml` publishing images to GHCR (done); `core/` cargo + `web/` pnpm skeletons still to do
 
 ### Sprint 2 — data spine
 - [ ] S2-1 — spec 003 canonical finding, fingerprint, dedup, severity, mapping (Rust core + wheel)
@@ -63,6 +65,10 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
 - 2026-10-02 — Canonical finding is a SARIF superset (ADR-0003) so results interoperate; dedup by stable
   fingerprint; severity normalised to five levels (ADR-0004); framework mappings are versioned data with
   both OWASP LLM 2025 and 2026 kept in parallel (ADR-0012).
+- 2026-10-02 — Bootable control-plane image shipped so CapRover deploys stop failing at `khandaq-api`
+  (no image existed at R0). `khandaq-api` boots with `/api/health` + `/api/version`, fail-closed in
+  prod (settings.validate_runtime); `khandaq-web` serves the landing and proxies `/api`; both built and
+  pushed to GHCR by `release.yml` on push to main. Domain features still land spec by spec.
 - 2026-10-02 — Rust core (PyO3) owns the integrity-critical logic incl. the ledger (ADR-0011/0007);
   Python FastAPI control plane; Procrastinate on Postgres (ADR-0008); adapters isolated per container with
   egress limited to the in-scope target (ADR-0009).

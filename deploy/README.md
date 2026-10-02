@@ -8,9 +8,11 @@ Three paths:
   [`caprover.md`](caprover.md).
 - **Single-box self-host** with `docker compose` for one operator on a trusted machine — below.
 
-> The published images (`ghcr.io/sira-labs/khandaq-api`, `-web`, and the adapter images
-> `ghcr.io/sira-labs/khandaq-adapter-*`) exist from **R1** onward. Until then this directory is the
-> deployment design; the compose file and captain-definitions describe the target bundle.
+> `ghcr.io/sira-labs/khandaq-api` and `-web` are published by CI (`.github/workflows/release.yml`) on
+> every push to `main`. The current images are the **bootable R1 skeleton**: the API serves
+> `/api/health` and `/api/version` (fail-closed in prod) and the web app serves the landing page and
+> proxies `/api`; the engagement, scope-lock, findings and adapter features land spec by spec. The
+> adapter images (`khandaq-adapter-*`) arrive with spec 006.
 
 ## Single-box self-host
 

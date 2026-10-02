@@ -6,9 +6,8 @@
 # CapRover → Apps → One-Click Apps/Databases → "…via text/url", or add this repo as a custom
 # one-click repository. Secrets are generated for you and reused across the services.
 #
-# NOTE ON IMAGES: the published images (ghcr.io/sira-labs/khandaq-api, -web) exist from R1 onward.
-# Until then this template is ready but will pull once those tags are published; set the image tag
-# in the form.
+# NOTE ON IMAGES: ghcr.io/sira-labs/khandaq-api and -web are published by CI (release.yml) on every
+# push to main (tag `latest`), and on v* tags. Set the tag you want in the form (default: latest).
 #
 # NOTE ON EGRESS (ADR-0009): this one-click uses adapter-execution "shape A" — the worker launches
 # pinned adapter containers via the host Docker socket, restricting each run's egress to the single
