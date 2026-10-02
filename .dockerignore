@@ -1,0 +1,15 @@
+# Build-context excludes for the repo-root image builds (api/, web/). Keeps the context small and
+# stops heavy or irrelevant trees from being copied into images.
+.git
+**/__pycache__/
+**/*.pyc
+**/.venv/
+**/.pytest_cache/
+**/.ruff_cache/
+**/.mypy_cache/
+# Rust build artifacts — the wheel is rebuilt inside the image.
+core/target/
+# Node / web build outputs — rebuilt inside the web image.
+**/node_modules/
+web/dist/
+**/.DS_Store
