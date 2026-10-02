@@ -131,7 +131,21 @@ def get_oidc_client(settings: Settings) -> OidcClient:
         raise HTTPException(
             503, "OIDC is not configured (KHANDAQ_OIDC_ISSUER / _CLIENT_SECRET / PUBLIC_URL)"
         )
-    return KeycloakOidcClient(settings)
+    # One client per configuration, so discovery and the JWKS are fetched once per process rather
+    # than on every login and callback.
+    key = (
+        settings.oidc_issuer,
+        settings.oidc_client_id,
+        settings.oidc_client_secret,
+        settings.public_url,
+    )
+    cached = _CLIENTS.get(key)
+    if cached is None:
+        cached = _CLIENTS[key] = KeycloakOidcClient(settings)
+    return cached
+
+
+_CLIENTS: dict[tuple[str, str, str, str], KeycloakOidcClient] = {}
 
 
 def provide_oidc_client() -> OidcClient:

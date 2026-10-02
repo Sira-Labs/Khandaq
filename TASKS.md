@@ -122,6 +122,12 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
   (no image existed at R0). `khandaq-api` boots with `/api/health` + `/api/version`, fail-closed in
   prod (settings.validate_runtime); `khandaq-web` serves the landing and proxies `/api`; both built and
   pushed to GHCR by `release.yml` on push to main. Domain features still land spec by spec.
+- 2026-10-02 — Full code review (4 parallel reviewers, findings verified before fixing). Auth: the
+  realm brokers any Google/GitHub account and every login became an org `member` able to create
+  engagements and start runs → sign-in now needs a verified email on `KHANDAQ_ALLOWED_EMAILS` (or
+  `KHANDAQ_ADMIN_EMAIL`), mirroring Sahifa's `SAHIFA_ALLOWED_EMAILS`; `KHANDAQ_ENV` is strict
+  (typos such as `production` would have enabled the dev stub); prod reads only the `__Host-` cookie;
+  token attribution moved off a `ContextVar` that never crossed FastAPI's threadpool.
 - 2026-10-02 — Staging naming + worker boot fix: staging is deployed as `khandaq-stg-<role>` on
   `https://khandaq-stg.siralabs.org` (the one-click's `<app>-<role>` shape); the docs said
   `khandaq-<role>-stg` and showed only production values. `deploy/caprover.md` now has a

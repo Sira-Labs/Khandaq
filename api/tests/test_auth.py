@@ -22,7 +22,7 @@ class FakeOidc:
     """Stand-in IdP: records the handshake and returns canned claims for the callback."""
 
     def __init__(self) -> None:
-        self.claims_to_return = {"email": "alice@test", "name": "Alice"}
+        self.claims_to_return = {"email": "alice@test", "name": "Alice", "email_verified": True}
 
     def authorization_url(self, *, state: str, nonce: str, code_challenge: str) -> str:
         return (
@@ -61,33 +61,56 @@ def app_db():
                 s.rollback()
                 raise
 
+    from khandaq.settings import get_settings
+
+    settings = get_settings()
+    previous_allowed = settings.allowed_emails
+    settings.allowed_emails = ALLOWED
+
     fake = FakeOidc()
     app = main.create_app()
     app.dependency_overrides[get_session] = _get_session
     app.dependency_overrides[provide_oidc_client] = lambda: fake
-    yield app, fake
+    yield app, fake, eng
+    settings.allowed_emails = previous_allowed
     eng.dispose()
+
+
+ALLOWED = "alice@test,bob@test,carol@test,dave@test,erin@test"
 
 
 @pytest.fixture
 def client(app_db):
-    app, _ = app_db
+    app, _, _ = app_db
     return TestClient(app)  # fresh cookie jar per test
 
 
 @pytest.fixture
 def fake(app_db):
-    _, fake = app_db
+    _, fake, _ = app_db
     return fake
 
 
-def _login(client: TestClient, fake: FakeOidc, email: str = "alice@test") -> None:
-    fake.claims_to_return = {"email": email, "name": email.split("@")[0]}
+@pytest.fixture
+def db(app_db):
+    _, _, eng = app_db
+    return eng
+
+
+def _callback(client: TestClient, fake: FakeOidc, claims: dict):
+    """Run login → callback with the fake IdP returning ``claims``; return the callback response."""
+    fake.claims_to_return = claims
     r = client.get("/api/auth/login", follow_redirects=False)
     assert r.status_code == 307
     state = parse_qs(urlparse(r.headers["location"]).query)["state"][0]
-    r2 = client.get(f"/api/auth/callback?code=abc&state={state}", follow_redirects=False)
+    return client.get(f"/api/auth/callback?code=abc&state={state}", follow_redirects=False)
+
+
+def _login(client: TestClient, fake: FakeOidc, email: str = "alice@test") -> None:
+    claims = {"email": email, "name": email.split("@")[0], "email_verified": True}
+    r2 = _callback(client, fake, claims)
     assert r2.status_code == 307
+    assert r2.headers["location"] != "/?signin=denied", "login unexpectedly denied"
 
 
 def test_login_redirects_to_idp_with_pkce(client):
@@ -155,3 +178,88 @@ def test_prod_requires_real_credentials(client, monkeypatch):
     monkeypatch.setattr("khandaq.deps.get_settings", lambda: Settings(env="prod"))
     r = client.post("/api/engagements", json={"name": "x"})
     assert r.status_code == 401
+
+
+# --- review hardening (allow-list, verified email, cookies, token attribution) -----------------
+
+
+def _audit_rows(db, action: str) -> list:
+    with db.connect() as conn:
+        return conn.execute(
+            text("SELECT actor_user_id, actor_token_id, detail FROM audit_log WHERE action = :a"),
+            {"a": action},
+        ).all()
+
+
+def test_sign_in_denied_when_not_allow_listed(client, fake, db):
+    r = _callback(client, fake, {"email": "stranger@gmail.test", "email_verified": True})
+    assert r.status_code == 307 and r.headers["location"] == "/?signin=denied"
+    assert "khandaq_session" not in r.headers.get("set-cookie", "")
+    denied = [
+        row
+        for row in _audit_rows(db, "auth.denied")
+        if row.detail["email"] == "stranger@gmail.test"
+    ]
+    assert denied and "ALLOWED_EMAILS" in denied[0].detail["reason"]
+    with db.connect() as conn:  # no user row is created for a refused stranger
+        assert (
+            conn.execute(
+                text("SELECT count(*) FROM users WHERE email = 'stranger@gmail.test'")
+            ).scalar()
+            == 0
+        )
+
+
+def test_sign_in_denied_when_email_unverified(client, fake):
+    # erin@test is allow-listed, but an unverified address could be anyone's.
+    r = _callback(client, fake, {"email": "erin@test", "email_verified": False})
+    assert r.headers["location"] == "/?signin=denied"
+
+
+def test_removal_from_allow_list_revokes_access(client, fake, app_db):
+    from khandaq.settings import get_settings
+
+    _login(client, fake, "dave@test")
+    assert client.get("/api/auth/me").status_code == 200
+    settings = get_settings()
+    try:
+        settings.allowed_emails = ALLOWED.replace("dave@test", "")
+        assert client.get("/api/auth/me").status_code == 403
+    finally:
+        settings.allowed_emails = ALLOWED
+
+
+def test_token_actions_are_attributed_to_the_token(client, db):
+    dev = {"X-Khandaq-Dev-User": "bob@test"}
+    created = client.post("/api/auth/tokens", json={"name": "ci"}, headers=dev).json()
+    auth = {"Authorization": f"Bearer {created['token']}"}
+    eng = client.post("/api/engagements", json={"name": "via-token"}, headers=auth)
+    assert eng.status_code == 201
+    rows = [
+        row for row in _audit_rows(db, "engagement.created") if row.actor_token_id == created["id"]
+    ]
+    assert rows, "engagement.created by an API token must record actor_token_id"
+
+
+def test_malformed_login_cookie_is_400_not_500(client):
+    client.cookies.set("khandaq_login", "e30.not*valid*base64", path="/api/auth")
+    r = client.get("/api/auth/callback?code=abc&state=x", follow_redirects=False)
+    assert r.status_code == 400
+
+
+def test_prod_ignores_the_non_host_cookie(client, fake, monkeypatch):
+    from khandaq.settings import Settings
+
+    _login(client, fake, "alice@test")  # dev sets the plain `khandaq_session` cookie
+    monkeypatch.setattr(
+        "khandaq.deps.get_settings", lambda: Settings(env="prod", allowed_emails=ALLOWED)
+    )
+    # In prod only __Host-khandaq_session counts, so the plain cookie authenticates nobody.
+    assert client.get("/api/auth/me").status_code == 401
+
+
+def test_logout_audit_names_the_actor(client, fake, db):
+    _login(client, fake, "carol@test")
+    csrf = client.get("/api/auth/me").json()["csrf_token"]
+    assert client.post("/api/auth/logout", headers={"X-Khandaq-CSRF": csrf}).status_code == 200
+    assert all(row.actor_user_id for row in _audit_rows(db, "auth.logout"))

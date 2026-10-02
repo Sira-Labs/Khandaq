@@ -111,9 +111,23 @@ def callback(
         raise HTTPException(400, "no id_token in token response")
     claims = client.claims(id_token=id_token, nonce=payload["nonce"])
 
+    # Users are keyed by email, so the email must be one the IdP verified — otherwise anyone could
+    # claim an existing account (or admin_email) by typing its address into an unverified profile.
+    # Then only allow-listed addresses get in: the realm brokers ANY Google/GitHub account.
+    email = str(claims.get("email", ""))
+    reason = None
+    if claims.get("email_verified") is not True:
+        reason = "email not verified by the identity provider"
+    elif not settings.email_allowed(email):
+        reason = "not on KHANDAQ_ALLOWED_EMAILS"
+    if reason is not None:
+        return _deny_sign_in(session, email=email, reason=reason)
+
     user = auth_service.upsert_user_from_claims(
         session, admin_email=settings.admin_email or None, claims=claims
     )
+    if user.disabled:
+        return _deny_sign_in(session, email=email, reason="account disabled")
     row = auth_service.create_session(session, user, ttl_hours=settings.session_ttl_hours)
     session.flush()
     audit.record(session, action="auth.login", actor=user, detail={"session_id": row.id})
@@ -125,6 +139,16 @@ def callback(
     return resp
 
 
+def _deny_sign_in(session: Session, *, email: str, reason: str) -> RedirectResponse:
+    """No session; record the refusal and send the browser to the console's 'no access' notice."""
+    session.rollback()  # drop anything flushed for this login (e.g. a just-created user row)
+    audit.record(session, action="auth.denied", detail={"email": email, "reason": reason})
+    session.commit()
+    resp = RedirectResponse("/?signin=denied", status_code=307)
+    resp.delete_cookie(LOGIN_COOKIE, path="/api/auth")
+    return resp
+
+
 @router.post("/logout")
 def logout(
     request: Request,
@@ -132,14 +156,19 @@ def logout(
     settings: Settings = Depends(get_settings),
     session: Session = Depends(get_session),
 ) -> JSONResponse:
-    sid = session_cookie_value(request)
+    sid = session_cookie_value(request, settings)
     if sid is not None:
         row = auth_service.lookup_session(session, sid)
         if row is not None:
             if csrf != row.csrf:
                 raise HTTPException(403, "missing or invalid CSRF token")
             auth_service.revoke_session(session, sid)
-            audit.record(session, action="auth.logout", detail={"session_id": sid})
+            audit.record(
+                session,
+                action="auth.logout",
+                actor=session.get(User, row.user_id),
+                detail={"session_id": sid},
+            )
             session.commit()
     resp = JSONResponse({"status": "logged_out"})
     resp.delete_cookie(_session_cookie_name(settings), path="/")
@@ -152,11 +181,12 @@ def me(
     authorization: str | None = Header(default=None),
     user: User = Depends(current_user),
     session: Session = Depends(get_session),
+    settings: Settings = Depends(get_settings),
 ) -> dict:
     if authorization and authorization.lower().startswith("bearer "):
         method, csrf_token = "token", None
     else:
-        sid = session_cookie_value(request)
+        sid = session_cookie_value(request, settings)
         row = auth_service.lookup_session(session, sid) if sid else None
         if row is not None:
             method, csrf_token = "session", row.csrf
