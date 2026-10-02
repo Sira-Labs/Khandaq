@@ -122,6 +122,12 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
   (no image existed at R0). `khandaq-api` boots with `/api/health` + `/api/version`, fail-closed in
   prod (settings.validate_runtime); `khandaq-web` serves the landing and proxies `/api`; both built and
   pushed to GHCR by `release.yml` on push to main. Domain features still land spec by spec.
+- 2026-10-02 — Keycloak realm import fix: the docs told operators to use **Partial import**, which
+  skips `authenticationFlows`/`authenticatorConfig` and the `browserFlow`/`firstBrokerLoginFlow`
+  bindings this realm relies on, so the realm came up broken ("could not be created"). Docs now say
+  **Create realm → Resource file** (full import), matching Sahifa's working procedure. Also brought the
+  realm in line with Sahifa (SSO cookie tried before the IdP redirect; `loginHint` on Google) and
+  ported Sahifa's hardened `render.py`. The realm JSON was otherwise identical to Tabayyun's.
 - 2026-10-02 — Real authentication landed (spec 008 / ADR-0005): OIDC Authorization-Code + PKCE
   against Keycloak, a backend-for-frontend `__Host-` session cookie (no tokens in the browser), CSRF
   on state-changing requests, and revocable, audited API tokens for automation. The dev header stub

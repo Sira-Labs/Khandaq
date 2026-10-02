@@ -121,9 +121,14 @@ Use the ready-made realm export [`keycloak/khandaq-realm.json`](keycloak/) — i
 passkey browser flow, with no secrets baked in. Render it with your origin and import it:
 
 ```bash
-python3 deploy/keycloak/render.py https://khandaq.siralabs.org > /tmp/khandaq-realm.json
-# Admin console → Realm settings → Partial import, or `kc.sh import --file /tmp/khandaq-realm.json`
+python3 deploy/keycloak/render.py https://khandaq.siralabs.org > khandaq-realm.json
+# Admin console → realm drop-down → Create realm → Resource file: the rendered file → Create.
+# (Or, on a fresh Keycloak's first boot: kc.sh import --file khandaq-realm.json)
 ```
+
+**Use _Create realm_ (a full import), not _Partial import_.** This realm rebinds the browser flow to
+`khandaq browser` and defines custom passkey/broker flows; partial import does not create
+`authenticationFlows`, `authenticatorConfig` or the flow bindings, so it produces a broken realm.
 
 Then in the admin console set the `khandaq-api` client secret (→ `KHANDAQ_OIDC_CLIENT_SECRET`) and the
 Google/GitHub client id+secret, and confirm the redirect URI `…/api/auth/callback` matches

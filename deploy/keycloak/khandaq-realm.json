@@ -118,6 +118,7 @@
         "clientSecret": "set-in-admin-console",
         "defaultScope": "openid email profile",
         "syncMode": "IMPORT",
+        "loginHint": "true",
         "guiOrder": "1"
       }
     },
@@ -142,7 +143,7 @@
   "authenticationFlows": [
     {
       "alias": "khandaq browser",
-      "description": "Brokered sign-in (Google, GitHub) when the client names a provider, else the SSO cookie, else a passkey; no passwords.",
+      "description": "The SSO cookie, else brokered sign-in (Google, GitHub) when the client names a provider, else a passkey; no passwords.",
       "providerId": "basic-flow",
       "topLevel": true,
       "builtIn": false,
@@ -157,7 +158,7 @@
         {
           "authenticator": "identity-provider-redirector",
           "requirement": "ALTERNATIVE",
-          "priority": 5,
+          "priority": 20,
           "autheticatorFlow": false,
           "userSetupAllowed": false
         },
