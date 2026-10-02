@@ -46,8 +46,10 @@ Bundled target: `deploy/targets/vulnerable-llm/` — a tiny, deliberately weak l
      identity box appears only when the API reports `auth: "dev"`, and the dev header is sent only
      then.
    - The launcher sends the same `params` to the pre-flight and the run, with an optional
-     `rate_per_minute` (required when the RoE caps the rate, spec 002 §6). A failed pre-flight shows
-     its reason instead of leaving "Run" disabled; run and query errors are shown.
+     `rate_per_minute` (required when the RoE caps the rate, spec 002 §6), which must be a safe
+     integer ≥ 1 (a long digit string became `Infinity`, sent as `null`). A pre-flight that could
+     not be made (network, CSRF) says so and is never shown as "Out of scope"; run and query errors
+     are shown.
 
 ## Acceptance criteria
 

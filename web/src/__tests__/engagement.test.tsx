@@ -51,9 +51,12 @@ describe("Engagement run launcher", () => {
     await screen.findByText("Acme");
     fireEvent.change(screen.getByLabelText("target"), { target: { value: "tgt_1" } });
 
+    // A failed request is not a scope decision, so it must not read as "Out of scope".
+    const alert = await screen.findByRole("alert");
     await waitFor(() =>
-      expect(screen.getByRole("alert")).toHaveTextContent("pre-flight failed: missing or invalid CSRF token"),
+      expect(alert).toHaveTextContent("Pre-flight check failed: missing or invalid CSRF token"),
     );
+    expect(alert).not.toHaveTextContent("Out of scope");
     expect(screen.getByRole("button", { name: "Run" })).toBeDisabled();
   });
 
@@ -99,5 +102,25 @@ describe("Engagement run launcher", () => {
     fireEvent.change(screen.getByLabelText("rate per minute"), { target: { value: "999" } });
     expect(run).toBeDisabled(); // the approval was for 30/min, not 999/min
   });
-});
 
+  it("refuses a rate that cannot be sent as a number", async () => {
+    const { api } = await import("../api");
+    vi.mocked(api.scopeCheck).mockClear();
+    vi.mocked(api.scopeCheck).mockResolvedValue({ allowed: true, reason: null });
+    const { Engagement } = await import("../pages/Engagement");
+    const { fireEvent } = await import("@testing-library/react");
+    render(wrap(<Engagement engagementId="eng_1" />));
+
+    await screen.findByText("Acme");
+    // 400 digits: Number() gives Infinity, which JSON would send as null.
+    fireEvent.change(screen.getByLabelText("rate per minute"), { target: { value: "9".repeat(400) } });
+    fireEvent.change(screen.getByLabelText("target"), { target: { value: "tgt_1" } });
+
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("whole number"));
+    expect(screen.getByRole("button", { name: "Run" })).toBeDisabled();
+    expect(api.scopeCheck).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByLabelText("rate per minute"), { target: { value: "0" } });
+    expect(screen.getByRole("alert")).toHaveTextContent("at least 1");
+  });
+});

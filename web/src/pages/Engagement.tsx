@@ -14,18 +14,27 @@ export function Engagement({ engagementId }: { engagementId: string }) {
   const [targetId, setTargetId] = useState("");
   const [rate, setRate] = useState("");
   // A pre-flight answer is only valid for the exact target + params it checked (key below).
+  // `error` means the check itself failed (network, CSRF, 5xx): no scope decision was made, so it
+  // must not read as a denial.
   const [checked, setChecked] = useState<{
     key: string;
     allowed: boolean;
     reason: string | null;
+    error?: string;
   } | null>(null);
   // The same params go to the pre-flight and the run, so what was checked is what runs. A rate is
-  // required when the rules of engagement cap it (spec 002 §6).
-  const params: RunParams = rate.trim() === "" ? {} : { rate_per_minute: Number(rate) };
+  // required when the rules of engagement cap it (spec 002 §6). It must survive JSON as the number
+  // typed: a long digit string becomes Infinity, which JSON sends as null.
+  const rateValue = rate.trim() === "" ? null : Number(rate);
+  const rateError =
+    rateValue !== null && !(Number.isSafeInteger(rateValue) && rateValue > 0)
+      ? "Enter a whole number of requests per minute, at least 1."
+      : null;
+  const params: RunParams = rateValue === null || rateError ? {} : { rate_per_minute: rateValue };
   const paramsKey = JSON.stringify(params);
 
   useEffect(() => {
-    if (!targetId) {
+    if (!targetId || rateError) {
       setChecked(null);
       return;
     }
@@ -37,12 +46,12 @@ export function Engagement({ engagementId }: { engagementId: string }) {
         if (active) setChecked({ key, ...r });
       })
       .catch((err: Error) => {
-        if (active) setChecked({ key, allowed: false, reason: `pre-flight failed: ${err.message}` });
+        if (active) setChecked({ key, allowed: false, reason: null, error: err.message });
       });
     return () => {
       active = false;
     };
-  }, [engagementId, targetId, paramsKey]);
+  }, [engagementId, targetId, paramsKey, rateError]);
 
   const preflight = checked && checked.key === `${targetId}|${paramsKey}` ? checked : null;
 
@@ -95,13 +104,23 @@ export function Engagement({ engagementId }: { engagementId: string }) {
           />
           <button
             className="rounded bg-[var(--ember)] px-4 py-1.5 font-medium text-black disabled:opacity-40"
-            disabled={!targetId || preflight?.allowed !== true || run.isPending}
+            disabled={!targetId || !!rateError || preflight?.allowed !== true || run.isPending}
             onClick={() => run.mutate()}
           >
             Run
           </button>
         </div>
-        {preflight && !preflight.allowed && (
+        {rateError && (
+          <p className="mt-2 text-sm text-red-400" role="alert">
+            {rateError}
+          </p>
+        )}
+        {preflight?.error && (
+          <p className="mt-2 text-sm text-red-400" role="alert">
+            Pre-flight check failed: {preflight.error}. No scope decision was made; try again.
+          </p>
+        )}
+        {preflight && !preflight.allowed && !preflight.error && (
           <p className="mt-2 text-sm text-red-400" role="alert">
             Out of scope: {preflight.reason}
           </p>
