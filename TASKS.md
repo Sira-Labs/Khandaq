@@ -138,6 +138,17 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
   row's `object_key`/`run_id`/`kind` are outside the chain (triggers stop app-level edits, not a DBA).
   Binding a canonical evidence record into `evidence_hash` changes ADR-0007's formula and would
   invalidate existing staging chains — proposed, not done; needs an ADR.
+- 2026-10-02 — Rust core hardening (code review): validation dropped every field the typed model
+  did not name, which broke the SARIF superset, and it accepted `HIGH` and non-object locations,
+  unlike the published schema. Both are fixed. Dedup is now independent of input order, keeps
+  every tool's native severity (`x-khandaq.sources`) and unions `also_found_by`. The Navigator
+  counts per finding. The ledger refuses malformed hashes and seq overflow, and gains
+  `verify_pinned` to detect truncation. `khandaq-py` was outside the workspace, so CI never ran
+  fmt/clippy/audit on it; the job now does. pyo3 is bumped from 0.22 to 0.26 (RUSTSEC-2025-0020;
+  the affected API is unused here), which also clears pyo3 0.22's clippy false positive.
+  **Open decision for the owner:** ADR-0013 (Proposed) would take framework mappings out of the
+  fingerprint, because every mapping edit currently re-fingerprints the same issue and defeats
+  cross-run dedup.
 - 2026-10-02 — Staging naming + worker boot fix: staging is deployed as `khandaq-stg-<role>` on
   `https://khandaq-stg.siralabs.org` (the one-click's `<app>-<role>` shape); the docs said
   `khandaq-<role>-stg` and showed only production values. `deploy/caprover.md` now has a
