@@ -63,6 +63,11 @@ Config keys: `KHANDAQ_DATABASE_URL`, `KHANDAQ_MIGRATION_DATABASE_URL`, `KHANDAQ_
    > (row access only; INSERT/SELECT on `audit_log`, `evidence`, `ledger_entries`; read-only
    > `alembic_version`; owns nothing), and the entrypoint drops the owner URL before serving. The
    > deploy templates use a separate `khandaq_app` login. Single-login installs keep the trigger.
+   > Its *effective* rights are checked after provisioning: no CREATE (schema or database), no
+   > TEMPORARY, and no UPDATE/DELETE/TRUNCATE/TRIGGER on the append-only tables, even when the
+   > right comes through `PUBLIC`. If one cannot be removed, boot fails. An existing login's
+   > password and LOGIN are never rewritten, so a restart cannot undo an administrator's rotation
+   > or `NOLOGIN`. If the URL no longer authenticates, boot fails with instructions.
 4. With `KHANDAQ_ENV=prod`, the app refuses to start on a placeholder DB URL.
 
 ## Acceptance criteria

@@ -237,19 +237,92 @@ def test_database_level_create_is_removed(runtime_engine):
         _drop("khandaq_rt_db")
 
 
-def test_an_unchangeable_wrong_password_fails_boot(runtime_engine, monkeypatch):
+def _can_log_in(name: str, password: str) -> bool:
+    from khandaq import db_roles
+
+    return db_roles._can_log_in(_with_login(TEST_URL, name, password))
+
+
+def test_an_existing_logins_password_is_never_rewritten(runtime_engine):
+    # A restart with a stale URL must not undo an administrator's password rotation.
+    _make_role("CREATE ROLE khandaq_rt_pw LOGIN PASSWORD 'rotated'")
+    try:
+        with pytest.raises(RuntimeError, match="cannot log in"):
+            _provision("khandaq_rt_pw", password="stale")
+        assert _can_log_in("khandaq_rt_pw", "rotated")  # unchanged
+        assert not _can_log_in("khandaq_rt_pw", "stale")
+        assert _provision("khandaq_rt_pw", password="rotated") == "khandaq_rt_pw"
+    finally:
+        _drop("khandaq_rt_pw")
+
+
+def test_a_disabled_login_is_not_re_enabled(runtime_engine):
+    assert _provision("khandaq_rt_off", password="pw") == "khandaq_rt_off"
+    _make_role("ALTER ROLE khandaq_rt_off NOLOGIN")  # an administrator revokes it
+    try:
+        with pytest.raises(RuntimeError, match="cannot log in"):
+            _provision("khandaq_rt_off", password="pw")
+        with _owner().connect() as conn:
+            can_login = conn.execute(
+                text("SELECT rolcanlogin FROM pg_roles WHERE rolname = 'khandaq_rt_off'")
+            ).scalar_one()
+        assert can_login is False
+    finally:
+        _drop("khandaq_rt_off")
+
+
+def test_temporary_tables_are_not_allowed(runtime_engine):
+    # PostgreSQL grants TEMPORARY on every database to PUBLIC by default.
+    owner = _owner()
+    with owner.begin() as conn:
+        db = conn.execute(text("SELECT current_database()")).scalar_one()
+        conn.execute(text(f'GRANT TEMPORARY ON DATABASE "{db}" TO PUBLIC'))
+    try:
+        _provision("khandaq_rt_tmp")
+        with owner.connect() as conn:
+            probe = "SELECT has_database_privilege('khandaq_rt_tmp', current_database(), 'TEMP')"
+            assert conn.execute(text(probe)).scalar_one() is False
+    finally:
+        owner.dispose()
+        _drop("khandaq_rt_tmp")
+
+
+@pytest.mark.parametrize("right", ["UPDATE", "DELETE", "TRUNCATE", "TRIGGER"])
+def test_rights_inherited_through_public_on_append_only_tables_are_removed(runtime_engine, right):
+    owner = _owner()
+    with owner.begin() as conn:
+        conn.execute(text(f"GRANT {right} ON TABLE audit_log TO PUBLIC"))
+    try:
+        _provision("khandaq_rt_inh")
+        with owner.connect() as conn:
+            probe = text("SELECT has_table_privilege('khandaq_rt_inh', 'public.audit_log', :r)")
+            assert conn.execute(probe, {"r": right}).scalar_one() is False
+    finally:
+        owner.dispose()
+        _drop("khandaq_rt_inh")
+
+
+def test_a_forbidden_right_that_cannot_be_removed_fails_boot(runtime_engine, monkeypatch):
     import psycopg
 
     from khandaq import db_roles
 
-    def denied(conn, name, password):
-        raise psycopg.errors.InsufficientPrivilege("permission denied to alter role")
+    real_run = db_roles._run
 
-    monkeypatch.setattr(db_roles, "_sync_password", denied)
-    _make_role("CREATE ROLE khandaq_rt_pw LOGIN PASSWORD 'right-one'")
+    def no_revoke(conn, template, **ids):
+        if template.startswith("REVOKE UPDATE ON TABLE"):
+            raise psycopg.errors.InsufficientPrivilege("must be owner of table audit_log")
+        real_run(conn, template, **ids)
+
+    owner = _owner()
+    with owner.begin() as conn:
+        conn.execute(text("GRANT UPDATE ON TABLE audit_log TO PUBLIC"))
+    monkeypatch.setattr(db_roles, "_run", no_revoke)
     try:
-        with pytest.raises(RuntimeError, match="password in KHANDAQ_DATABASE_URL does not work"):
-            _provision("khandaq_rt_pw", password="wrong-one")
-        assert _provision("khandaq_rt_pw", password="right-one") == "khandaq_rt_pw"
+        with pytest.raises(RuntimeError, match="REVOKE UPDATE ON TABLE audit_log FROM PUBLIC"):
+            _provision("khandaq_rt_stuck")
     finally:
-        _drop("khandaq_rt_pw")
+        with owner.begin() as conn:
+            conn.execute(text("REVOKE UPDATE ON TABLE audit_log FROM PUBLIC"))
+        owner.dispose()
+        _drop("khandaq_rt_stuck")

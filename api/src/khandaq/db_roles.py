@@ -15,12 +15,19 @@ can only work with rows:
 - read-only on ``alembic_version``.
 
 When both URLs name the same login (single-user installs, tests), there is nothing to restrict and
-this is a no-op. Re-running is safe: grants are re-applied and the password kept in sync.
+this is a no-op. Re-running is safe: grants are re-applied, and the result is checked against the
+login's *effective* rights (including anything inherited through ``PUBLIC``), failing boot if a
+forbidden right remains.
+
+The login is created with the URL's password on first boot only. An existing login's password and
+LOGIN attribute are never rewritten: a restart with an old URL must not undo an administrator's
+rotation or ``NOLOGIN``. If the URL no longer authenticates, boot fails with instructions instead.
 """
 
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from urllib.parse import unquote, urlsplit
 
 import psycopg
@@ -95,17 +102,15 @@ def ensure_runtime_role(conn: Connection, database_url: str) -> str | None:
                 f"runtime login {name!r} must be a plain login with no extra rights: "
                 + "; ".join(problems)
             )
-        try:  # keep the password in sync when allowed; an administrator may manage it instead
-            with conn.begin_nested():
-                _sync_password(conn, name, password)
-        except psycopg.errors.InsufficientPrivilege:
-            if not _can_log_in(database_url):
-                raise RuntimeError(
-                    f"runtime login {name!r} exists but the password in KHANDAQ_DATABASE_URL does "
-                    "not work, and the migration login may not change it: set the password to the "
-                    "one in KHANDAQ_DATABASE_URL as an administrator (or fix the URL)"
-                ) from None
-            log.info("runtime login %r is administrator-managed; its password works", name)
+        # Never rewrite an existing login's password or LOGIN: that would let a restart with a
+        # stale URL reverse an administrator's rotation or NOLOGIN. Verify the URL works instead.
+        if not _can_log_in(database_url):
+            raise RuntimeError(
+                f"runtime login {name!r} exists but KHANDAQ_DATABASE_URL cannot log in with it "
+                "(wrong password, or the login was disabled). Khandaq does not change an existing "
+                "login's password: as an administrator run ALTER ROLE ... PASSWORD to match the "
+                "URL, or fix the URL"
+            )
 
     db = conn.execute(text("SELECT current_database()")).scalar_one()
     _run(conn, "GRANT CONNECT ON DATABASE %I TO %I", db=db, name=name)
@@ -134,6 +139,7 @@ def ensure_runtime_role(conn: Connection, database_url: str) -> str | None:
         name=name,
     )
     _forbid_schema_create(conn, name)
+    _forbid_table_rights(conn, name)
     log.info("runtime login %r restricted to row access (append-only tables: insert/select)", name)
     return name
 
@@ -175,10 +181,6 @@ def _elevations(conn: Connection, name: str, owner: str) -> list[str]:
     return problems
 
 
-def _sync_password(conn: Connection, name: str, password: str) -> None:
-    _run(conn, "ALTER ROLE %I LOGIN PASSWORD %L", name=name, password=password)
-
-
 def _can_log_in(database_url: str) -> bool:
     """Does the runtime URL actually authenticate? (Used when we may not set its password.)"""
     engine = create_engine(database_url)
@@ -214,16 +216,61 @@ def _forbid_schema_create(conn: Connection, name: str) -> None:
             lambda: _run(conn, "REVOKE CREATE ON DATABASE %I FROM PUBLIC, %I", db=db, name=name),
             f"REVOKE CREATE ON DATABASE {db} FROM PUBLIC, {name}",
         ),
+        (  # PostgreSQL grants TEMPORARY to PUBLIC by default; temp tables are objects too
+            "SELECT has_database_privilege(:n, current_database(), 'TEMPORARY')",
+            lambda: _run(conn, "REVOKE TEMPORARY ON DATABASE %I FROM PUBLIC, %I", db=db, name=name),
+            f"REVOKE TEMPORARY ON DATABASE {db} FROM PUBLIC, {name}",
+        ),
     )
     for probe, revoke, advice in checks:
-        if not conn.execute(text(probe), {"n": name}).scalar_one():
-            continue
-        try:
-            with conn.begin_nested():
-                revoke()
-        except psycopg.errors.InsufficientPrivilege:
-            pass  # not the owner of the schema/database; the check below reports it
-        if conn.execute(text(probe), {"n": name}).scalar_one():
-            raise RuntimeError(
-                f"runtime login {name!r} can still create objects; as the owner run: {advice}"
+        _enforce(conn, name, probe, {}, revoke, advice)
+
+
+# Rights the runtime login must not hold, even when inherited through PUBLIC (a REVOKE from the
+# login alone leaves those in place). TRIGGER would let it attach a trigger that rewrites new rows.
+_FORBIDDEN_TABLE_RIGHTS = {
+    **{t: ("UPDATE", "DELETE", "TRUNCATE", "TRIGGER") for t in APPEND_ONLY_TABLES},
+    **{t: ("INSERT", "UPDATE", "DELETE", "TRUNCATE", "TRIGGER") for t in READ_ONLY_TABLES},
+}
+
+
+def _forbid_table_rights(conn: Connection, name: str) -> None:
+    """Check the login's *effective* rights on the append-only and read-only tables; remove a grant
+    to PUBLIC that gives it a forbidden one, and refuse to serve if one remains."""
+    for table, rights in _FORBIDDEN_TABLE_RIGHTS.items():
+        for right in rights:
+
+            def revoke(table: str = table, right: str = right) -> None:
+                _run(conn, f"REVOKE {right} ON TABLE %I FROM PUBLIC, %I", t=table, name=name)
+
+            _enforce(
+                conn,
+                name,
+                "SELECT has_table_privilege(:n, :t, :r)",
+                {"t": f"public.{table}", "r": right},
+                revoke,
+                f"REVOKE {right} ON TABLE {table} FROM PUBLIC, {name}",
             )
+
+
+def _enforce(
+    conn: Connection,
+    name: str,
+    probe: str,
+    params: dict[str, str],
+    revoke: Callable[[], None],
+    advice: str,
+) -> None:
+    """If ``probe`` says the login holds a forbidden right, revoke it (in a savepoint) and check
+    again; fail boot with the exact command for the owner when it cannot be removed from here."""
+    if not conn.execute(text(probe), {"n": name, **params}).scalar_one():
+        return
+    try:
+        with conn.begin_nested():
+            revoke()
+    except psycopg.errors.InsufficientPrivilege:
+        pass  # not the owner of the object; the check below reports it
+    if conn.execute(text(probe), {"n": name, **params}).scalar_one():
+        raise RuntimeError(
+            f"runtime login {name!r} still holds a forbidden right; as the owner run: {advice}"
+        )

@@ -82,7 +82,7 @@ rendered file to `khandaq-stg`) and use `…/realms/khandaq-stg` as its issuer.
   |---|---|
   | `KHANDAQ_ENV` | `prod` |
   | `KHANDAQ_MIGRATION_DATABASE_URL` | `postgresql+psycopg://khandaq:<pw>@srv-captain--khandaq-db:5432/khandaq` (owner; migrations) |
-  | `KHANDAQ_DATABASE_URL` | `postgresql+psycopg://khandaq_app:<app pw>@srv-captain--khandaq-db:5432/khandaq` — a **separate runtime login with its own password** (`openssl rand -hex 24`). The API creates it on every boot with row access only, so a compromised API cannot rewrite or truncate the audit/evidence/ledger tables or disable their triggers. The API drops the owner URL before it starts serving. |
+  | `KHANDAQ_DATABASE_URL` | `postgresql+psycopg://khandaq_app:<app pw>@srv-captain--khandaq-db:5432/khandaq` — a **separate runtime login with its own password** (`openssl rand -hex 24`). The API creates it on first boot and re-checks it on every boot: row access only, so a compromised API cannot rewrite or truncate the audit/evidence/ledger tables or disable their triggers. It never changes an existing login's password; to rotate it, run `ALTER ROLE khandaq_app PASSWORD '…'` as the owner, then update this URL. The API drops the owner URL before it starts serving. |
   | `KHANDAQ_SESSION_SECRET` | `openssl rand -base64 48` |
   | `KHANDAQ_OBJECT_STORE_URL` | `s3://khandaq-evidence` |
   | `KHANDAQ_OBJECT_STORE_ENDPOINT` | `http://srv-captain--khandaq-rustfs:9000` |
