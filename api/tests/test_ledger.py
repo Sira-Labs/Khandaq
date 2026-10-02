@@ -11,6 +11,7 @@ import os
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text, update
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 TEST_URL = os.environ.get("KHANDAQ_TEST_DATABASE_URL")
@@ -103,15 +104,82 @@ def test_tampering_is_detected(ctx):
                 sha256=f"sha256:{i * 7:064x}",
             )
         s.commit()
-        # Tamper: flip the stored entry_hash of seq 2.
-        s.execute(
+
+        tamper = (
             update(m.LedgerEntry)
             .where(m.LedgerEntry.engagement_id == eng_id, m.LedgerEntry.seq == 2)
             .values(entry_hash="sha256:tampered")
         )
+        # Layer 1: the table is append-only, so an ordinary UPDATE is refused outright.
+        with pytest.raises(DBAPIError, match="append-only"):
+            s.execute(tamper)
+        s.rollback()
+
+        # Layer 2: an owner who disables the trigger can rewrite a row — the chain still shows it.
+        s.execute(
+            text("ALTER TABLE ledger_entries DISABLE TRIGGER ledger_entries_no_update_delete")
+        )
+        s.execute(tamper)
+        s.execute(text("ALTER TABLE ledger_entries ENABLE TRIGGER ledger_entries_no_update_delete"))
         s.commit()
 
     r = client.post(f"/api/engagements/{eng_id}/ledger/verify", headers=OWNER)
     body = r.json()
     assert body["ok"] is False
     assert body["broken_at"] == 2
+
+
+def test_concurrent_seals_queue_instead_of_failing(ctx):
+    """Two runs sealing at once used to compute the same seq; the loser's transaction failed."""
+    import threading
+
+    client, eng = ctx
+    from khandaq import ledger as ledger_svc
+
+    eng_id, run_id = _engagement_with_run(client, eng, "ledger-race")
+    seal = dict(engagement_id=eng_id, run_id=run_id, kind="raw")
+    first, second = Session(eng), Session(eng)
+    outcome: dict = {}
+
+    def seal_second():
+        try:
+            ledger_svc.seal_evidence(second, object_key="b", sha256=f"sha256:{2:064x}", **seal)
+            second.commit()
+            outcome["ok"] = True
+        except DBAPIError as exc:  # pragma: no cover - the bug this test guards against
+            outcome["error"] = exc
+
+    try:
+        ledger_svc.seal_evidence(first, object_key="a", sha256=f"sha256:{1:064x}", **seal)
+        worker = threading.Thread(target=seal_second)
+        worker.start()
+        worker.join(0.5)
+        assert worker.is_alive(), "the second seal should wait for the first transaction"
+        first.commit()
+        worker.join(10)
+    finally:
+        first.close()
+        second.close()
+
+    assert outcome == {"ok": True}
+    with Session(eng) as s:
+        status = ledger_svc.chain_status(s, eng_id)
+    assert status["verify"]["ok"] and [e["seq"] for e in status["entries"]] == [1, 2]
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "DELETE FROM evidence",
+        "UPDATE evidence SET object_key = 'swapped'",
+        "DELETE FROM ledger_entries",
+        "TRUNCATE evidence CASCADE",
+        "TRUNCATE ledger_entries",
+        "TRUNCATE audit_log",
+    ],
+)
+def test_evidence_ledger_and_audit_are_append_only(ctx, sql):
+    _, eng = ctx
+    with pytest.raises(DBAPIError, match="append-only"):
+        with eng.begin() as conn:
+            conn.execute(text(sql))
