@@ -132,8 +132,9 @@ def create_and_execute_run(
     session.commit()
     run_id = run.id
 
-    request = build_run_request(run_id, eng.id, target.type, target.spec, params)
     try:
+        # Inside the boundary: the commit above expired `target`, and reloading it can fail too.
+        request = build_run_request(run_id, eng.id, target.type, target.spec, params)
         artifacts = get_runner(manifest, get_settings()).run(request)
     except Exception as exc:  # third-party tool execution: every failure is recorded, never lost
         return _fail(access, run_id, f"adapter failed: {exc}")

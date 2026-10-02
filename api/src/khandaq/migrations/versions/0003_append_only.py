@@ -49,6 +49,57 @@ CREATE TRIGGER ledger_entries_no_truncate
     FOR EACH STATEMENT EXECUTE FUNCTION khandaq_append_only();
 """
 
+# Before demoting duplicates, fold their evidence and tool attribution onto the row that stays
+# canonical — the inbox and reports read only canonical rows, so anything left on a demoted row
+# would vanish from both. Same ranking as the linking step; groups without duplicates are untouched.
+_MERGE_EXISTING_DUPLICATE_ATTRIBUTION = """
+WITH ranked AS (
+    SELECT id, body,
+           first_value(id) OVER (
+               PARTITION BY engagement_id, fingerprint ORDER BY created_at, id
+           ) AS keep_id
+    FROM findings
+    WHERE canonical
+),
+evidence AS (
+    SELECT r.keep_id,
+           COALESCE(jsonb_agg(DISTINCT e.value) FILTER (WHERE e.value IS NOT NULL), '[]'::jsonb)
+               AS evidence
+    FROM ranked AS r
+    LEFT JOIN LATERAL jsonb_array_elements(
+        COALESCE(r.body #> '{x-khandaq,evidence}', '[]'::jsonb)
+    ) AS e(value) ON true
+    GROUP BY r.keep_id
+),
+tools AS (
+    SELECT r.keep_id,
+           COALESCE(jsonb_agg(DISTINCT t.tool) FILTER (WHERE t.tool IS NOT NULL), '[]'::jsonb)
+               AS also_found_by
+    FROM ranked AS r
+    JOIN findings AS k ON k.id = r.keep_id
+    LEFT JOIN LATERAL (
+        SELECT value FROM jsonb_array_elements_text(
+            COALESCE(r.body #> '{x-khandaq,also_found_by}', '[]'::jsonb)
+        )
+        UNION
+        SELECT r.body #>> '{source,tool}' WHERE r.id <> r.keep_id
+    ) AS t(tool) ON t.tool IS DISTINCT FROM (k.body #>> '{source,tool}')
+    GROUP BY r.keep_id
+)
+UPDATE findings AS k
+SET body = jsonb_set(
+    k.body,
+    '{x-khandaq}',
+    COALESCE(k.body -> 'x-khandaq', '{}'::jsonb)
+        || jsonb_build_object('evidence', ev.evidence, 'also_found_by', tl.also_found_by),
+    true
+)
+FROM evidence AS ev
+JOIN tools AS tl ON tl.keep_id = ev.keep_id
+WHERE k.id = ev.keep_id
+  AND EXISTS (SELECT 1 FROM ranked AS d WHERE d.keep_id = k.id AND d.id <> k.id);
+"""
+
 _LINK_EXISTING_DUPLICATES = """
 WITH ranked AS (
     SELECT id,
@@ -67,6 +118,7 @@ WHERE f.id = r.id AND r.id <> r.keep_id;
 
 def upgrade() -> None:
     op.execute(_APPEND_ONLY)
+    op.execute(_MERGE_EXISTING_DUPLICATE_ATTRIBUTION)
     op.execute(_LINK_EXISTING_DUPLICATES)
     # IF NOT EXISTS: on a fresh database 0001's create_all already built it from the model.
     op.execute(
