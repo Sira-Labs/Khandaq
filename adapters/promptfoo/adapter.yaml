@@ -1,0 +1,19 @@
+# promptfoo adapter (spec 010). promptfoo is OpenAI's LLM eval/red-team tool (MIT).
+name: promptfoo
+version: "0.118.0"
+image: ghcr.io/sira-labs/khandaq-adapter-promptfoo:0.118.0
+entrypoint: /usr/local/bin/wrap.py
+phases:
+  - 03-scanning
+  - 04-prompt-injection
+frameworks:
+  - owasp-llm-2026
+  - atlas
+severity_table:
+  critical: critical
+  high: high
+  medium: medium
+  low: low
+resources:
+  cpu: "1"
+  memory: 2Gi
