@@ -13,7 +13,12 @@ export function Engagement({ engagementId }: { engagementId: string }) {
 
   const [targetId, setTargetId] = useState("");
   const [rate, setRate] = useState("");
-  const [preflight, setPreflight] = useState<{ allowed: boolean; reason: string | null } | null>(null);
+  // A pre-flight answer is only valid for the exact target + params it checked (key below).
+  const [checked, setChecked] = useState<{
+    key: string;
+    allowed: boolean;
+    reason: string | null;
+  } | null>(null);
   // The same params go to the pre-flight and the run, so what was checked is what runs. A rate is
   // required when the rules of engagement cap it (spec 002 §6).
   const params: RunParams = rate.trim() === "" ? {} : { rate_per_minute: Number(rate) };
@@ -21,22 +26,25 @@ export function Engagement({ engagementId }: { engagementId: string }) {
 
   useEffect(() => {
     if (!targetId) {
-      setPreflight(null);
+      setChecked(null);
       return;
     }
+    const key = `${targetId}|${paramsKey}`;
     let active = true;
     api
       .scopeCheck(engagementId, targetId, JSON.parse(paramsKey) as RunParams)
       .then((r) => {
-        if (active) setPreflight(r);
+        if (active) setChecked({ key, ...r });
       })
       .catch((err: Error) => {
-        if (active) setPreflight({ allowed: false, reason: `pre-flight failed: ${err.message}` });
+        if (active) setChecked({ key, allowed: false, reason: `pre-flight failed: ${err.message}` });
       });
     return () => {
       active = false;
     };
   }, [engagementId, targetId, paramsKey]);
+
+  const preflight = checked && checked.key === `${targetId}|${paramsKey}` ? checked : null;
 
   const run = useMutation({
     mutationFn: () => api.createRun(engagementId, "echo", targetId, params),

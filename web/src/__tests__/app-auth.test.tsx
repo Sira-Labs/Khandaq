@@ -16,12 +16,18 @@ const SESSION_ME = {
 // --- App shell: sign-in states ------------------------------------------------------------------
 
 const meMock = vi.fn();
+const logoutMock = vi.fn();
 
 vi.mock("../api", async (orig) => {
   const actual = await orig<typeof import("../api")>();
   return {
     ...actual,
-    api: { ...actual.api, me: () => meMock(), listEngagements: vi.fn(async () => []) },
+    api: {
+      ...actual.api,
+      me: () => meMock(),
+      logout: () => logoutMock(),
+      listEngagements: vi.fn(async () => []),
+    },
   };
 });
 
@@ -38,6 +44,7 @@ async function renderApp() {
 describe("app sign-in", () => {
   beforeEach(() => {
     meMock.mockReset();
+    logoutMock.mockReset();
     window.history.replaceState(null, "", "/eng/eng_1");
   });
 
@@ -69,4 +76,40 @@ describe("app sign-in", () => {
     await renderApp();
     expect(await screen.findByLabelText("dev user email")).toBeInTheDocument();
   });
+
+  it("stays signed in and says so when sign-out fails", async () => {
+    const { fireEvent } = await import("@testing-library/react");
+    meMock.mockResolvedValue(SESSION_ME);
+    logoutMock.mockRejectedValue(new ApiError(503, "service unavailable"));
+    const original = window.location;
+    const assign = vi.fn();
+    Object.defineProperty(window, "location", {
+      value: { ...original, assign, search: original.search, pathname: original.pathname },
+      writable: true,
+      configurable: true,
+    });
+    try {
+      await renderApp();
+      fireEvent.click(await screen.findByRole("button", { name: "Sign out" }));
+      expect(await screen.findByRole("alert")).toHaveTextContent("Sign-out failed");
+      expect(assign).not.toHaveBeenCalled();
+      expect(screen.getByRole("button", { name: "Sign out" })).toBeEnabled();
+    } finally {
+      Object.defineProperty(window, "location", { value: original, writable: true, configurable: true });
+    }
+  });
+
+  it("shows the refusal even when an earlier session still answers /me", async () => {
+    window.history.replaceState(null, "", "/?signin=denied");
+    meMock.mockResolvedValue(SESSION_ME);
+    await renderApp();
+    expect(await screen.findByRole("alert")).toHaveTextContent("no access");
+  });
+
+  it("retries a transient /me failure instead of showing an outage", async () => {
+    meMock.mockRejectedValueOnce(new ApiError(502, "bad gateway")).mockResolvedValue(SESSION_ME);
+    await renderApp();
+    expect(await screen.findByText("Alice", {}, { timeout: 4000 })).toBeInTheDocument();
+  });
 });
+

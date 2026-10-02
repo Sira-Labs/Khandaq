@@ -31,6 +31,7 @@ function DevIdentity() {
 
 function SignedIn({ me }: { me: Me }) {
   const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState<string | null>(null);
   if (me.auth === "dev") return <DevIdentity />;
   return (
     <div className="flex items-center gap-3 text-sm">
@@ -41,15 +42,25 @@ function SignedIn({ me }: { me: Me }) {
           disabled={busy}
           onClick={async () => {
             setBusy(true);
+            setFailed(null);
             try {
               await api.logout();
-            } finally {
-              window.location.assign("/");
+            } catch (err) {
+              // The server session is still live: stay here and say so, rather than pretend.
+              setFailed(err instanceof Error ? err.message : String(err));
+              setBusy(false);
+              return;
             }
+            window.location.assign("/");
           }}
         >
           Sign out
         </button>
+      )}
+      {failed && (
+        <span role="alert" className="text-red-400">
+          Sign-out failed ({failed}); try again.
+        </span>
       )}
     </div>
   );
@@ -82,7 +93,14 @@ function SignIn({ denied }: { denied: boolean }) {
 
 export function App() {
   const path = usePath();
-  const me = useQuery({ queryKey: ["me"], queryFn: api.me, retry: false });
+  const me = useQuery({
+    queryKey: ["me"],
+    queryFn: api.me,
+    // A blip (network, 5xx) should not replace the console with an error; "not signed in" (401) and
+    // "no access" (403) are answers, not failures, so they are never retried.
+    retry: (failures, err) =>
+      !(err instanceof ApiError && (err.status === 401 || err.status === 403)) && failures < 2,
+  });
   const deniedLanding = new URLSearchParams(window.location.search).get("signin") === "denied";
 
   let body: React.ReactNode;
@@ -99,6 +117,9 @@ export function App() {
         </p>
       );
     }
+  } else if (deniedLanding) {
+    // The callback refused the account; a still-valid earlier session must not hide that.
+    body = <SignIn denied />;
   } else {
     const findings = path.match(/^\/eng\/([^/]+)\/findings$/);
     const detail = path.match(/^\/eng\/([^/]+)$/);
@@ -113,7 +134,7 @@ export function App() {
         <button className="text-xl font-semibold text-[var(--fg)]" onClick={() => navigate("/")}>
           Khandaq
         </button>
-        {me.data && <SignedIn me={me.data} />}
+        {me.data && !me.error && <SignedIn me={me.data} />}
       </header>
       <main className="mx-auto max-w-5xl px-6 py-8">{body}</main>
     </div>

@@ -78,4 +78,26 @@ describe("Engagement run launcher", () => {
       expect(api.createRun).toHaveBeenCalledWith("eng_1", "echo", "tgt_1", { rate_per_minute: 30 }),
     );
   });
+
+  it("does not let an approval for one rate authorise another", async () => {
+    const { api } = await import("../api");
+    vi.mocked(api.scopeCheck).mockImplementation(async (_e, _t, params) =>
+      (params as { rate_per_minute?: number }).rate_per_minute === 30
+        ? { allowed: true, reason: null }
+        : new Promise(() => {}), // the new check has not answered yet
+    );
+    const { Engagement } = await import("../pages/Engagement");
+    const { fireEvent } = await import("@testing-library/react");
+    render(wrap(<Engagement engagementId="eng_1" />));
+
+    await screen.findByText("Acme");
+    fireEvent.change(screen.getByLabelText("rate per minute"), { target: { value: "30" } });
+    fireEvent.change(screen.getByLabelText("target"), { target: { value: "tgt_1" } });
+    const run = screen.getByRole("button", { name: "Run" });
+    await waitFor(() => expect(run).toBeEnabled());
+
+    fireEvent.change(screen.getByLabelText("rate per minute"), { target: { value: "999" } });
+    expect(run).toBeDisabled(); // the approval was for 30/min, not 999/min
+  });
 });
+
