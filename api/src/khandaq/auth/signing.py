@@ -38,7 +38,11 @@ def verify(token: str, *, secret: str) -> dict | None:
     except ValueError:
         return None
     expected = hmac.new(secret.encode(), data.encode(), hashlib.sha256).digest()
-    if not hmac.compare_digest(_b64d(sig), expected):
+    try:
+        given = _b64d(sig)
+    except ValueError:  # binascii.Error: a malformed cookie is a bad request, not a server error
+        return None
+    if not hmac.compare_digest(given, expected):
         return None
     try:
         payload = json.loads(_b64d(data))

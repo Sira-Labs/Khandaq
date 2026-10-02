@@ -128,6 +128,12 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
   undeclared rate under a cap; a midnight window opening the previous night; a mistyped zone read as
   UTC) and a string rate crashed with a 500 and no audit record. Targets are now canonicalised and
   must be unambiguous; scope documents are validated on write; evaluation never raises. Spec 002 §6.
+- 2026-10-02 — Full code review (4 parallel reviewers, findings verified before fixing). Auth: the
+  realm brokers any Google/GitHub account and every login became an org `member` able to create
+  engagements and start runs → sign-in now needs a verified email on `KHANDAQ_ALLOWED_EMAILS` (or
+  `KHANDAQ_ADMIN_EMAIL`), mirroring Sahifa's `SAHIFA_ALLOWED_EMAILS`; `KHANDAQ_ENV` is strict
+  (typos such as `production` would have enabled the dev stub); prod reads only the `__Host-` cookie;
+  token attribution moved off a `ContextVar` that never crossed FastAPI's threadpool.
 - 2026-10-02 — Staging naming + worker boot fix: staging is deployed as `khandaq-stg-<role>` on
   `https://khandaq-stg.siralabs.org` (the one-click's `<app>-<role>` shape); the docs said
   `khandaq-<role>-stg` and showed only production values. `deploy/caprover.md` now has a

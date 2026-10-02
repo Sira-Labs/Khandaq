@@ -93,6 +93,7 @@ rendered file to `khandaq-stg`) and use `…/realms/khandaq-stg` as its issuer.
   | `KHANDAQ_OIDC_CLIENT_ID` | `khandaq-api` (the default; the realm's client, not this app's name) |
   | `KHANDAQ_OIDC_CLIENT_SECRET` | the realm's `khandaq-api` client secret (section 5) |
   | `KHANDAQ_ADMIN_EMAIL` | the owner's email; becomes admin at first verified sign-in |
+  | `KHANDAQ_ALLOWED_EMAILS` | other people who may sign in, comma-separated (empty = owner only). The realm brokers any Google/GitHub account; everyone not listed lands on "no access" and is audited as `auth.denied` |
   | `KHANDAQ_SIGSTORE` | `off` (default) or `on` |
 
   With `KHANDAQ_ENV=prod` the API refuses to start without the DB, session, evidence-key and OIDC
