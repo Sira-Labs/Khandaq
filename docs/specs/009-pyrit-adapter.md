@@ -37,6 +37,13 @@ deploy-verified.
 > Live PyRIT execution is deploy-verified (needs a Docker daemon + target). Adapter contract tests run
 > with `--import-mode=importlib` so each adapter's `wrap.py` loads in isolation.
 
+> Fail closed (code review, 2026-10-02): each line is a PyRIT `AttackResult`
+> (`model_dump(mode="json")` + the wrapper's `attack_strategy`), closed by
+> `{"khandaq": "completion", "results": N}`. `outcome` decides (`success` → finding; `error`/
+> `undetermined` decide nothing); without one the `last_score` string value decides ("true", or a
+> float ≥ 0.5). A truncated line, a missing or mismatched completion record, an empty run, or a
+> run where no attack reached a verdict raises `ReportError`, and `main()` exits non-zero.
+
 ## Out of scope
 
 Live PyRIT execution (deploy-verified; needs a Docker daemon + target); multi-turn orchestration tuning.

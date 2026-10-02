@@ -32,6 +32,13 @@ misbehaved / the attack succeeded) into a canonical finding mapped to the framew
 
 > Live promptfoo execution is deploy-verified (needs a Docker daemon + target).
 
+> Fail closed (code review, 2026-10-02): only a failed assertion (`failureReason` 1) is a
+> finding; an errored test (`failureReason` 2: provider error, timeout, auth) is not. Empty or
+> non-JSON output, no result list, a `stats` count that disagrees with the results, no results,
+> or every test errored raises `ReportError`, and `main()` exits non-zero without writing
+> `findings.jsonl`. OWASP LLM 2025 ids are added where unambiguous (LLM02 PII, LLM07 prompt
+> extraction).
+
 ## Out of scope
 
 Live promptfoo execution (deploy-verified); promptfoo's own compliance presets (we map ourselves).
