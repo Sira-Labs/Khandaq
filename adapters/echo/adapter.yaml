@@ -1,0 +1,17 @@
+# Reference manifest for the built-in in-process echo adapter (spec 005).
+# Real tool adapters add their own directory with a Dockerfile pinned to an exact upstream version.
+name: echo
+version: "0.1.0"           # exact version (ADR-0001); never a floating tag like "latest"
+builtin: true             # runs in-process; no container image
+phases:
+  - 04-prompt-injection
+frameworks:
+  - owasp-llm-2026
+  - atlas
+# native severity -> canonical five-level scale (ADR-0004)
+severity_table:
+  info: info
+  low: low
+  medium: medium
+  high: high
+  critical: critical

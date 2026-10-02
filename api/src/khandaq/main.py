@@ -13,7 +13,7 @@ from fastapi import FastAPI
 
 from . import __version__
 from .db import schema_revision
-from .routers import engagements, ledger
+from .routers import engagements, ledger, runs
 from .settings import get_settings
 
 logging.basicConfig(level=logging.INFO)
@@ -50,6 +50,7 @@ def create_app() -> FastAPI:
 
     app.include_router(engagements.router)
     app.include_router(ledger.router)
+    app.include_router(runs.router)
 
     log.info("khandaq-api %s starting (env=%s, role=%s)", __version__, settings.env, settings.role)
     return app

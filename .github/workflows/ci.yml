@@ -48,6 +48,16 @@ jobs:
       - run: . .venv/bin/activate && maturin develop
       - run: . .venv/bin/activate && pytest -q
 
+  adapters:
+    name: adapter manifests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.12" }
+      - run: pip install pyyaml
+      - run: python adapters/_tooling/validate_manifests.py
+
   api:
     name: python api
     runs-on: ubuntu-latest
