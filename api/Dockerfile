@@ -27,6 +27,10 @@ COPY api/docker-entrypoint.sh /usr/local/bin/khandaq-entrypoint
 RUN chmod +x /usr/local/bin/khandaq-entrypoint
 USER khandaq
 EXPOSE 8000
+# The same image runs the worker (KHANDAQ_ROLE=worker), which serves no HTTP: probing :8000 there
+# would mark it unhealthy and Swarm/CapRover would keep replacing it. The worker is the container's
+# main process, so the container already exits if it dies.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/health').status==200 else 1)" || exit 1
+  CMD if [ "$KHANDAQ_ROLE" = "worker" ]; then exit 0; fi; \
+      python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/health').status==200 else 1)" || exit 1
 ENTRYPOINT ["khandaq-entrypoint"]

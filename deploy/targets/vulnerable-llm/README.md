@@ -6,4 +6,5 @@ self-contained target. **Not a real model. Never expose it. Authorised self-test
 - `POST /v1/chat/completions` — OpenAI-style; leaks a fake system prompt on obvious probes.
 - `GET /health`
 
-Run: `docker build -t khandaq-vulnerable-target . && docker run -p 8900:8900 khandaq-vulnerable-target`
+Run (loopback only — never publish it on a public interface):
+`docker build -t khandaq-vulnerable-target . && docker run -p 127.0.0.1:8900:8900 khandaq-vulnerable-target`

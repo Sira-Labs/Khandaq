@@ -19,7 +19,8 @@ Three paths:
 ```bash
 cd deploy
 cp .env.example .env         # fill in secrets; prod refuses placeholders
-docker compose up            # api, worker, postgres, rustfs, (optional) keycloak, + bundled target
+docker compose up            # api, worker, postgres, rustfs, web on http://127.0.0.1:8080
+docker compose --profile demo up   # … plus the bundled vulnerable target for `make demo`
 ```
 
 This brings up the control plane, a Postgres, a RustFS object store for evidence, and the bundled

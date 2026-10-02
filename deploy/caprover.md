@@ -82,7 +82,7 @@ rendered file to `khandaq-stg`) and use `…/realms/khandaq-stg` as its issuer.
   |---|---|
   | `KHANDAQ_ENV` | `prod` |
   | `KHANDAQ_MIGRATION_DATABASE_URL` | `postgresql+psycopg://khandaq:<pw>@srv-captain--khandaq-db:5432/khandaq` (owner; migrations) |
-  | `KHANDAQ_DATABASE_URL` | `postgresql+psycopg://khandaq_app:<app pw>@srv-captain--khandaq-db:5432/khandaq` (app login) |
+  | `KHANDAQ_DATABASE_URL` | `postgresql+psycopg://khandaq:<pw>@srv-captain--khandaq-db:5432/khandaq` (same login; a restricted app role is optional hardening you create yourself — nothing creates `khandaq_app` for you) |
   | `KHANDAQ_SESSION_SECRET` | `openssl rand -base64 48` |
   | `KHANDAQ_OBJECT_STORE_URL` | `s3://khandaq-evidence` |
   | `KHANDAQ_OBJECT_STORE_ENDPOINT` | `http://srv-captain--khandaq-rustfs:9000` |
