@@ -15,8 +15,8 @@ pub use dedup::{dedup, DedupResult};
 pub use finding::{validate, Finding, Mapping, SchemaError, Source, XKhandaq, SCHEMA_ID};
 pub use fingerprint::fingerprint;
 pub use ledger::{
-    append as ledger_append, entry_hash, root as ledger_root, verify as ledger_verify, LedgerEntry,
-    VerifyResult,
+    append as ledger_append, entry_hash, root as ledger_root, verify as ledger_verify,
+    verify_pinned as ledger_verify_pinned, LedgerEntry, LedgerError, VerifyResult,
 };
 pub use mapping::{map_frameworks, navigator_layer, Mappings};
 pub use severity::{AdapterSeverityTable, Severity};
