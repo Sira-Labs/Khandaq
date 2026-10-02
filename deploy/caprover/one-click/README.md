@@ -20,7 +20,11 @@ generated for you and reused across services.
 - An OIDC realm with a confidential **`khandaq-api`** client (Keycloak recommended, ADR-0005). You
   provide its **issuer URL** and **client secret** in the form. The ready-made realm export at
   [`../../keycloak/`](../../keycloak/) sets up exactly this client (plus Google/GitHub and passkeys) —
-  render and import it first, then copy the issuer URL and client secret into the form.
+  render it with the **exact public URL you will enter in the form** (your custom domain, e.g.
+  `https://khandaq-stg.siralabs.org`), import it with *Create realm*, then copy the issuer URL and
+  client secret into the form.
+- Pick the app name per environment: `khandaq-stg` for staging, `khandaq` for production — the apps
+  become `<app>-api`, `<app>-web`, … (deploy/caprover.md, "Per-environment values").
 
 ## Deploy
 
@@ -30,8 +34,11 @@ generated for you and reused across services.
    (or add this repo as a custom one-click repository).
 3. Fill the form: app name, image tag, owner email, the public URL, and the OIDC issuer + client
    secret. Leave the generated secrets as-is.
-4. Deploy. Then open **`<app>-web`**, connect a domain and enable HTTPS, and set that HTTPS URL as the
-   redirect URI in your OIDC realm (it must match the Public URL you entered).
+4. Deploy. Then open **`<app>-web`** (the domain goes on the web app, never on `<app>-api`), connect
+   the domain and enable HTTPS. That origin, the Public URL you entered, and the realm's redirect URI
+   (`<origin>/api/auth/callback`) must all be the same — otherwise Keycloak answers *"Invalid
+   parameter: redirect_uri"*. To fix a mismatch, edit `KHANDAQ_PUBLIC_URL` on `<app>-api` and the
+   realm client together.
 5. Sign in with the owner email to claim the admin account.
 
 ## After deploy — do these

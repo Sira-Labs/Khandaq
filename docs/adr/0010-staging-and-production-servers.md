@@ -13,9 +13,11 @@ evidence, client findings), so it must follow the same discipline — arguably m
 
 ## Decision
 
-- **Two CapRover servers.** Staging/tools runs `khandaq-*-stg` apps at `khandaq-stg.siralabs.org` with
+- **Two CapRover servers.** Staging/tools runs `khandaq-stg-*` apps at `khandaq-stg.siralabs.org` with
   test data only. Production runs `khandaq-*` apps at `khandaq.siralabs.org` with real engagement data,
-  its own object store, and Keycloak.
+  its own object store, and Keycloak. (Amended 2026-10-02: staging apps were first written as
+  `khandaq-*-stg`; the CapRover one-click names apps `<app>-<role>`, so staging deployed as
+  `khandaq-stg-api` etc. and the docs now follow that.)
 - **Promotion, not rebuild.** `release.yml` builds and scans images once per commit and deploys `main`
   to staging; `promote.yml` deploys the **same digests** to production after the commit is on `main`,
   staging serves it, and the owner approves (a required reviewer on the `production` environment).
