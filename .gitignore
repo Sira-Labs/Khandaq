@@ -31,3 +31,6 @@ node_modules/
 *.log
 .DS_Store
 /tmp/
+
+# web build info
+*.tsbuildinfo

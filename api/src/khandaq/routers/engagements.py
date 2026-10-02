@@ -25,6 +25,7 @@ from ..schemas import (
     AuditOut,
     EngagementCreate,
     EngagementOut,
+    MemberOut,
     ScopeCheckIn,
     ScopeCheckOut,
     ScopeIn,
@@ -64,9 +65,52 @@ def create_engagement(
     return eng
 
 
+@router.get("", response_model=list[EngagementOut])
+def list_engagements(
+    user: User = Depends(current_user),
+    session: Session = Depends(get_session),
+) -> list[Engagement]:
+    """Engagements the caller can see: all for an org admin, else those they are a member of."""
+    if user.org_role == "admin":
+        rows = session.scalars(select(Engagement).order_by(Engagement.created_at.desc())).all()
+    else:
+        rows = session.scalars(
+            select(Engagement)
+            .join(EngagementMember, EngagementMember.engagement_id == Engagement.id)
+            .where(EngagementMember.user_id == user.id)
+            .order_by(Engagement.created_at.desc())
+        ).all()
+    return list(rows)
+
+
 @router.get("/{engagement_id}", response_model=EngagementOut)
 def get_engagement(access: EngagementAccess = Depends(require_engagement_role())) -> Engagement:
     return access.engagement
+
+
+@router.get("/{engagement_id}/targets", response_model=list[TargetOut])
+def list_targets(access: EngagementAccess = Depends(require_engagement_role())) -> list[Target]:
+    rows = access.session.scalars(
+        select(Target).where(Target.engagement_id == access.engagement.id)
+    ).all()
+    return list(rows)
+
+
+@router.get("/{engagement_id}/scope", response_model=ScopeOut | None)
+def get_scope(access: EngagementAccess = Depends(require_engagement_role())) -> Scope | None:
+    return access.session.get(Scope, access.engagement.id)
+
+
+@router.get("/{engagement_id}/members", response_model=list[MemberOut])
+def list_members(access: EngagementAccess = Depends(require_engagement_role())) -> list[MemberOut]:
+    rows = access.session.scalars(
+        select(EngagementMember).where(EngagementMember.engagement_id == access.engagement.id)
+    ).all()
+    out = []
+    for m in rows:
+        user = access.session.get(User, m.user_id)
+        out.append(MemberOut(user_id=m.user_id, role=m.role, email=user.email if user else None))
+    return out
 
 
 @router.post("/{engagement_id}/targets", response_model=TargetOut, status_code=201)

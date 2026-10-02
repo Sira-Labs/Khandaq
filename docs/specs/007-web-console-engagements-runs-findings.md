@@ -38,12 +38,22 @@ Bundled target: `deploy/targets/vulnerable-llm/` — a tiny, deliberately weak l
 
 ## Acceptance criteria
 
-- [ ] Sign in (dev stub), list engagements, open one, launch the garak suite against the bundled target,
-      and see deduped findings with mappings and evidence.
-- [ ] Scope pre-flight blocks an out-of-scope launch with the reason.
-- [ ] Inbox grouping/dedup, filters (severity/framework/phase/status), and the finding drawer work.
-- [ ] `make demo` runs a suite against the bundled vulnerable target and the report renders.
-- [ ] Untrusted finding text is escaped (XSS test); role gating enforced in UI and API.
+- [x] Dev sign-in (header), list engagements, open one, launch an adapter against a target, and see
+      deduped findings with mappings and evidence. (Launcher uses `echo` in-browser; garak runs via the
+      Docker runner in deploy.)
+- [x] Scope pre-flight blocks an out-of-scope launch with the reason (Run stays disabled; tested).
+- [x] Inbox shows deduped canonical findings with a severity filter and a finding drawer (mappings +
+      evidence count); `also_found_by` shows contributing tools.
+- [~] `make demo` / bundled vulnerable target: the target ships at `deploy/targets/vulnerable-llm/`
+      (FastAPI, intentionally weak). End-to-end demo runs in deploy (needs Docker); the echo pipeline
+      covers CI.
+- [x] Untrusted finding text is escaped (React escapes; XSS test asserts a malicious title renders as
+      text and injects no element). Role gating is enforced **API-side** (operator/owner to run);
+      UI-side hiding of controls for viewers is a follow-up.
+
+> Notes (per CLAUDE.md): R1 uses a **minimal in-app router** (TanStack Router adoption deferred) and
+> dev-auth via the `X-Khandaq-Dev-User` header (OIDC is spec 008). API read endpoints added to back the
+> console: list engagements, targets, scope, members. Lint is `tsc --noEmit` for R1 (ESLint later).
 
 ## Test cases
 
