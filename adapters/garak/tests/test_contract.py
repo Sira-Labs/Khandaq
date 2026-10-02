@@ -7,8 +7,8 @@ running garak or a container. Needs `jsonschema` (pure Python).
 
 from __future__ import annotations
 
+import importlib.util
 import json
-import sys
 from pathlib import Path
 
 import jsonschema
@@ -18,8 +18,10 @@ ADAPTER = HERE.parent
 REPO = HERE.parents[2]
 SCHEMA = json.loads((REPO / "core/khandaq-core/schema/finding.schema.json").read_text())
 
-sys.path.insert(0, str(ADAPTER))
-import wrap  # noqa: E402
+# Load this adapter's wrap.py in isolation (each adapter ships its own wrap.py).
+_spec = importlib.util.spec_from_file_location("garak_wrap", ADAPTER / "wrap.py")
+wrap = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(wrap)
 
 
 def _findings():
