@@ -47,14 +47,20 @@ Scope document shape and the lock algorithm: `docs/architecture/04-engagement-sc
 
 ## Acceptance criteria
 
-- [ ] Full lifecycle `draft → active → closed` via the API, with the activation preconditions enforced.
-- [ ] Scope lock allows an in-scope target and **rejects** each of: unknown host, denied host, wrong
-      model id, out-of-window time, over-rate, prohibited technique — each with a distinct reason.
-- [ ] Default deny: a target matching no allow rule is rejected.
-- [ ] Changing an active engagement's scope is owner-only, audited, and bumps the version.
-- [ ] Every privileged action (create, activate, scope change, close, run rejection) appears in the
-      audit log; audit rows cannot be updated/deleted (from spec 001).
-- [ ] A user with no role on an engagement is refused (403) on every route.
+- [x] Full lifecycle `draft → active → closed` via the API, with the activation preconditions enforced.
+- [x] Scope lock allows an in-scope target and **rejects** each of: unknown host, denied host, wrong
+      model id, out-of-window time, over-rate, prohibited technique — each with a distinct reason
+      (exhaustive table in `tests/test_scope_eval.py`).
+- [x] Default deny: a target matching no allow rule is rejected.
+- [x] Changing an active engagement's scope is owner-only, audited, and bumps the version.
+- [x] Every privileged action (create, activate, scope change, close) appears in the audit log; audit
+      rows cannot be updated/deleted (from spec 001). (Run rejection audit lands with the run path, spec 005.)
+- [x] A user with no role on an engagement is refused (403).
+
+> Notes (recorded per CLAUDE.md): auth is a dev stub (`X-Khandaq-Dev-User` header) that **refuses to
+> authenticate in prod** (501) until OIDC lands (spec 008), so no insecure prod default ships. Org
+> admins are treated as engagement `owner`. The `scope-check` route is the pre-flight; spec 005 wires
+> the same `scope.evaluate` onto the run-creation path and adds the `run.rejected` audit entry.
 
 ## Test cases
 
