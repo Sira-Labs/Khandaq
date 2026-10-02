@@ -136,7 +136,7 @@ def test_a_runtime_login_that_can_become_the_owner_is_refused(runtime_engine):
         conn.execute(text(f'GRANT "{me}" TO khandaq_rt_member'))
     owner.dispose()
     try:
-        with pytest.raises(RuntimeError, match="member of the migration owner"):
+        with pytest.raises(RuntimeError, match="migration owner"):
             _provision("khandaq_rt_member")
     finally:
         _drop("khandaq_rt_member")
@@ -148,7 +148,7 @@ def test_a_superuser_runtime_login_is_refused(runtime_engine):
         conn.execute(text("CREATE ROLE khandaq_rt_super LOGIN SUPERUSER PASSWORD 'x'"))
     owner.dispose()
     try:
-        with pytest.raises(RuntimeError, match="superuser"):
+        with pytest.raises(RuntimeError, match="SUPERUSER"):
             _provision("khandaq_rt_super")
     finally:
         _drop("khandaq_rt_super")
@@ -188,3 +188,68 @@ def test_provisioning_waits_until_the_tables_exist(runtime_engine, monkeypatch):
             conn.execute(text("SELECT 1 FROM pg_roles WHERE rolname = 'khandaq_rt_early'")).first()
             is None
         )
+
+
+# --- review round 3: an existing runtime login must be plain; nothing may create objects ---------
+
+
+def _make_role(sql: str) -> None:
+    owner = _owner()
+    with owner.begin() as conn:
+        conn.execute(text(sql))
+    owner.dispose()
+
+
+@pytest.mark.parametrize("attribute", ["CREATEROLE", "CREATEDB", "BYPASSRLS"])
+def test_an_existing_login_with_elevated_attributes_is_refused(runtime_engine, attribute):
+    _make_role(f"CREATE ROLE khandaq_rt_attr LOGIN {attribute} PASSWORD 'x'")
+    try:
+        with pytest.raises(RuntimeError, match=attribute):
+            _provision("khandaq_rt_attr")
+    finally:
+        _drop("khandaq_rt_attr")
+
+
+def test_an_existing_login_in_any_role_is_refused(runtime_engine):
+    _make_role("CREATE ROLE khandaq_rt_group NOLOGIN")
+    _make_role("CREATE ROLE khandaq_rt_grouped LOGIN PASSWORD 'x' IN ROLE khandaq_rt_group")
+    try:
+        with pytest.raises(RuntimeError, match="member of khandaq_rt_group"):
+            _provision("khandaq_rt_grouped")
+    finally:
+        _drop("khandaq_rt_grouped")
+        _drop("khandaq_rt_group")
+
+
+def test_database_level_create_is_removed(runtime_engine):
+    _make_role("CREATE ROLE khandaq_rt_db LOGIN PASSWORD 'x'")
+    owner = _owner()
+    with owner.begin() as conn:
+        db = conn.execute(text("SELECT current_database()")).scalar_one()
+        conn.execute(text(f'GRANT CREATE ON DATABASE "{db}" TO khandaq_rt_db'))
+    try:
+        _provision("khandaq_rt_db", password="x")
+        with owner.connect() as conn:
+            probe = "SELECT has_database_privilege('khandaq_rt_db', current_database(), 'CREATE')"
+            assert conn.execute(text(probe)).scalar_one() is False
+    finally:
+        owner.dispose()
+        _drop("khandaq_rt_db")
+
+
+def test_an_unchangeable_wrong_password_fails_boot(runtime_engine, monkeypatch):
+    import psycopg
+
+    from khandaq import db_roles
+
+    def denied(conn, name, password):
+        raise psycopg.errors.InsufficientPrivilege("permission denied to alter role")
+
+    monkeypatch.setattr(db_roles, "_sync_password", denied)
+    _make_role("CREATE ROLE khandaq_rt_pw LOGIN PASSWORD 'right-one'")
+    try:
+        with pytest.raises(RuntimeError, match="password in KHANDAQ_DATABASE_URL does not work"):
+            _provision("khandaq_rt_pw", password="wrong-one")
+        assert _provision("khandaq_rt_pw", password="right-one") == "khandaq_rt_pw"
+    finally:
+        _drop("khandaq_rt_pw")

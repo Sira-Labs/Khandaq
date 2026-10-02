@@ -24,8 +24,9 @@ import logging
 from urllib.parse import unquote, urlsplit
 
 import psycopg
-from sqlalchemy import text
+from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Connection
+from sqlalchemy.exc import OperationalError
 
 log = logging.getLogger("khandaq.db_roles")
 
@@ -75,10 +76,8 @@ def ensure_runtime_role(conn: Connection, database_url: str) -> str | None:
         log.info("runtime login not provisioned: tables %s do not exist yet", ", ".join(missing))
         return None
 
-    row = conn.execute(
-        text("SELECT rolsuper FROM pg_roles WHERE rolname = :n"), {"n": name}
-    ).first()
-    if row is None:
+    exists = conn.execute(text("SELECT 1 FROM pg_roles WHERE rolname = :n"), {"n": name}).first()
+    if exists is None:
         if not _can_manage_roles(conn):
             raise RuntimeError(
                 f"runtime login {name!r} (KHANDAQ_DATABASE_URL) does not exist and the migration "
@@ -88,22 +87,25 @@ def ensure_runtime_role(conn: Connection, database_url: str) -> str | None:
             )
         _run(conn, "CREATE ROLE %I LOGIN PASSWORD %L", name=name, password=password)
     else:
-        # Privileges cannot restrict these logins, so refuse to serve with them at all.
-        if row.rolsuper:
-            raise RuntimeError(f"runtime login {name!r} is a superuser; use a plain login")
-        can_be_owner = conn.execute(
-            text("SELECT pg_has_role(:n, :o, 'MEMBER')"), {"n": name, "o": owner}
-        ).scalar_one()
-        if can_be_owner:
+        # An existing login must be a plain one: privileges added on top of row access cannot be
+        # revoked by GRANT/REVOKE here, so refuse to serve with it at all.
+        problems = _elevations(conn, name, owner)
+        if problems:
             raise RuntimeError(
-                f"runtime login {name!r} is a member of the migration owner {owner!r} and could "
-                "SET ROLE to it (and so disable the append-only triggers); revoke that membership"
+                f"runtime login {name!r} must be a plain login with no extra rights: "
+                + "; ".join(problems)
             )
         try:  # keep the password in sync when allowed; an administrator may manage it instead
             with conn.begin_nested():
-                _run(conn, "ALTER ROLE %I LOGIN PASSWORD %L", name=name, password=password)
+                _sync_password(conn, name, password)
         except psycopg.errors.InsufficientPrivilege:
-            log.warning("cannot update the password of runtime login %r; leaving it as is", name)
+            if not _can_log_in(database_url):
+                raise RuntimeError(
+                    f"runtime login {name!r} exists but the password in KHANDAQ_DATABASE_URL does "
+                    "not work, and the migration login may not change it: set the password to the "
+                    "one in KHANDAQ_DATABASE_URL as an administrator (or fix the URL)"
+                ) from None
+            log.info("runtime login %r is administrator-managed; its password works", name)
 
     db = conn.execute(text("SELECT current_database()")).scalar_one()
     _run(conn, "GRANT CONNECT ON DATABASE %I TO %I", db=db, name=name)
@@ -136,6 +138,59 @@ def ensure_runtime_role(conn: Connection, database_url: str) -> str | None:
     return name
 
 
+_ELEVATED_ATTRIBUTES = {
+    "rolsuper": "SUPERUSER",
+    "rolcreaterole": "CREATEROLE",
+    "rolcreatedb": "CREATEDB",
+    "rolreplication": "REPLICATION",
+    "rolbypassrls": "BYPASSRLS",
+}
+
+
+def _elevations(conn: Connection, name: str, owner: str) -> list[str]:
+    """Everything that makes an existing login more than a plain, row-level login: elevated role
+    attributes, and membership in any role (whose rights it inherits or can SET ROLE to)."""
+    row = conn.execute(
+        text(f"SELECT {', '.join(_ELEVATED_ATTRIBUTES)} FROM pg_roles WHERE rolname = :n"),
+        {"n": name},
+    ).one()
+    problems = [
+        f"has {label}" for attr, label in _ELEVATED_ATTRIBUTES.items() if getattr(row, attr)
+    ]
+    roles = (
+        conn.execute(
+            text(
+                "SELECT g.rolname FROM pg_auth_members m "
+                "JOIN pg_roles g ON g.oid = m.roleid JOIN pg_roles u ON u.oid = m.member "
+                "WHERE u.rolname = :n ORDER BY g.rolname"
+            ),
+            {"n": name},
+        )
+        .scalars()
+        .all()
+    )
+    if roles:
+        note = " (incl. the migration owner: it could SET ROLE and disable the triggers)"
+        problems.append(f"is a member of {', '.join(roles)}" + (note if owner in roles else ""))
+    return problems
+
+
+def _sync_password(conn: Connection, name: str, password: str) -> None:
+    _run(conn, "ALTER ROLE %I LOGIN PASSWORD %L", name=name, password=password)
+
+
+def _can_log_in(database_url: str) -> bool:
+    """Does the runtime URL actually authenticate? (Used when we may not set its password.)"""
+    engine = create_engine(database_url)
+    try:
+        with engine.connect():
+            return True
+    except OperationalError:
+        return False
+    finally:
+        engine.dispose()
+
+
 def _can_manage_roles(conn: Connection) -> bool:
     row = conn.execute(
         text("SELECT rolsuper, rolcreaterole FROM pg_roles WHERE rolname = current_user")
@@ -144,25 +199,31 @@ def _can_manage_roles(conn: Connection) -> bool:
 
 
 def _forbid_schema_create(conn: Connection, name: str) -> None:
-    """The runtime login must not create objects. Databases created before PostgreSQL 15 still
-    grant CREATE on ``public`` to PUBLIC, which a GRANT USAGE does not take away."""
-
-    def can_create() -> bool:
-        return bool(
-            conn.execute(
-                text("SELECT has_schema_privilege(:n, 'public', 'CREATE')"), {"n": name}
-            ).scalar_one()
-        )
-
-    if not can_create():
-        return
-    try:
-        with conn.begin_nested():
-            _run(conn, "REVOKE CREATE ON SCHEMA public FROM PUBLIC, %I", name=name)
-    except psycopg.errors.InsufficientPrivilege:
-        pass  # not the schema owner; the check below reports it
-    if can_create():
-        raise RuntimeError(
-            f"runtime login {name!r} can still create objects in schema public; as the schema "
-            f"owner run: REVOKE CREATE ON SCHEMA public FROM PUBLIC, {name}"
-        )
+    """The runtime login must not create objects anywhere: not in ``public`` (databases created
+    before PostgreSQL 15 grant that to PUBLIC, and GRANT USAGE does not take it away) and not new
+    schemas (database-level CREATE)."""
+    db = conn.execute(text("SELECT current_database()")).scalar_one()
+    checks = (
+        (
+            "SELECT has_schema_privilege(:n, 'public', 'CREATE')",
+            lambda: _run(conn, "REVOKE CREATE ON SCHEMA public FROM PUBLIC, %I", name=name),
+            f"REVOKE CREATE ON SCHEMA public FROM PUBLIC, {name}",
+        ),
+        (
+            "SELECT has_database_privilege(:n, current_database(), 'CREATE')",
+            lambda: _run(conn, "REVOKE CREATE ON DATABASE %I FROM PUBLIC, %I", db=db, name=name),
+            f"REVOKE CREATE ON DATABASE {db} FROM PUBLIC, {name}",
+        ),
+    )
+    for probe, revoke, advice in checks:
+        if not conn.execute(text(probe), {"n": name}).scalar_one():
+            continue
+        try:
+            with conn.begin_nested():
+                revoke()
+        except psycopg.errors.InsufficientPrivilege:
+            pass  # not the owner of the schema/database; the check below reports it
+        if conn.execute(text(probe), {"n": name}).scalar_one():
+            raise RuntimeError(
+                f"runtime login {name!r} can still create objects; as the owner run: {advice}"
+            )
