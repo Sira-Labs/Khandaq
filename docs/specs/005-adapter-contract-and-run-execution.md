@@ -40,6 +40,26 @@ target, with its findings normalised and its evidence sealed.
    findings are validated/fingerprinted/deduped/severity-mapped/framework-mapped by the core and sealed
    into the ledger, then persisted; run state → `succeeded`/`failed`.
 4. A negative control: an adapter that attempts an out-of-scope host cannot connect (test).
+5. **Record durability and integrity** (added 2026-10-02 after a code review):
+   - The run row and `run.started` are **committed before** the adapter runs. An adapter failure or
+     a failure while recording results (bad output, database error) is recorded as `failed` +
+     `run.failed` in a fresh transaction. Before, both were only flushed, so a database error after
+     the tool had reached the target rolled back every trace of the run.
+   - Refusals before the scope check (unknown adapter, another engagement's target) are audited as
+     `run.refused`.
+   - Evidence sealing and finding persistence hold a per-engagement transaction lock, so concurrent
+     runs queue instead of computing the same ledger `seq`.
+   - **Cross-run dedup** (ADR-0003): a finding whose fingerprint already has a canonical row in the
+     engagement is stored non-canonical with `dedup_of` set, and its tools and evidence are merged
+     onto the canonical row. A partial unique index enforces one canonical row per fingerprint
+     (migration 0003 links pre-existing duplicates first). `target_ref` is set server-side to the
+     target id, so the fingerprint names the real target.
+   - New findings always start `open`; an adapter cannot set triage status.
+   - `evidence` and `ledger_entries` reject UPDATE/DELETE, and all three append-only tables reject
+     TRUNCATE (migration 0003).
+   - The Docker runner applies the manifest's memory/CPU limits, a pid limit, runs the tool as
+     `nobody` with a `noexec` tmpfs `$HOME`, and refuses mount paths containing `:` or `,`.
+   - An org `read_only` user is capped at `viewer` on every engagement, whatever their membership.
 
 ## Acceptance criteria
 

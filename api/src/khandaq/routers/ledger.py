@@ -16,12 +16,7 @@ router = APIRouter(prefix="/api/engagements", tags=["ledger"])
 
 @router.get("/{engagement_id}/ledger")
 def get_ledger(access: EngagementAccess = Depends(require_engagement_role())) -> dict:
-    session, eng_id = access.session, access.engagement.id
-    return {
-        "entries": ledger_svc.load_chain(session, eng_id),
-        "root": ledger_svc.root(session, eng_id),
-        "verify": ledger_svc.verify_chain(session, eng_id),
-    }
+    return ledger_svc.chain_status(access.session, access.engagement.id)
 
 
 @router.post("/{engagement_id}/ledger/verify")
