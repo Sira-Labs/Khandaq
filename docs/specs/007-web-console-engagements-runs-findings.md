@@ -35,6 +35,21 @@ Bundled target: `deploy/targets/vulnerable-llm/` — a tiny, deliberately weak l
 3. All finding/evidence text is treated as untrusted and escaped on render (it contains model/attacker
    output); no raw HTML injection.
 4. Roles gate the UI: a `viewer` cannot launch runs; the audit tab is owner/admin only.
+5. **Sign-in** (added 2026-10-02; this console predated spec 008 and did not work against it in
+   production — every read was 401 and every write 403):
+   - On load the console calls `GET /api/auth/me`. With no session it shows a **Sign in** button to
+     `/api/auth/login?next=<current path>`. It never redirects on its own, because an IdP session
+     for a refused account would otherwise loop. `/?signin=denied` (and a 403 from `/me`) shows a
+     "no access" notice with "Sign in with another account".
+   - Every POST/PUT/PATCH/DELETE carries `X-Khandaq-CSRF` with the session's token from `/me`.
+   - Signed in, the header shows the user and **Sign out** (`POST /api/auth/logout`). The dev
+     identity box appears only when the API reports `auth: "dev"`, and the dev header is sent only
+     then.
+   - The launcher sends the same `params` to the pre-flight and the run, with an optional
+     `rate_per_minute` (required when the RoE caps the rate, spec 002 §6), which must be a safe
+     integer ≥ 1 (a long digit string became `Infinity`, sent as `null`). A pre-flight that could
+     not be made (network, CSRF) says so and is never shown as "Out of scope"; run and query errors
+     are shown.
 
 ## Acceptance criteria
 
