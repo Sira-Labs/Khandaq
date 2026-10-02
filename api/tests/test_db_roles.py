@@ -326,3 +326,48 @@ def test_a_forbidden_right_that_cannot_be_removed_fails_boot(runtime_engine, mon
             conn.execute(text("REVOKE UPDATE ON TABLE audit_log FROM PUBLIC"))
         owner.dispose()
         _drop("khandaq_rt_stuck")
+
+
+def _connect_revoked_from_public(revoked: bool) -> None:
+    owner = _owner()
+    with owner.begin() as conn:
+        db = conn.execute(text("SELECT current_database()")).scalar_one()
+        verb = (
+            "REVOKE CONNECT ON DATABASE {} FROM PUBLIC"
+            if revoked
+            else "GRANT CONNECT ON DATABASE {} TO PUBLIC"
+        )
+        conn.execute(text(verb.format(f'"{db}"')))
+    owner.dispose()
+
+
+def _has_connect(name: str) -> bool:
+    with _owner().connect() as conn:
+        return conn.execute(
+            text("SELECT has_database_privilege(:n, current_database(), 'CONNECT')"), {"n": name}
+        ).scalar_one()
+
+
+def test_an_existing_login_without_connect_still_provisions(runtime_engine):
+    # A database that revoked CONNECT from PUBLIC: the login probe used to fail before the
+    # grant, even with the right password, and block boot (review on #20).
+    _make_role("CREATE ROLE khandaq_rt_noconn LOGIN PASSWORD 'pw'")
+    _connect_revoked_from_public(True)
+    try:
+        assert _provision("khandaq_rt_noconn", password="pw") == "khandaq_rt_noconn"
+        assert _has_connect("khandaq_rt_noconn")
+    finally:
+        _connect_revoked_from_public(False)
+        _drop("khandaq_rt_noconn")
+
+
+def test_a_failed_probe_takes_back_the_temporary_connect(runtime_engine):
+    _make_role("CREATE ROLE khandaq_rt_noconn2 LOGIN PASSWORD 'pw'")
+    _connect_revoked_from_public(True)
+    try:
+        with pytest.raises(RuntimeError, match="cannot log in"):
+            _provision("khandaq_rt_noconn2", password="wrong")
+        assert not _has_connect("khandaq_rt_noconn2")
+    finally:
+        _connect_revoked_from_public(False)
+        _drop("khandaq_rt_noconn2")

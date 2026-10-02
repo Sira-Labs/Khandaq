@@ -104,7 +104,7 @@ def ensure_runtime_role(conn: Connection, database_url: str) -> str | None:
             )
         # Never rewrite an existing login's password or LOGIN: that would let a restart with a
         # stale URL reverse an administrator's rotation or NOLOGIN. Verify the URL works instead.
-        if not _can_log_in(database_url):
+        if not _probe_login(conn, name, database_url):
             raise RuntimeError(
                 f"runtime login {name!r} exists but KHANDAQ_DATABASE_URL cannot log in with it "
                 "(wrong password, or the login was disabled). Khandaq does not change an existing "
@@ -181,9 +181,35 @@ def _elevations(conn: Connection, name: str, owner: str) -> list[str]:
     return problems
 
 
+def _probe_login(conn: Connection, name: str, database_url: str) -> bool:
+    """Can ``database_url`` log in? The probe is a separate connection, so it cannot see grants
+    made in ``conn``'s open transaction. A login that lacks CONNECT (a database that revoked it
+    from PUBLIC) would fail the probe even with the right password, so CONNECT, which provisioning
+    grants anyway, is committed first on a side connection, and taken back if the probe fails."""
+    has_connect = conn.execute(
+        text("SELECT has_database_privilege(:n, current_database(), 'CONNECT')"), {"n": name}
+    ).scalar_one()
+    if has_connect:
+        return _can_log_in(database_url)
+    db = conn.execute(text("SELECT current_database()")).scalar_one()
+    _commit_now(conn, "GRANT CONNECT ON DATABASE %I TO %I", db=db, name=name)
+    if _can_log_in(database_url):
+        return True
+    _commit_now(conn, "REVOKE CONNECT ON DATABASE %I FROM %I", db=db, name=name)
+    return False
+
+
+def _commit_now(conn: Connection, template: str, **identifiers: str) -> None:
+    """Run one statement on a separate autocommit connection as the same (owner) login, so it is
+    visible to other connections at once without committing ``conn``'s transaction early."""
+    with conn.engine.connect() as side:
+        _run(side.execution_options(isolation_level="AUTOCOMMIT"), template, **identifiers)
+
+
 def _can_log_in(database_url: str) -> bool:
-    """Does the runtime URL actually authenticate? (Used when we may not set its password.)"""
-    engine = create_engine(database_url)
+    """Does the runtime URL actually authenticate? Bounded by a short connect timeout, so an
+    unreachable host fails boot with guidance instead of hanging for the OS TCP timeout."""
+    engine = create_engine(database_url, connect_args={"connect_timeout": 10})
     try:
         with engine.connect():
             return True
