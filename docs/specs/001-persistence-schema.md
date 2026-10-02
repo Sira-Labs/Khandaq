@@ -1,0 +1,71 @@
+# Spec 001 — Persistence schema and migrations
+
+Sprint 1, story S1-1. Depends on: none. Packages: `api/` (db, models, migrations).
+
+## Goal
+
+A PostgreSQL schema and Alembic migrations exist for the core domain: users and roles, engagements,
+targets, scope, runs, findings, evidence references, and the audit log. The API can connect, run
+migrations on start, and report the schema revision at `GET /api/version`. No business logic yet —
+this spec is the tables the later specs build on, with the integrity constraints that make the
+authorised-use controls enforceable.
+
+## User story
+
+As a platform admin, I want a migrated database so that engagements, findings and the audit trail have
+a durable, constrained home.
+
+## Interface
+
+Tables (columns abbreviated; all have `created_at timestamptz`):
+
+- `users` (id `usr_…`, email unique, display_name, org_role `admin|member|read_only`, disabled bool)
+- `api_tokens` (id `tok_…`, user_id fk, name, hash, last_used_at, revoked_at)
+- `engagements` (id `eng_…`, name, client, owner_user_id fk, state `draft|active|closed`,
+  authorisation_ref, activated_at, closed_at)
+- `engagement_members` (engagement_id fk, user_id fk, role `owner|operator|analyst|viewer`,
+  PK(engagement_id,user_id))
+- `targets` (id `tgt_…`, engagement_id fk, type `llm_endpoint|agent|mcp_server|model_artifact|dataset`,
+  spec jsonb, credential_ref nullable)
+- `scopes` (engagement_id fk unique, version int, allow jsonb, deny jsonb, roe jsonb, locked bool)
+- `suites` (id `ste_…`, name, version, definition jsonb) — seed data, global
+- `runs` (id `run_…`, engagement_id fk, suite_id fk nullable, adapter, adapter_version, target_id fk,
+  params jsonb, state `queued|running|succeeded|failed|rejected`, reject_reason, started_at, ended_at)
+- `findings` (id `fnd_…`, engagement_id fk, run_id fk, fingerprint, canonical bool, dedup_of fk
+  nullable, rule_id, title, severity, confidence, body jsonb /* full canonical finding */,
+  status `open|triaged|accepted_risk|fixed|false_positive`)
+- `evidence` (id `ev_…`, engagement_id fk, run_id fk, kind, object_key, sha256, bytes, redacted bool)
+- `ledger_entries` (id `led_…`, engagement_id fk, seq int, evidence_id fk, entry_hash, prev_hash,
+  UNIQUE(engagement_id,seq))
+- `audit_log` (id `aud_…`, actor_user_id, actor_token_id nullable, action, engagement_id nullable,
+  detail jsonb, at timestamptz) — append-only
+
+Config keys: `KHANDAQ_DATABASE_URL`, `KHANDAQ_MIGRATION_DATABASE_URL`, `KHANDAQ_ENV`.
+
+## Behaviour
+
+1. `uv run khandaq-db upgrade head` applies migrations; the API runs this on start before serving.
+2. `GET /api/version` returns `{ "schema_revision": "<rev>", "app": "<version>" }`.
+3. Constraints enforce invariants other specs rely on: `findings.dedup_of` references a canonical
+   finding in the same engagement; `ledger_entries` is unique and ordered per engagement; `audit_log`
+   has no UPDATE/DELETE grant for the app role (append-only at the DB level); `engagement_members.role`
+   and all enum columns are constrained.
+4. With `KHANDAQ_ENV=prod`, the app refuses to start on a placeholder DB URL.
+
+## Acceptance criteria
+
+- [ ] Migrations create every table above with the stated constraints and enums.
+- [ ] API runs migrations on start and `GET /api/version` reports the revision.
+- [ ] The app DB role can INSERT into `audit_log` but cannot UPDATE/DELETE it (tested).
+- [ ] `findings.dedup_of` cross-engagement reference is rejected by a constraint (tested).
+- [ ] `ledger_entries(engagement_id, seq)` uniqueness is enforced (tested).
+
+## Test cases
+
+Integration (`api/tests/test_schema.py`): migrate up/down clean; version endpoint; append-only audit
+(UPDATE/DELETE raises); dedup_of same-engagement constraint; ledger seq uniqueness.
+
+## Out of scope
+
+Business logic for any table (later specs); RLS (revisit in R3); the full finding `body` schema
+(spec 003 defines it; here it is `jsonb`).

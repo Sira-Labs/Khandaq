@@ -1,0 +1,64 @@
+# Single-box self-host bundle (one operator, trusted machine). See deploy/README.md.
+# Images under ghcr.io/sira-labs/khandaq-* are published from R1 onward; until then build locally
+# (uncomment the `build:` lines) once the api/ and web/ Dockerfiles land.
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: khandaq
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_DB: khandaq
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "khandaq"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  rustfs:
+    image: rustfs/rustfs:1.0.0
+    environment:
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ROOT_KEY:-khandaq-root}
+      RUSTFS_SECRET_KEY: ${RUSTFS_ROOT_SECRET:-changeme}
+    volumes: ["evidence:/data"]
+
+  api:
+    image: ghcr.io/sira-labs/khandaq-api:latest
+    # build: { context: .., dockerfile: api/Dockerfile }
+    env_file: [.env]
+    environment:
+      KHANDAQ_ROLE: api
+    depends_on:
+      postgres: { condition: service_healthy }
+    ports: ["8000:8000"]
+
+  worker:
+    image: ghcr.io/sira-labs/khandaq-api:latest
+    # build: { context: .., dockerfile: api/Dockerfile }
+    env_file: [.env]
+    environment:
+      KHANDAQ_ROLE: worker
+      KHANDAQ_ADAPTER_RUNTIME: docker-socket
+    # Shape A (ADR-0009): the worker launches pinned adapter containers with per-run egress limited to
+    # the in-scope target. Only on a trusted machine.
+    volumes: ["/var/run/docker.sock:/var/run/docker.sock"]
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  web:
+    image: ghcr.io/sira-labs/khandaq-web:latest
+    # build: { context: .., dockerfile: web/Dockerfile }
+    environment:
+      KHANDAQ_API_UPSTREAM: api:8000
+    depends_on: [api]
+    ports: ["8080:80"]
+
+  # Bundled intentionally-vulnerable local target for `make demo` and tests. Never a third party.
+  vulnerable-target:
+    image: ghcr.io/sira-labs/khandaq-vulnerable-target:latest
+    # build: { context: ../deploy/targets/vulnerable-llm }
+    profiles: ["demo"]
+
+volumes:
+  pgdata:
+  evidence:
