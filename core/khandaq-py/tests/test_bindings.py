@@ -61,10 +61,14 @@ def test_framework_mappings_and_navigator():
     assert layer["techniques"][0]["techniqueID"] == "AML.T0051"
 
 
+def _h(n: int) -> str:
+    return f"sha256:{n:064x}"
+
+
 def test_ledger_append_verify_and_tamper():
     import khandaq_core as kc
     chain = []
-    for h in ["sha256:a", "sha256:b", "sha256:c"]:
+    for h in [_h(1), _h(2), _h(3)]:
         prev = json.dumps(chain[-1]) if chain else None
         chain.append(json.loads(kc.ledger_append(prev, h)))
     assert chain[0]["seq"] == 1 and chain[0]["prev_hash"] is None
@@ -72,6 +76,42 @@ def test_ledger_append_verify_and_tamper():
     assert v["ok"] is True and v["count"] == 3
     assert kc.ledger_root(json.dumps(chain)) == chain[-1]["entry_hash"]
     # tamper
-    chain[1]["evidence_hash"] = "sha256:evil"
+    chain[1]["evidence_hash"] = _h(99)
     v2 = json.loads(kc.ledger_verify(json.dumps(chain)))
     assert v2["ok"] is False and v2["broken_at"] == 2
+
+
+def test_ledger_append_refuses_malformed_hashes():
+    import pytest
+
+    for bad in ["sha256:a", _h(1).upper(), "", "md5:" + "0" * 64]:
+        with pytest.raises(ValueError, match="64 lowercase hex"):
+            kc.ledger_append(None, bad)
+
+
+def test_ledger_verify_against_a_pin_detects_truncation():
+    import pytest
+
+    chain = []
+    for n in (1, 2, 3):
+        prev = json.dumps(chain[-1]) if chain else None
+        chain.append(json.loads(kc.ledger_append(prev, _h(n))))
+    root = chain[-1]["entry_hash"]
+    truncated = json.dumps(chain[:2])
+    assert json.loads(kc.ledger_verify(truncated))["ok"] is True  # unpinned: undetectable
+    pinned = json.loads(kc.ledger_verify(truncated, root, 3))
+    assert pinned["ok"] is False and "shorter" in pinned["reason"]
+    assert json.loads(kc.ledger_verify(json.dumps(chain), root, 3))["ok"] is True
+    with pytest.raises(ValueError, match="together"):
+        kc.ledger_verify(truncated, root)
+
+
+def test_severity_must_be_lowercase_and_extra_fields_survive():
+    import pytest
+
+    with pytest.raises(ValueError, match="severity"):
+        kc.validate_finding(json.dumps(_finding(severity="HIGH")))
+    f = _finding()
+    f["message"] = {"text": "synthetic"}
+    out = json.loads(kc.dedup(json.dumps([f])))
+    assert out["canonical"][0]["message"] == {"text": "synthetic"}

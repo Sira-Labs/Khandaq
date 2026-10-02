@@ -217,3 +217,222 @@ fn published_schema_is_valid_json() {
         serde_json::from_str(include_str!("../schema/finding.schema.json")).unwrap();
     assert_eq!(schema["properties"]["schema"]["const"], "khandaq.finding/1");
 }
+
+// --- hardening (code review, 2026-10-02) -----------------------------------------------------
+
+fn llm01(tool: &str, severity: &str) -> Value {
+    finding_json(
+        tool,
+        &format!("{tool}.rule"),
+        severity,
+        "tgt_1",
+        &[("owasp-llm-2026", "LLM01"), ("atlas", "AML.T0051")],
+        &[],
+    )
+}
+
+#[test]
+fn unknown_fields_survive_validation_and_dedup() {
+    // The finding is a SARIF superset: tool data the model does not name must not be dropped.
+    let mut f = llm01("garak", "high");
+    f["message"] = json!({"text": "model followed the injected instruction"});
+    f["properties"] = json!({"tags": ["jailbreak"]});
+    f["source"]["informationUri"] = json!("https://github.com/NVIDIA/garak");
+    f["x-khandaq"]["probe_detail"] = json!({"detector": "AttackRogueString"});
+    let parsed = validate(&f).unwrap();
+    let back = serde_json::to_value(&parsed).unwrap();
+    assert_eq!(back["message"], f["message"]);
+    assert_eq!(back["properties"], f["properties"]);
+    assert_eq!(
+        back["source"]["informationUri"],
+        f["source"]["informationUri"]
+    );
+    assert_eq!(
+        back["x-khandaq"]["probe_detail"],
+        f["x-khandaq"]["probe_detail"]
+    );
+
+    let out = dedup(vec![parsed]);
+    let canon = serde_json::to_value(&out.canonical[0]).unwrap();
+    assert_eq!(canon["message"], f["message"]);
+}
+
+#[test]
+fn severity_must_be_canonical_lowercase() {
+    // "HIGH" used to validate and be stored as "HIGH", which no filter or sort matches.
+    for bad in ["HIGH", "High", " high"] {
+        assert!(validate(&llm01("garak", bad)).is_err(), "{bad}");
+    }
+    assert!(validate(&llm01("garak", "high")).is_ok());
+}
+
+#[test]
+fn locations_must_be_objects() {
+    for bad in [json!(["endpoint"]), json!([1]), json!([null]), json!([[]])] {
+        let mut f = llm01("garak", "high");
+        f["locations"] = bad.clone();
+        assert!(validate(&f).is_err(), "{bad}");
+    }
+}
+
+#[test]
+fn dedup_does_not_depend_on_input_order() {
+    let a = validate(&llm01("pyrit", "high")).unwrap();
+    let b = validate(&llm01("garak", "high")).unwrap();
+    let c = validate(&llm01("promptfoo", "medium")).unwrap();
+    let one = dedup(vec![a.clone(), b.clone(), c.clone()]);
+    let two = dedup(vec![c, b, a]);
+    assert_eq!(one.canonical.len(), 1);
+    assert_eq!(one.canonical, two.canonical);
+    // Tied on severity, the stable tie-break picks the lexically first tool.
+    assert_eq!(one.canonical[0].source.tool, "garak");
+    assert_eq!(
+        one.canonical[0].x_khandaq.also_found_by,
+        ["promptfoo", "pyrit"]
+    );
+}
+
+#[test]
+fn dedup_keeps_every_native_severity() {
+    let mut a = llm01("garak", "high");
+    a["source"]["native_severity"] = json!("fail_rate>=0.5");
+    let mut b = llm01("promptfoo", "medium");
+    b["source"]["native_severity"] = json!("medium");
+    let out = dedup(vec![validate(&a).unwrap(), validate(&b).unwrap()]);
+    let sources = &out.canonical[0].x_khandaq.sources;
+    let natives: Vec<_> = sources
+        .iter()
+        .map(|s| (s.tool.as_str(), s.native_severity.as_deref()))
+        .collect();
+    assert_eq!(
+        natives,
+        [
+            ("garak", Some("fail_rate>=0.5")),
+            ("promptfoo", Some("medium"))
+        ]
+    );
+    // A lone finding carries no redundant per-tool breakdown.
+    let lone = dedup(vec![validate(&a).unwrap()]);
+    assert!(lone.canonical[0].x_khandaq.sources.is_empty());
+}
+
+#[test]
+fn re_dedup_unions_also_found_by_and_sources() {
+    // Deduplicating an already-merged canonical with a new finding must keep earlier tools.
+    let first = dedup(vec![
+        validate(&llm01("garak", "high")).unwrap(),
+        validate(&llm01("pyrit", "high")).unwrap(),
+    ]);
+    let merged = first.canonical[0].clone();
+    let again = dedup(vec![merged, validate(&llm01("promptfoo", "low")).unwrap()]);
+    let canon = &again.canonical[0];
+    assert_eq!(canon.source.tool, "garak");
+    assert_eq!(canon.x_khandaq.also_found_by, ["promptfoo", "pyrit"]);
+    let tools: Vec<_> = canon
+        .x_khandaq
+        .sources
+        .iter()
+        .map(|s| s.tool.as_str())
+        .collect();
+    assert_eq!(tools, ["garak", "promptfoo", "pyrit"]);
+}
+
+#[test]
+fn navigator_counts_each_technique_once_per_finding() {
+    let mut f = llm01("garak", "high");
+    f["x-khandaq"]["mappings"] = json!([
+        {"framework": "atlas", "id": "AML.T0051"},
+        {"framework": "atlas", "id": "aml.t0051"},
+        {"framework": "ATLAS", "id": "AML.T0051"},
+        {"framework": "atlas", "id": "AML.T0054"},
+    ]);
+    let g = llm01("pyrit", "high");
+    let layer = navigator_layer(&[validate(&f).unwrap(), validate(&g).unwrap()]);
+    let techniques: Vec<_> = layer["techniques"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| {
+            (
+                t["techniqueID"].as_str().unwrap().to_string(),
+                t["score"].as_u64().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        techniques,
+        [("AML.T0051".to_string(), 2), ("AML.T0054".to_string(), 1)]
+    );
+}
+
+// --- review on #26: total determinism and no data loss in merges ---------------------------------
+
+#[test]
+fn members_that_agree_on_every_named_field_still_pick_one_canonical() {
+    let mut a = llm01("garak", "high");
+    a["message"] = json!({"text": "first"});
+    let mut b = llm01("garak", "high");
+    b["message"] = json!({"text": "second"});
+    let (a, b) = (validate(&a).unwrap(), validate(&b).unwrap());
+    let one = dedup(vec![a.clone(), b.clone()]);
+    let two = dedup(vec![b, a]);
+    assert_eq!(one.canonical, two.canonical);
+}
+
+#[test]
+fn groups_come_out_in_the_same_order_whatever_the_input_order() {
+    let a = validate(&llm01("garak", "high")).unwrap();
+    let mut other = llm01("pyrit", "low");
+    other["target_ref"] = json!("tgt_2"); // a different fingerprint
+    let b = validate(&other).unwrap();
+    let one = dedup(vec![a.clone(), b.clone()]);
+    let two = dedup(vec![b, a]);
+    assert_eq!(one.canonical.len(), 2);
+    assert_eq!(one.canonical, two.canonical);
+}
+
+#[test]
+fn unnamed_fields_survive_from_every_merged_member() {
+    let mut a = llm01("garak", "high");
+    a["message"] = json!({"text": "from garak"});
+    a["x-khandaq"]["probe_detail"] = json!("garak only");
+    let mut b = llm01("pyrit", "medium");
+    b["message"] = json!({"text": "from pyrit"});
+    b["properties"] = json!({"tags": ["pyrit only"]});
+    b["x-khandaq"]["conversation"] = json!("pyrit only");
+    let out = dedup(vec![validate(&b).unwrap(), validate(&a).unwrap()]);
+    let canon = serde_json::to_value(&out.canonical[0]).unwrap();
+    assert_eq!(canon["source"]["tool"], "garak"); // the higher severity
+    assert_eq!(canon["message"]["text"], "from garak"); // a conflict: the canonical member wins
+    assert_eq!(canon["properties"]["tags"][0], "pyrit only"); // a gap: filled from the other
+    assert_eq!(canon["x-khandaq"]["probe_detail"], "garak only");
+    assert_eq!(canon["x-khandaq"]["conversation"], "pyrit only");
+}
+
+#[test]
+fn sources_that_differ_only_in_unnamed_fields_are_both_kept() {
+    let mut a = llm01("garak", "high");
+    a["source"]["informationUri"] = json!("https://example.test/a");
+    let mut b = llm01("garak", "high");
+    b["source"]["informationUri"] = json!("https://example.test/b");
+    b["run_id"] = json!("run_2");
+    let out = dedup(vec![validate(&a).unwrap(), validate(&b).unwrap()]);
+    let uris: Vec<_> = out.canonical[0]
+        .x_khandaq
+        .sources
+        .iter()
+        .map(|s| s.extra["informationUri"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(uris, ["https://example.test/a", "https://example.test/b"]);
+}
+
+#[test]
+fn schema_types_the_sources_items_like_the_validator() {
+    let schema: Value =
+        serde_json::from_str(include_str!("../schema/finding.schema.json")).unwrap();
+    let item = &schema["properties"]["x-khandaq"]["properties"]["sources"]["items"];
+    for field in ["tool", "version", "native_severity"] {
+        assert_eq!(item["properties"][field]["type"], "string", "{field}");
+    }
+    assert_eq!(item["required"], json!(["tool", "version"]));
+}

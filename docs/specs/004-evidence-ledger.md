@@ -48,6 +48,15 @@ ADR-0006), `KHANDAQ_SIGSTORE=off|on`.
 > rows (evidence_id → Evidence.sha256) to core entries. Sigstore signing is deferred (follow-up in
 > TASKS.md); everything else is offline and tested.
 
+> Hardening (code review, 2026-10-02): `append` refuses an evidence hash that is not
+> `sha256:` + 64 lowercase hex, and refuses a sequence overflow (`checked_add`; `verify` used to
+> overflow on a hostile `seq`). `verify` also rejects malformed hashes. Plain `verify` cannot
+> notice entries removed from the end of a chain, so `verify_pinned(entries, root, count)` (and
+> `ledger_verify(entries, expected_root, expected_count)` in Python) also checks that the entry at
+> a previously pinned count still has the pinned root. Wiring that into report re-verification is
+> a follow-up.
+
+
 ## Test cases
 
 Rust property/unit (`core/khandaq-core/tests/ledger_*.rs`): chain build, verify catches tampering,
