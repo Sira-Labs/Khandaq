@@ -43,7 +43,9 @@ def client():
 
     app = main.create_app()
     app.dependency_overrides[get_session] = _get_session
-    yield TestClient(app)
+    tc = TestClient(app)
+    tc.engine = eng  # direct DB access for assertions the API does not expose
+    yield tc
     eng.dispose()
 
 
@@ -152,3 +154,120 @@ def test_unknown_adapter_and_target(client):
         ).status_code
         == 404
     )
+
+
+# --- review hardening: durable run records, cross-run dedup, refusals, read-only users ---------
+
+
+def _audit_actions(client, eng_id):
+    return [
+        a["action"] for a in client.get(f"/api/engagements/{eng_id}/audit", headers=OWNER).json()
+    ]
+
+
+def _run(client, eng_id, tid):
+    r = client.post(
+        f"/api/engagements/{eng_id}/runs", json={"adapter": "echo", "target_id": tid}, headers=OWNER
+    )
+    assert r.status_code == 201, r.text
+    return r.json()
+
+
+def test_findings_are_deduplicated_across_runs(client):
+    eng_id, tid = _active_engagement(
+        client, "cross-run", {"host": "gw.acme.test", "model": "assistant-v3"}
+    )
+    first, second = _run(client, eng_id, tid), _run(client, eng_id, tid)
+    assert first["state"] == second["state"] == "succeeded"
+
+    # The same two issues found twice stay two canonical findings (they used to double to four).
+    inbox = client.get(f"/api/engagements/{eng_id}/findings", headers=OWNER).json()
+    assert len(inbox) == 2
+    report = client.get(f"/api/engagements/{eng_id}/report", headers=OWNER).json()
+    assert report["summary"]["total"] == 2
+    # The second run's sightings are kept, linked to the canonical rows, with evidence merged.
+    with client.engine.connect() as conn:
+        rows = conn.execute(
+            text("SELECT canonical, dedup_of, run_id FROM findings WHERE engagement_id = :e"),
+            {"e": eng_id},
+        ).all()
+    linked = [r for r in rows if not r.canonical]
+    assert len(rows) == 4 and len(linked) == 2
+    assert all(r.dedup_of and r.run_id == second["id"] for r in linked)
+    merged = next(f for f in inbox if f["severity"] == "high")
+    assert len(merged["evidence"]) == 4  # 2 per run
+    ledger = client.get(f"/api/engagements/{eng_id}/ledger", headers=OWNER).json()
+    assert ledger["verify"]["ok"] and len(ledger["entries"]) == 6
+
+
+def test_database_failure_while_saving_results_keeps_the_run_record(client, monkeypatch):
+    """The adapter has already reached the target; a DB error afterwards must not erase the run."""
+    eng_id, tid = _active_engagement(
+        client, "db-fail", {"host": "gw.acme.test", "model": "assistant-v3"}
+    )
+
+    def poisoned_seal(session, **_kw):
+        session.execute(text("SELECT 1/0"))  # aborts the transaction, like a constraint violation
+
+    monkeypatch.setattr("khandaq.runs.seal_evidence", poisoned_seal)
+    run = _run(client, eng_id, tid)
+    assert run["state"] == "failed" and "recording results failed" in run["reject_reason"]
+    persisted = client.get(f"/api/engagements/{eng_id}/runs/{run['id']}", headers=OWNER).json()
+    assert persisted["state"] == "failed"
+    actions = _audit_actions(client, eng_id)
+    assert "run.started" in actions and "run.failed" in actions
+
+
+def test_adapter_crash_is_recorded(client, monkeypatch):
+    eng_id, tid = _active_engagement(
+        client, "adapter-crash", {"host": "gw.acme.test", "model": "assistant-v3"}
+    )
+
+    def crash(self, request):
+        raise RuntimeError("tool exited 137")
+
+    monkeypatch.setattr("khandaq.adapters.runner.EchoRunner.run", crash)
+    run = _run(client, eng_id, tid)
+    assert run["state"] == "failed" and "tool exited 137" in run["reject_reason"]
+    assert "run.failed" in _audit_actions(client, eng_id)
+
+
+def test_refusals_before_the_scope_check_are_audited(client):
+    eng_id, _ = _active_engagement(
+        client, "refused", {"host": "gw.acme.test", "model": "assistant-v3"}
+    )
+    other_id, other_tid = _active_engagement(
+        client, "other", {"host": "gw.acme.test", "model": "assistant-v3"}
+    )
+    probe = client.post(
+        f"/api/engagements/{eng_id}/runs",
+        json={"adapter": "echo", "target_id": other_tid},  # another engagement's target
+        headers=OWNER,
+    )
+    assert probe.status_code == 404
+    assert "run.refused" in _audit_actions(client, eng_id)
+
+
+def test_org_read_only_users_cannot_launch_runs(client):
+    eng_id, tid = _active_engagement(
+        client, "read-only", {"host": "gw.acme.test", "model": "assistant-v3"}
+    )
+    reader = {"X-Khandaq-Dev-User": "reader@test"}
+    client.get("/api/engagements", headers=reader)  # creates the user via the dev stub
+    with client.engine.begin() as conn:
+        uid = conn.execute(text("SELECT id FROM users WHERE email = 'reader@test'")).scalar_one()
+        conn.execute(text("UPDATE users SET org_role = 'read_only' WHERE id = :u"), {"u": uid})
+        conn.execute(
+            text(
+                "INSERT INTO engagement_members (engagement_id, user_id, role) "
+                "VALUES (:e, :u, 'operator')"
+            ),
+            {"e": eng_id, "u": uid},
+        )
+    r = client.post(
+        f"/api/engagements/{eng_id}/runs",
+        json={"adapter": "echo", "target_id": tid},
+        headers=reader,
+    )
+    assert r.status_code == 403  # capped at viewer despite the operator membership
+    assert client.get(f"/api/engagements/{eng_id}/findings", headers=reader).status_code == 200

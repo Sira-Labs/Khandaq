@@ -24,10 +24,12 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     ForeignKeyConstraint,
+    Index,
     Integer,
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -196,6 +198,15 @@ class Finding(Base):
     __table_args__ = (
         # Target for the composite self-FK below.
         UniqueConstraint("engagement_id", "id", name="uq_findings_engagement_id"),
+        # One canonical finding per fingerprint per engagement (cross-run dedup, ADR-0003);
+        # later sightings are non-canonical rows linked via dedup_of. Migration 0003.
+        Index(
+            "uq_findings_canonical_fingerprint",
+            "engagement_id",
+            "fingerprint",
+            unique=True,
+            postgresql_where=text("canonical"),
+        ),
         # A duplicate may only reference a finding in the SAME engagement.
         ForeignKeyConstraint(
             ["engagement_id", "dedup_of"],

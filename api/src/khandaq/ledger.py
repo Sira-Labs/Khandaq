@@ -11,10 +11,22 @@ from __future__ import annotations
 import json
 
 import khandaq_core as kc
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from .models import Evidence, LedgerEntry
+
+
+def lock_engagement(session: Session, engagement_id: str) -> None:
+    """Serialise ledger appends (and cross-run dedup) per engagement until the transaction ends.
+
+    Two runs sealing evidence at once would otherwise both read the same last entry and compute the
+    same next ``seq``; the unique constraint stops a fork, but the loser's whole transaction failed.
+    A transaction-scoped advisory lock makes the second wait instead (re-entrant per transaction).
+    """
+    session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:eid, 0))"), {"eid": engagement_id}
+    )
 
 
 def _core_entry(row: LedgerEntry, sha256: str) -> dict:
@@ -47,6 +59,7 @@ def seal_evidence(
     redacted: bool = False,
 ) -> tuple[Evidence, LedgerEntry]:
     """Store an Evidence row and append it to the engagement's hash chain. Caller commits."""
+    lock_engagement(session, engagement_id)
     evidence = Evidence(
         engagement_id=engagement_id,
         run_id=run_id,
@@ -83,16 +96,18 @@ _CORE_KEYS = ("seq", "evidence_hash", "prev_hash", "entry_hash")
 
 
 def load_chain(session: Session, engagement_id: str) -> list[dict]:
-    """Return the chain as core LedgerEntry dicts (ordered by seq), each with its evidence_id."""
-    rows = session.scalars(
-        select(LedgerEntry)
+    """Return the chain as core LedgerEntry dicts (ordered by seq), each with its evidence_id.
+
+    One joined query (it used to issue one evidence lookup per entry)."""
+    rows = session.execute(
+        select(LedgerEntry, Evidence.sha256)
+        .outerjoin(Evidence, Evidence.id == LedgerEntry.evidence_id)
         .where(LedgerEntry.engagement_id == engagement_id)
         .order_by(LedgerEntry.seq.asc())
     ).all()
     chain = []
-    for row in rows:
-        ev = session.get(Evidence, row.evidence_id)
-        entry = _core_entry(row, ev.sha256 if ev else "")
+    for row, sha256 in rows:
+        entry = _core_entry(row, sha256 or "")
         entry["evidence_id"] = row.evidence_id
         chain.append(entry)
     return chain
@@ -102,9 +117,21 @@ def _core_only(chain: list[dict]) -> str:
     return json.dumps([{k: e[k] for k in _CORE_KEYS} for e in chain])
 
 
+def chain_status(session: Session, engagement_id: str) -> dict:
+    """Entries, root and verification computed from ONE read of the chain, so a report never pins a
+    root covering N+1 entries next to a verification of N (a concurrent append between reads)."""
+    chain = load_chain(session, engagement_id)
+    core = _core_only(chain)
+    return {
+        "entries": chain,
+        "root": kc.ledger_root(core),
+        "verify": json.loads(kc.ledger_verify(core)),
+    }
+
+
 def verify_chain(session: Session, engagement_id: str) -> dict:
-    return json.loads(kc.ledger_verify(_core_only(load_chain(session, engagement_id))))
+    return chain_status(session, engagement_id)["verify"]
 
 
 def root(session: Session, engagement_id: str) -> str | None:
-    return kc.ledger_root(_core_only(load_chain(session, engagement_id)))
+    return chain_status(session, engagement_id)["root"]
