@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://github.com/Sira-Labs/Khandaq/schema/finding.schema.json",
   "title": "Khandaq canonical finding",
-  "description": "A SARIF-superset finding (ADR-0003). Adapters emit this shape; khandaq-core validates it. The Rust typed model in finding.rs is the authoritative validator and mirrors this contract.",
+  "description": "A SARIF-superset finding (ADR-0003). Adapters emit this shape; khandaq-core validates it. The Rust typed model in finding.rs is the authoritative validator and mirrors this contract. Properties not named here are allowed and preserved verbatim (superset).",
   "type": "object",
   "required": ["schema", "engagement_id", "run_id", "rule_id", "severity", "source", "x-khandaq"],
   "properties": {
@@ -43,7 +43,8 @@
         "dedup_of": {"type": ["string", "null"]},
         "first_seen_run": {"type": ["string", "null"]},
         "status": {"enum": ["open", "triaged", "accepted_risk", "fixed", "false_positive"], "default": "open"},
-        "also_found_by": {"type": "array", "items": {"type": "string"}}
+        "also_found_by": {"type": "array", "items": {"type": "string"}},
+        "sources": {"type": "array", "description": "Set by dedup: each contributing tool's own source (tool, version, native_severity)", "items": {"type": "object", "required": ["tool", "version"]}}
       }
     }
   }

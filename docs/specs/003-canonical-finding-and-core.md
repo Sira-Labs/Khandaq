@@ -60,6 +60,17 @@ CLI: `khandaq-core validate <file>`, `… normalize <raw> --adapter garak`, `…
 > JSON-in/JSON-out (strings). Dedup records contributing tools in `x-khandaq.also_found_by`; DB-side
 > `dedup_of` id-linking lands with persistence of findings (spec 005).
 
+> Hardening (code review, 2026-10-02): fields the model does not name are kept (`extra`, flattened)
+> on the finding, `source` and `x-khandaq`, so validation and dedup no longer drop SARIF/tool data.
+> `severity` must be the lowercase canonical value, as in the published schema (`HIGH` was
+> accepted and stored verbatim). Every `locations` item must be an object. Dedup picks the
+> canonical member by severity, then (tool, version, run, rule), so the pick does not depend on
+> input order. `also_found_by` is a union, which includes the members' own lists on a re-dedup.
+> `x-khandaq.sources` keeps each contributing tool's source, including its native severity. The
+> Navigator counts a technique once per finding, with ids upper-cased. The fingerprint recipe is
+> unchanged; making it independent of mappings is proposed in ADR-0013.
+
+
 ## Test cases
 
 Rust unit + property (`core/khandaq-core/tests/`): schema validation, fingerprint properties, dedup

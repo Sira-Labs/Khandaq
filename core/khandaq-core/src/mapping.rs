@@ -4,7 +4,7 @@
 //! every applicable framework id across ATLAS, OWASP LLM (2025 and 2026), OWASP Agentic and NIST. A
 //! rule with no mapping yields an explicit `unmapped` marker so curation gaps are visible, not silent.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -55,20 +55,29 @@ pub fn map_frameworks(finding: &Finding, mappings: &Mappings) -> Vec<Mapping> {
 }
 
 /// Build a MITRE ATLAS Navigator layer from the ATLAS techniques referenced by the findings.
+///
+/// A technique's score is the number of **findings** that reference it: a finding listing the same
+/// technique twice (or as `aml.t0051` and `AML.T0051`) counts once. ATLAS ids are upper-cased, the
+/// form the Navigator matches on, and the framework name is matched case-insensitively.
 pub fn navigator_layer(findings: &[Finding]) -> Value {
-    let mut counts: HashMap<String, usize> = HashMap::new();
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
     for f in findings {
-        for m in &f.x_khandaq.mappings {
-            if m.framework == "atlas" {
-                *counts.entry(m.id.clone()).or_insert(0) += 1;
-            }
+        let techniques: BTreeSet<String> = f
+            .x_khandaq
+            .mappings
+            .iter()
+            .filter(|m| m.framework.trim().eq_ignore_ascii_case("atlas"))
+            .map(|m| m.id.trim().to_ascii_uppercase())
+            .filter(|id| !id.is_empty())
+            .collect();
+        for id in techniques {
+            *counts.entry(id).or_insert(0) += 1;
         }
     }
-    let mut techniques: Vec<Value> = counts
+    let techniques: Vec<Value> = counts
         .into_iter()
         .map(|(id, score)| json!({"techniqueID": id, "score": score, "enabled": true}))
         .collect();
-    techniques.sort_by(|a, b| a["techniqueID"].as_str().cmp(&b["techniqueID"].as_str()));
 
     json!({
         "name": "Khandaq findings",
