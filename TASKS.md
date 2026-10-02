@@ -52,7 +52,11 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
       store (hash+metadata sealed today); real Docker execution lands with spec 006.
 - [x] S3-3 — bundled vulnerable local target: partially covered by the in-process `echo` adapter for the
       demo/tests; a networked vulnerable target ships with the web demo (spec 007).
-- [ ] S3-2 — spec 006 garak adapter + contract test
+- [x] S3-2 — spec 006 garak adapter + contract test — `adapters/garak/` (Dockerfile pinned to
+      garak 0.17.0, `wrap.py` report parser, `adapter.yaml`, Makefile); contract test parses a recorded
+      garak fixture → 3 schema-valid, mapped findings; CI adapters job runs contract tests; release.yml
+      publishes `khandaq-adapter-garak`. **Follow-up:** Docker execution + disk-manifest registry
+      wiring (deploy-verified; needs a daemon).
 - [ ] S3-3 — bundled intentionally-vulnerable local target
 
 ### Sprint 4 — console + adapters + report

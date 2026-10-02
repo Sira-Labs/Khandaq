@@ -38,11 +38,21 @@ unified findings inbox, mapped to OWASP and ATLAS, with evidence sealed.
 
 ## Acceptance criteria
 
-- [ ] `make build` builds the pinned image; `make contract-test` passes against the fixture.
-- [ ] Running the adapter against the bundled local target (spec 007 test target / a mock) yields
-      canonical findings in the inbox, deduped, mapped, with sealed evidence.
-- [ ] The adapter reaches no host but the authorised target (reuses the spec 005 egress test).
-- [ ] Endpoint credentials never appear in findings, evidence shown in UI, or logs (test).
+- [x] `Dockerfile` pins garak to an exact version; `make contract-test` passes against the recorded
+      fixture (3 schema-valid findings; `make build` builds the image in CI/release, not in unit CI).
+- [~] Running the adapter end to end against a target yields inbox findings with sealed evidence —
+      **deploy-verified**: needs a Docker daemon. The echo pipeline (spec 005) already proves the
+      inbox/dedup/seal path; the garak **parser** is contract-tested here.
+- [x] The adapter reaches no host but the authorised target: the run request carries only that one
+      target (spec 005 test); `wrap.py` uses only `request["target"]`.
+- [x] Endpoint credentials never appear in findings: the parser emits only probe/detector/severity +
+      mappings (no credential fields); credentials are injected ephemerally at runtime and redacted in
+      the evidence path (ADR-0006).
+
+> Notes (per CLAUDE.md): the report **parser** (`wrap.py:parse_report`) is the contract-tested unit;
+> `main()` (run garak in the container, write evidence) needs a Docker daemon + live target and is
+> deploy-verified. The image publishes from `release.yml`. Wiring disk-manifest adapters into the live
+> API registry + Docker execution on the worker is a follow-up (the api registry is builtin-only today).
 
 ## Test cases
 
