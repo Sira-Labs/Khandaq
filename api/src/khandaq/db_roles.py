@@ -23,6 +23,7 @@ from __future__ import annotations
 import logging
 from urllib.parse import unquote, urlsplit
 
+import psycopg
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
 
@@ -65,15 +66,44 @@ def ensure_runtime_role(conn: Connection, database_url: str) -> str | None:
         return None
     name, password = login
 
+    missing = [
+        table
+        for table in (*APPEND_ONLY_TABLES, *READ_ONLY_TABLES)
+        if conn.execute(text("SELECT to_regclass(:t)"), {"t": f"public.{table}"}).scalar() is None
+    ]
+    if missing:  # e.g. migrating to an early revision: nothing to restrict yet
+        log.info("runtime login not provisioned: tables %s do not exist yet", ", ".join(missing))
+        return None
+
     row = conn.execute(
         text("SELECT rolsuper FROM pg_roles WHERE rolname = :n"), {"n": name}
     ).first()
     if row is None:
+        if not _can_manage_roles(conn):
+            raise RuntimeError(
+                f"runtime login {name!r} (KHANDAQ_DATABASE_URL) does not exist and the migration "
+                "login cannot create roles. Create it as an administrator "
+                f"(CREATE ROLE {name} LOGIN PASSWORD '…') or grant CREATEROLE to the "
+                "migration login."
+            )
         _run(conn, "CREATE ROLE %I LOGIN PASSWORD %L", name=name, password=password)
     else:
+        # Privileges cannot restrict these logins, so refuse to serve with them at all.
         if row.rolsuper:
-            log.warning("runtime login %r is a superuser; privileges cannot restrict it", name)
-        _run(conn, "ALTER ROLE %I LOGIN PASSWORD %L", name=name, password=password)
+            raise RuntimeError(f"runtime login {name!r} is a superuser; use a plain login")
+        can_be_owner = conn.execute(
+            text("SELECT pg_has_role(:n, :o, 'MEMBER')"), {"n": name, "o": owner}
+        ).scalar_one()
+        if can_be_owner:
+            raise RuntimeError(
+                f"runtime login {name!r} is a member of the migration owner {owner!r} and could "
+                "SET ROLE to it (and so disable the append-only triggers); revoke that membership"
+            )
+        try:  # keep the password in sync when allowed; an administrator may manage it instead
+            with conn.begin_nested():
+                _run(conn, "ALTER ROLE %I LOGIN PASSWORD %L", name=name, password=password)
+        except psycopg.errors.InsufficientPrivilege:
+            log.warning("cannot update the password of runtime login %r; leaving it as is", name)
 
     db = conn.execute(text("SELECT current_database()")).scalar_one()
     _run(conn, "GRANT CONNECT ON DATABASE %I TO %I", db=db, name=name)
@@ -101,5 +131,38 @@ def ensure_runtime_role(conn: Connection, database_url: str) -> str | None:
         "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO %I",
         name=name,
     )
+    _forbid_schema_create(conn, name)
     log.info("runtime login %r restricted to row access (append-only tables: insert/select)", name)
     return name
+
+
+def _can_manage_roles(conn: Connection) -> bool:
+    row = conn.execute(
+        text("SELECT rolsuper, rolcreaterole FROM pg_roles WHERE rolname = current_user")
+    ).one()
+    return bool(row.rolsuper or row.rolcreaterole)
+
+
+def _forbid_schema_create(conn: Connection, name: str) -> None:
+    """The runtime login must not create objects. Databases created before PostgreSQL 15 still
+    grant CREATE on ``public`` to PUBLIC, which a GRANT USAGE does not take away."""
+
+    def can_create() -> bool:
+        return bool(
+            conn.execute(
+                text("SELECT has_schema_privilege(:n, 'public', 'CREATE')"), {"n": name}
+            ).scalar_one()
+        )
+
+    if not can_create():
+        return
+    try:
+        with conn.begin_nested():
+            _run(conn, "REVOKE CREATE ON SCHEMA public FROM PUBLIC, %I", name=name)
+    except psycopg.errors.InsufficientPrivilege:
+        pass  # not the schema owner; the check below reports it
+    if can_create():
+        raise RuntimeError(
+            f"runtime login {name!r} can still create objects in schema public; as the schema "
+            f"owner run: REVOKE CREATE ON SCHEMA public FROM PUBLIC, {name}"
+        )

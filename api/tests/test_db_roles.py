@@ -96,3 +96,95 @@ def test_runtime_login_cannot_disable_the_audit_trigger(runtime_engine):
 
 def test_runtime_login_cannot_change_the_schema(runtime_engine):
     assert "permission denied" in _denied(runtime_engine, "CREATE TABLE sneaky (x int)")
+
+
+# --- review (CodeRabbit on #20): refuse unsafe runtime logins; no CREATE on public --------------
+
+
+def _owner():
+    return create_engine(TEST_URL, future=True)
+
+
+def _provision(name: str, password: str = "pw-test"):
+    from khandaq import db_roles
+
+    owner = _owner()
+    try:
+        with owner.begin() as conn:
+            return db_roles.ensure_runtime_role(conn, _with_login(TEST_URL, name, password))
+    finally:
+        owner.dispose()
+
+
+def _drop(name: str) -> None:
+    owner = _owner()
+    with owner.begin() as conn:
+        exists = conn.execute(
+            text("SELECT 1 FROM pg_roles WHERE rolname = :n"), {"n": name}
+        ).first()
+        if exists:
+            conn.execute(text(f"DROP OWNED BY {name}"))
+            conn.execute(text(f"DROP ROLE {name}"))
+    owner.dispose()
+
+
+def test_a_runtime_login_that_can_become_the_owner_is_refused(runtime_engine):
+    owner = _owner()
+    with owner.begin() as conn:
+        me = conn.execute(text("SELECT current_user")).scalar_one()
+        conn.execute(text("CREATE ROLE khandaq_rt_member LOGIN PASSWORD 'x'"))
+        conn.execute(text(f'GRANT "{me}" TO khandaq_rt_member'))
+    owner.dispose()
+    try:
+        with pytest.raises(RuntimeError, match="member of the migration owner"):
+            _provision("khandaq_rt_member")
+    finally:
+        _drop("khandaq_rt_member")
+
+
+def test_a_superuser_runtime_login_is_refused(runtime_engine):
+    owner = _owner()
+    with owner.begin() as conn:
+        conn.execute(text("CREATE ROLE khandaq_rt_super LOGIN SUPERUSER PASSWORD 'x'"))
+    owner.dispose()
+    try:
+        with pytest.raises(RuntimeError, match="superuser"):
+            _provision("khandaq_rt_super")
+    finally:
+        _drop("khandaq_rt_super")
+
+
+def test_public_create_inherited_from_old_acls_is_removed(runtime_engine):
+    owner = _owner()
+    with owner.begin() as conn:  # what a database created before PostgreSQL 15 still has
+        conn.execute(text("GRANT CREATE ON SCHEMA public TO PUBLIC"))
+    try:
+        _provision("khandaq_rt_pub")
+        with owner.connect() as conn:
+            can_create = conn.execute(
+                text("SELECT has_schema_privilege('khandaq_rt_pub', 'public', 'CREATE')")
+            ).scalar_one()
+        assert can_create is False
+    finally:
+        owner.dispose()
+        _drop("khandaq_rt_pub")
+
+
+def test_a_missing_role_without_createrole_fails_with_guidance(runtime_engine, monkeypatch):
+    from khandaq import db_roles
+
+    monkeypatch.setattr(db_roles, "_can_manage_roles", lambda conn: False)
+    with pytest.raises(RuntimeError, match="grant CREATEROLE"):
+        _provision("khandaq_rt_nobody")
+
+
+def test_provisioning_waits_until_the_tables_exist(runtime_engine, monkeypatch):
+    from khandaq import db_roles
+
+    monkeypatch.setattr(db_roles, "APPEND_ONLY_TABLES", ("audit_log", "not_migrated_yet"))
+    assert _provision("khandaq_rt_early") is None
+    with _owner().connect() as conn:
+        assert (
+            conn.execute(text("SELECT 1 FROM pg_roles WHERE rolname = 'khandaq_rt_early'")).first()
+            is None
+        )
