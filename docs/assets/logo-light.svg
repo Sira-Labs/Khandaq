@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 72" width="320" height="72" role="img" aria-label="Khandaq">
+  <g transform="translate(6,4)">
+    <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M8 40 L22 26 L32 35 L42 26 L56 40" stroke="#b5551f" stroke-width="3.6"/>
+      <path d="M13 49 L24 39 L32 45 L40 39 L51 49" stroke="#35697e" stroke-width="3.6"/>
+    </g>
+    <circle cx="32" cy="20" r="3.6" fill="#8a6512"/>
+  </g>
+  <text x="86" y="47" font-family="'Cormorant', 'Iowan Old Style', Georgia, serif" font-size="40" font-weight="600" letter-spacing="0.5" fill="#1a1512">Khandaq</text>
+</svg>

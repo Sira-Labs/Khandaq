@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Khandaq">
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M8 40 L22 26 L32 35 L42 26 L56 40" stroke="#d97a44" stroke-width="3.6"/>
+    <path d="M13 49 L24 39 L32 45 L40 39 L51 49" stroke="#7fa6b8" stroke-width="3.6"/>
+  </g>
+  <circle cx="32" cy="20" r="3.6" fill="#d9b46b"/>
+</svg>

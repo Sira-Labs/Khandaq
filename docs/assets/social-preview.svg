@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" width="1280" height="640" role="img" aria-label="Khandaq — a command post for authorised AI red teaming">
+  <defs>
+    <radialGradient id="g" cx="78%" cy="26%" r="60%">
+      <stop offset="0%" stop-color="#2a1d12"/>
+      <stop offset="100%" stop-color="#0f0d0b"/>
+    </radialGradient>
+  </defs>
+  <rect width="1280" height="640" fill="url(#g)"/>
+  <!-- mark -->
+  <g transform="translate(96,232) scale(3.0)">
+    <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M8 40 L22 26 L32 35 L42 26 L56 40" stroke="#d97a44" stroke-width="3.6"/>
+      <path d="M13 49 L24 39 L32 45 L40 39 L51 49" stroke="#7fa6b8" stroke-width="3.6"/>
+    </g>
+    <circle cx="32" cy="20" r="3.6" fill="#d9b46b"/>
+  </g>
+  <text x="300" y="300" font-family="'Cormorant', Georgia, serif" font-size="128" font-weight="700" fill="#f1ebe3">Khandaq</text>
+  <text x="304" y="364" font-family="'Onest', system-ui, sans-serif" font-size="34" fill="#b1a493">A command post for authorised AI red teaming.</text>
+  <text x="304" y="412" font-family="ui-monospace, 'JetBrains Mono', monospace" font-size="22" fill="#d97a44" letter-spacing="2">ORCHESTRATE · UNIFY · SIGN · WATCH</text>
+  <text x="96" y="596" font-family="'Onest', system-ui, sans-serif" font-size="24" fill="#6a5c4d">Sīra Labs · self-hosted · Apache-2.0</text>
+</svg>
