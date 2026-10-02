@@ -4,6 +4,8 @@
 set -e
 
 if [ "$KHANDAQ_ROLE" = "worker" ]; then
+  # The worker never migrates: it must not carry the owner login.
+  unset KHANDAQ_MIGRATION_DATABASE_URL
   exec khandaq-worker
 fi
 
@@ -20,4 +22,7 @@ if [ -n "$KHANDAQ_MIGRATION_DATABASE_URL" ] || [ -n "$KHANDAQ_DATABASE_URL" ]; t
   done
 fi
 
+# Migrations are done: drop the owner login so the long-lived server process (which replaces this
+# shell via exec) never holds credentials that could disable the append-only triggers.
+unset KHANDAQ_MIGRATION_DATABASE_URL
 exec uvicorn khandaq.main:app --host 0.0.0.0 --port "${PORT:-8000}"

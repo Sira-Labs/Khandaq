@@ -30,7 +30,8 @@ services:
       KHANDAQ_ROLE: api
     depends_on:
       postgres: { condition: service_healthy }
-    ports: ["8000:8000"]
+    # No published port: reach the API through the web app's /api proxy. Publishing 8000 would expose
+    # it directly — with KHANDAQ_ENV=dev that means the dev login stub (anyone becomes admin).
 
   worker:
     image: ghcr.io/sira-labs/khandaq-api:latest
@@ -51,7 +52,9 @@ services:
     environment:
       KHANDAQ_API_UPSTREAM: api:8000
     depends_on: [api]
-    ports: ["8080:80"]
+    # Loopback only: this bundle runs KHANDAQ_ENV=dev by default (no real sign-in). To serve other
+    # machines, put TLS in front and set KHANDAQ_ENV=prod with the OIDC settings (deploy/README.md).
+    ports: ["127.0.0.1:8080:80"]
 
   # Bundled intentionally-vulnerable local target for `make demo` and tests. Never a third party.
   vulnerable-target:

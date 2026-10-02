@@ -56,6 +56,18 @@ Config keys: `KHANDAQ_DATABASE_URL`, `KHANDAQ_MIGRATION_DATABASE_URL`, `KHANDAQ_
    > used, so it works with the single-role one-click/compose deployments and in CI; a restricted app
    > role remains an optional prod hardening (deploy/caprover.md). Enums use CHECK constraints rather
    > than native PG enum types to keep migrations simple.
+   >
+   > Update 2026-10-02 (code review): a trigger does not stop the table's **owner**, who can disable
+   > it, and the API connected as the owner. Both layers now apply: when `KHANDAQ_DATABASE_URL` names
+   > a different login than the migration owner, `khandaq.db_roles` creates/restricts it on every boot
+   > (row access only; INSERT/SELECT on `audit_log`, `evidence`, `ledger_entries`; read-only
+   > `alembic_version`; owns nothing), and the entrypoint drops the owner URL before serving. The
+   > deploy templates use a separate `khandaq_app` login. Single-login installs keep the trigger.
+   > Its *effective* rights are checked after provisioning: no CREATE (schema or database), no
+   > TEMPORARY, and no UPDATE/DELETE/TRUNCATE/TRIGGER on the append-only tables, even when the
+   > right comes through `PUBLIC`. If one cannot be removed, boot fails. An existing login's
+   > password and LOGIN are never rewritten, so a restart cannot undo an administrator's rotation
+   > or `NOLOGIN`. If the URL no longer authenticates, boot fails with instructions.
 4. With `KHANDAQ_ENV=prod`, the app refuses to start on a placeholder DB URL.
 
 ## Acceptance criteria

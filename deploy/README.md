@@ -19,13 +19,14 @@ Three paths:
 ```bash
 cd deploy
 cp .env.example .env         # fill in secrets; prod refuses placeholders
-docker compose up            # api, worker, postgres, rustfs, (optional) keycloak, + bundled target
+docker compose up            # api, worker, postgres, rustfs, web on http://127.0.0.1:8080
+docker compose --profile demo up   # … plus the bundled vulnerable target for `make demo`
 ```
 
-This brings up the control plane, a Postgres, a RustFS object store for evidence, and the bundled
-**intentionally-vulnerable local target** so you can run `make demo` without pointing at any third-party
-system. Adapter containers are launched by the worker per run via the host Docker socket (shape A in
-`caprover.md`); only use this on a trusted machine.
+The first command brings up the control plane, a Postgres and a RustFS object store for evidence.
+The second also starts the bundled **intentionally-vulnerable local target**, so you can run
+`make demo` without pointing at any third-party system. Adapter containers are launched by the worker
+per run via the host Docker socket (shape A in `caprover.md`); only use this on a trusted machine.
 
 ## What you must provide (ADR-0006)
 
