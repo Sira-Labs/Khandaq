@@ -71,7 +71,10 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
       parser for scored conversations, adapter.yaml, fixture, contract test); successful attacks →
       high findings. Adapter contract tests now run with `--import-mode=importlib`; release.yml
       publishes `khandaq-adapter-pyrit`. 5 adapter contract tests pass.
-- [ ] S4-3 — spec 010 (to write) promptfoo adapter
+- [x] S4-3 — spec 010 promptfoo adapter — `adapters/promptfoo/` (Dockerfile pinned to promptfoo
+      0.118.0, wrap.py parser for promptfoo JSON results, adapter.yaml, fixture, contract test); failed
+      red-team tests → mapped findings by plugin family. release.yml publishes
+      `khandaq-adapter-promptfoo`. 8 adapter contract tests pass.
 - [ ] S4-4 — spec 008 (to write) OIDC (Keycloak) BFF + real roles
 - [ ] S4-5 — spec 011 (to write) first management + technical report (Navigator export)
 
