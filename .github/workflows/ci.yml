@@ -49,14 +49,16 @@ jobs:
       - run: . .venv/bin/activate && pytest -q
 
   adapters:
-    name: adapter manifests
+    name: adapters (manifests + contract tests)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with: { python-version: "3.12" }
-      - run: pip install pyyaml
+      - run: pip install pyyaml jsonschema pytest
       - run: python adapters/_tooling/validate_manifests.py
+      # Adapter contract tests: each adapter's parser must still emit schema-valid findings.
+      - run: pytest adapters/*/tests -q
 
   api:
     name: python api

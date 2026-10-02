@@ -1,0 +1,22 @@
+# garak adapter (spec 006). garak is NVIDIA's LLM vulnerability scanner (Apache-2.0).
+# Khandaq orchestrates it (ADR-0001); this manifest pins an exact upstream version.
+name: garak
+version: "0.17.0"                 # exact upstream version; bump deliberately with the contract test
+image: ghcr.io/sira-labs/khandaq-adapter-garak:0.17.0
+entrypoint: /usr/local/bin/wrap.py
+phases:
+  - 03-scanning
+  - 04-prompt-injection
+frameworks:
+  - owasp-llm-2025
+  - owasp-llm-2026
+  - atlas
+# The adapter derives high/medium/low from each probe's failure rate; this table is the
+# native->canonical identity map (ADR-0004).
+severity_table:
+  high: high
+  medium: medium
+  low: low
+resources:
+  cpu: "1"
+  memory: 2Gi
