@@ -37,11 +37,16 @@ class Settings(BaseSettings):
     object_store_url: str = ""
     object_store_endpoint: str = ""
 
-    # Identity (OIDC). Optional until auth lands (spec 008).
+    # Identity (OIDC BFF; spec 008 / ADR-0005). Required in prod (see validate_runtime).
     oidc_issuer: str = ""
     oidc_client_id: str = "khandaq-api"
     oidc_client_secret: str = ""
+    session_ttl_hours: int = 12
     admin_email: str = ""
+
+    @property
+    def oidc_configured(self) -> bool:
+        return bool(self.oidc_issuer and self.oidc_client_secret and self.public_url)
 
     sigstore: str = "off"
     adapter_runtime: str = "docker-socket"
@@ -67,6 +72,14 @@ class Settings(BaseSettings):
             problems.append("KHANDAQ_DATABASE_URL must be set")
         if self.evidence_key in _PLACEHOLDERS:
             problems.append("KHANDAQ_EVIDENCE_KEY must be set to a real value")
+        # OIDC BFF is the only authentication path in prod (the dev stub refuses there); without it
+        # no one could log in, so fail closed (spec 008 / ADR-0005).
+        if not self.oidc_issuer:
+            problems.append("KHANDAQ_OIDC_ISSUER must be set")
+        if self.oidc_client_secret in _PLACEHOLDERS:
+            problems.append("KHANDAQ_OIDC_CLIENT_SECRET must be set to a real value")
+        if not self.public_url:
+            problems.append("KHANDAQ_PUBLIC_URL must be set (OIDC redirect URI)")
         if problems:
             raise RuntimeError(
                 "Refusing to start in prod with insecure configuration: " + "; ".join(problems)

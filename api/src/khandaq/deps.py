@@ -1,9 +1,12 @@
 """Shared FastAPI dependencies: database session, current user, engagement access.
 
-Authentication here is a **development stub** — real OIDC is spec 008. In production the stub
-refuses to authenticate (returns 501) rather than silently trusting a header, so a prod deployment
-cannot be used until real auth lands. In dev/test the identity is the admin, or the
-``X-Khandaq-Dev-User`` header, so authz can be exercised.
+Authentication resolves in this order (spec 008 / ADR-0005):
+
+1. ``Authorization: Bearer <token>`` → an API token (sha256 lookup), for CLI/CI automation.
+2. The ``__Host-khandaq_session`` cookie → a live server-side session (the browser BFF). Unsafe
+   methods additionally require the ``X-Khandaq-CSRF`` header to match the session's token.
+3. The ``X-Khandaq-Dev-User`` development stub — **non-prod only**, so the local demo and the authz
+   tests keep working. In prod this path is absent, so an unauthenticated request gets ``401``.
 """
 
 from __future__ import annotations
@@ -12,15 +15,21 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from functools import lru_cache
 
-from fastapi import Depends, Header, HTTPException, Path
+from fastapi import Depends, Header, HTTPException, Path, Request
 from sqlalchemy import create_engine, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
+from . import audit
+from .auth import service as auth_service
 from .models import Engagement, EngagementMember, User
-from .settings import Settings, get_settings
+from .settings import get_settings
 
 DEV_USER_HEADER = "X-Khandaq-Dev-User"
+CSRF_HEADER = "X-Khandaq-CSRF"
+SESSION_COOKIE = "__Host-khandaq_session"  # prod: Secure + https + Path=/ + no Domain
+SESSION_COOKIE_DEV = "khandaq_session"  # dev/test over http can't carry a __Host- cookie
+SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 
 
 @lru_cache
@@ -44,27 +53,60 @@ def get_session() -> Iterator[Session]:
             raise
 
 
-def _resolve_identity(settings: Settings, dev_user: str | None) -> str:
-    if settings.is_prod:
-        # The dev stub never authenticates in prod; real auth is spec 008.
-        raise HTTPException(501, "authentication is not configured yet (pending OIDC, spec 008)")
-    return dev_user or settings.admin_email or "dev@khandaq.local"
+def session_cookie_value(request: Request) -> str | None:
+    return request.cookies.get(SESSION_COOKIE) or request.cookies.get(SESSION_COOKIE_DEV)
+
+
+def _bearer_token(authorization: str | None) -> str | None:
+    if authorization and authorization.lower().startswith("bearer "):
+        return authorization[7:].strip() or None
+    return None
 
 
 def current_user(
+    request: Request,
+    authorization: str | None = Header(default=None),
     dev_user: str | None = Header(default=None, alias=DEV_USER_HEADER),
     session: Session = Depends(get_session),
 ) -> User:
     settings = get_settings()
-    email = _resolve_identity(settings, dev_user)
-    user = session.scalar(select(User).where(User.email == email))
-    if user is None:
+    audit.set_actor_token_id(None)
+
+    # 1. API token (automation).
+    token = _bearer_token(authorization)
+    if token is not None:
+        resolved = auth_service.verify_api_token(session, token)
+        if resolved is None:
+            raise HTTPException(401, "invalid or revoked API token")
+        user, token_id = resolved
+        audit.set_actor_token_id(token_id)
+        return user
+
+    # 2. Server-side session (browser BFF) with CSRF on unsafe methods.
+    sid = session_cookie_value(request)
+    if sid is not None:
+        row = auth_service.lookup_session(session, sid)
+        if row is None:
+            raise HTTPException(401, "session expired or invalid")
+        if request.method not in SAFE_METHODS and request.headers.get(CSRF_HEADER) != row.csrf:
+            raise HTTPException(403, "missing or invalid CSRF token")
+        session_user = session.get(User, row.user_id)
+        if session_user is None or session_user.disabled:
+            raise HTTPException(401, "session user is not available")
+        return session_user
+
+    # 3. Development stub — never in prod.
+    if settings.is_prod:
+        raise HTTPException(401, "authentication required")
+    email = dev_user or settings.admin_email or "dev@khandaq.local"
+    dev_user_obj = session.scalar(select(User).where(User.email == email))
+    if dev_user_obj is None:
         is_admin = email == (settings.admin_email or "dev@khandaq.local")
-        user = User(email=email, org_role="admin" if is_admin else "member")
-        session.add(user)
+        dev_user_obj = User(email=email, org_role="admin" if is_admin else "member")
+        session.add(dev_user_obj)
         session.commit()
-        session.refresh(user)
-    return user
+        session.refresh(dev_user_obj)
+    return dev_user_obj
 
 
 @dataclass
