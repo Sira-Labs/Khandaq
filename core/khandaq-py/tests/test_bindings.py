@@ -59,3 +59,19 @@ def test_framework_mappings_and_navigator():
     layer = json.loads(kc.navigator(json.dumps([f])))
     assert layer["domain"] == "atlas"
     assert layer["techniques"][0]["techniqueID"] == "AML.T0051"
+
+
+def test_ledger_append_verify_and_tamper():
+    import khandaq_core as kc
+    chain = []
+    for h in ["sha256:a", "sha256:b", "sha256:c"]:
+        prev = json.dumps(chain[-1]) if chain else None
+        chain.append(json.loads(kc.ledger_append(prev, h)))
+    assert chain[0]["seq"] == 1 and chain[0]["prev_hash"] is None
+    v = json.loads(kc.ledger_verify(json.dumps(chain)))
+    assert v["ok"] is True and v["count"] == 3
+    assert kc.ledger_root(json.dumps(chain)) == chain[-1]["entry_hash"]
+    # tamper
+    chain[1]["evidence_hash"] = "sha256:evil"
+    v2 = json.loads(kc.ledger_verify(json.dumps(chain)))
+    assert v2["ok"] is False and v2["broken_at"] == 2

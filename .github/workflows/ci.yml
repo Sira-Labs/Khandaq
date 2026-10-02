@@ -68,6 +68,10 @@ jobs:
       KHANDAQ_TEST_DATABASE_URL: postgresql+psycopg://khandaq:khandaq@localhost:5432/khandaq
     steps:
       - uses: actions/checkout@v7
+      # The api depends on the khandaq_core wheel (built from the Rust workspace by maturin on uv sync).
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with: { workspaces: core }
       - uses: astral-sh/setup-uv@v7
         with: { python-version: "3.12" }
       - run: uv sync --extra dev

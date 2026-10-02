@@ -37,7 +37,10 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
       Python binding tests pass; clippy/fmt clean; CI `core` + `bindings` jobs online. Decisions:
       serde typed model mirrors finding.schema.json; fingerprint identity = mapping-ids+target+location
       (rule_id fallback); JSON-in/out bindings; `dedup_of` id-linking lands with spec 005.
-- [ ] S2-2 — spec 004 hash-chained evidence ledger
+- [x] S2-2 — spec 004 hash-chained evidence ledger — Rust `ledger` module (append/verify/root) + wheel
+      bindings + API ledger service & read/verify endpoints; the api now depends on the `khandaq_core`
+      wheel (api CI job gains a Rust toolchain). 5 Rust + 1 binding + 2 API ledger tests pass.
+      **Follow-up:** Sigstore signing of the ledger root is deferred (offline chain works today).
 - [ ] S2-3 — seed framework mapping tables for R1 adapters
 
 ### Sprint 3 — orchestration

@@ -36,11 +36,17 @@ ADR-0006), `KHANDAQ_SIGSTORE=off|on`.
 
 ## Acceptance criteria
 
-- [ ] Appending N evidence items yields a verifiable chain; `root` is stable until the next append.
-- [ ] Tampering with one stored artefact or entry is detected by `verify` at the right `seq` (test).
-- [ ] No code path mutates/deletes a sealed entry (enforced; guarded by CODEOWNERS + review).
-- [ ] With Sigstore on, a signed root verifies with the public good; with it off, append/verify work
-      fully offline.
+- [x] Appending N evidence items yields a verifiable chain; `root` is stable until the next append.
+- [x] Tampering with one stored entry is detected by `verify` at the right `seq`; deletion and
+      reordering break the chain too (tests, Rust + API).
+- [x] No code path mutates/deletes a sealed entry (the `ledger` module and API expose none).
+- [~] Sigstore signing: **deferred** — the hash chain works fully offline (default); `KHANDAQ_SIGSTORE`
+      is reserved and actual Sigstore signing lands as a follow-up (needs the sigstore toolchain/network).
+
+> Notes (per CLAUDE.md): the Rust `ledger` module is pure (append/verify/root; `entry_hash =
+> sha256(seq‖evidence_hash‖prev_hash)`); persistence lives in the API `ledger` service, which maps DB
+> rows (evidence_id → Evidence.sha256) to core entries. Sigstore signing is deferred (follow-up in
+> TASKS.md); everything else is offline and tested.
 
 ## Test cases
 

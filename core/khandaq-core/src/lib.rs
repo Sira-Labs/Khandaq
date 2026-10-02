@@ -7,11 +7,16 @@
 pub mod dedup;
 pub mod finding;
 pub mod fingerprint;
+pub mod ledger;
 pub mod mapping;
 pub mod severity;
 
 pub use dedup::{dedup, DedupResult};
 pub use finding::{validate, Finding, Mapping, SchemaError, Source, XKhandaq, SCHEMA_ID};
 pub use fingerprint::fingerprint;
+pub use ledger::{
+    append as ledger_append, entry_hash, root as ledger_root, verify as ledger_verify, LedgerEntry,
+    VerifyResult,
+};
 pub use mapping::{map_frameworks, navigator_layer, Mappings};
 pub use severity::{AdapterSeverityTable, Severity};
