@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     # Secrets / connections (enforced in prod by validate_runtime()).
     session_secret: str = ""
     database_url: str = ""
+    migration_database_url: str = ""  # owner login for migrations; falls back to database_url
     evidence_key: str = ""
 
     # Object store (evidence). Optional until the evidence path lands (spec 004).

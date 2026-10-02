@@ -46,19 +46,26 @@ Config keys: `KHANDAQ_DATABASE_URL`, `KHANDAQ_MIGRATION_DATABASE_URL`, `KHANDAQ_
 
 1. `uv run khandaq-db upgrade head` applies migrations; the API runs this on start before serving.
 2. `GET /api/version` returns `{ "schema_revision": "<rev>", "app": "<version>" }`.
-3. Constraints enforce invariants other specs rely on: `findings.dedup_of` references a canonical
-   finding in the same engagement; `ledger_entries` is unique and ordered per engagement; `audit_log`
-   has no UPDATE/DELETE grant for the app role (append-only at the DB level); `engagement_members.role`
-   and all enum columns are constrained.
+3. Constraints enforce invariants other specs rely on: `findings.dedup_of` references a finding in the
+   same engagement (composite FK on `(engagement_id, id)`); `ledger_entries` is unique and ordered per
+   engagement; `audit_log` is **append-only, enforced by a database trigger** that rejects UPDATE and
+   DELETE; `engagement_members.role` and all enum columns are constrained by CHECKs.
+
+   > Deviation from the draft (recorded per CLAUDE.md): append-only is enforced by a trigger rather than
+   > by withholding UPDATE/DELETE from a separate app DB role. The trigger holds regardless of the login
+   > used, so it works with the single-role one-click/compose deployments and in CI; a restricted app
+   > role remains an optional prod hardening (deploy/caprover.md). Enums use CHECK constraints rather
+   > than native PG enum types to keep migrations simple.
 4. With `KHANDAQ_ENV=prod`, the app refuses to start on a placeholder DB URL.
 
 ## Acceptance criteria
 
-- [ ] Migrations create every table above with the stated constraints and enums.
-- [ ] API runs migrations on start and `GET /api/version` reports the revision.
-- [ ] The app DB role can INSERT into `audit_log` but cannot UPDATE/DELETE it (tested).
-- [ ] `findings.dedup_of` cross-engagement reference is rejected by a constraint (tested).
-- [ ] `ledger_entries(engagement_id, seq)` uniqueness is enforced (tested).
+- [x] Migrations create every table above with the stated constraints and enums.
+- [x] API runs migrations on start (entrypoint `khandaq-db upgrade head`, with retry) and
+      `GET /api/version` reports the revision.
+- [x] `audit_log` rejects UPDATE and DELETE (append-only trigger), while INSERT works (tested).
+- [x] `findings.dedup_of` cross-engagement reference is rejected by the composite FK (tested).
+- [x] `ledger_entries(engagement_id, seq)` uniqueness is enforced (tested).
 
 ## Test cases
 
