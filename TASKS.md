@@ -134,6 +134,16 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
   `KHANDAQ_ADMIN_EMAIL`), mirroring Sahifa's `SAHIFA_ALLOWED_EMAILS`; `KHANDAQ_ENV` is strict
   (typos such as `production` would have enabled the dev stub); prod reads only the `__Host-` cookie;
   token attribution moved off a `ContextVar` that never crossed FastAPI's threadpool.
+- 2026-10-02 — Run-path integrity (code review): the run row and `run.started` were only flushed
+  before the adapter executed, so a DB error while saving results (e.g. two concurrent runs racing
+  for the same ledger `seq`) rolled back every trace of a run that had already reached the target.
+  Now committed first, failures recorded in a fresh transaction, and appends serialised with a
+  per-engagement advisory lock. Dedup now spans runs (partial unique index; `dedup_of` links);
+  `evidence`/`ledger_entries` are append-only by trigger and TRUNCATE is blocked on all three.
+  **Open decision for the owner:** the ledger seals only the adapter-reported sha256, so an evidence
+  row's `object_key`/`run_id`/`kind` are outside the chain (triggers stop app-level edits, not a DBA).
+  Binding a canonical evidence record into `evidence_hash` changes ADR-0007's formula and would
+  invalidate existing staging chains — proposed, not done; needs an ADR.
 - 2026-10-02 — Staging naming + worker boot fix: staging is deployed as `khandaq-stg-<role>` on
   `https://khandaq-stg.siralabs.org` (the one-click's `<app>-<role>` shape); the docs said
   `khandaq-<role>-stg` and showed only production values. `deploy/caprover.md` now has a

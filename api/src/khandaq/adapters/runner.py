@@ -38,6 +38,17 @@ def _sha256(text: str) -> str:
     return "sha256:" + hashlib.sha256(text.encode()).hexdigest()
 
 
+def _docker_memory(value: str) -> str:
+    """Manifest memory uses Kubernetes units (``2Gi``); Docker wants ``2g``."""
+    units = {"Ki": "k", "Mi": "m", "Gi": "g"}
+    for suffix, docker in units.items():
+        if value.endswith(suffix) and value[: -len(suffix)].isdigit():
+            return value[: -len(suffix)] + docker
+    if value.isdigit() or (value[:-1].isdigit() and value[-1].lower() in "kmg"):
+        return value
+    raise ValueError(f"unsupported memory limit {value!r}")
+
+
 class EchoRunner:
     """Deterministic in-process adapter: emits sealed-ready evidence and canonical findings.
 
@@ -111,6 +122,10 @@ class DockerRunner:
     def build_command(self, run_request_path: str, evidence_dir: str, network: str) -> list[str]:
         if not self.manifest.image:
             raise ValueError(f"adapter {self.manifest.name} has no image")
+        for path in (run_request_path, evidence_dir):
+            if ":" in path or "," in path:  # would change the meaning of the -v mount spec
+                raise ValueError(f"unsafe mount path {path!r}")
+        resources = self.manifest.resources or {}
         return [
             "docker",
             "run",
@@ -118,10 +133,25 @@ class DockerRunner:
             "--network",
             network,  # deploy restricts egress on this network to the target
             "--read-only",
+            # A writable, non-executable scratch area; tools that write to $HOME use it.
+            "--tmpfs",
+            "/tmp:rw,noexec,nosuid,size=256m",
+            "--env",
+            "HOME=/tmp",
+            "--user",
+            "65534:65534",  # nobody: the tool never runs as root, even inside its container
             "--cap-drop",
             "ALL",
             "--security-opt",
             "no-new-privileges",
+            # Per-run limits (spec 005, ADR-0009): a runaway or fork-bombing tool cannot exhaust the
+            # host. Memory/CPU come from the manifest; the pid cap is fixed.
+            "--memory",
+            _docker_memory(str(resources.get("memory", "1Gi"))),
+            "--cpus",
+            str(resources.get("cpu", "1")),
+            "--pids-limit",
+            "512",
             "-v",
             f"{run_request_path}:/run-request.json:ro",
             "-v",

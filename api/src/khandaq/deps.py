@@ -150,6 +150,10 @@ def require_engagement_role(*allowed: str):
             if member is None:
                 raise HTTPException(403, "no access to this engagement")
             role = member.role
+            if user.org_role == "read_only":
+                # The org-level read-only role caps every engagement role: such a user may read
+                # what they are a member of, never launch runs or change scope.
+                role = "viewer"
         if allowed and role not in allowed:
             raise HTTPException(403, f"requires one of: {', '.join(allowed)}")
         return EngagementAccess(engagement=engagement, user=user, role=role, session=session)
