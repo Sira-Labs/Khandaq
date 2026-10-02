@@ -18,8 +18,9 @@ from __future__ import annotations
 
 import datetime as dt
 import math
+import posixpath
 from dataclasses import dataclass
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 _DAY_NAMES = {
@@ -173,13 +174,33 @@ def _match_allow(target_type: str, entries: list[dict], spec: dict) -> Decision:
     return Decision(False, f"unknown target type '{target_type}'")
 
 
+def _deny_path(raw: str | None) -> str:
+    """Canonical form of a path for deny matching only. Deliberately broad, so that any spelling a
+    server might resolve to a denied path matches it: percent-escapes are decoded (repeatedly, to
+    undo double encoding), backslashes count as separators, empty and dot segments are resolved,
+    and case is folded. Over-matching only ever refuses a run; under-matching would let one through.
+    Returns '' for the root."""
+    path = raw or "/"
+    for _ in range(5):  # bounded: each pass only shortens the string or leaves it unchanged
+        decoded = unquote(path)
+        if decoded == path:
+            break
+        path = decoded
+    path = path.replace("\\", "/")
+    path = posixpath.normpath("/" + path.lstrip("/"))
+    path = path.lstrip("/")  # normpath keeps a leading '//'
+    return ("/" + path).rstrip("/").casefold() if path not in ("", ".") else ""
+
+
 def _path_covered(rule_path: str, target_path: str | None) -> bool:
     """A denied URL covers its path and everything below it ('/admin' covers '/admin/x'); a URL
-    with no path covers the whole host. Fails closed: when in doubt, the rule applies."""
-    rule = rule_path.rstrip("/")
+    with no path covers the whole host. Both sides are canonicalised with ``_deny_path``, so
+    '/x/../admin', '//admin', '/%61dmin' and 'admin' are all '/admin'. Fails closed: when in
+    doubt, the rule applies."""
+    rule = _deny_path(rule_path)
     if not rule:
         return True
-    target = (target_path or "/").rstrip("/")
+    target = _deny_path(target_path)
     return target == rule or target.startswith(rule + "/")
 
 

@@ -49,7 +49,9 @@ Scope document shape and the lock algorithm: `docs/architecture/04-engagement-sc
    - Every host-bearing field (`host`, `url`, `base_url`, `endpoint`) is resolved the way a client
      connects (port and userinfo dropped, lowercase, trailing dot stripped, IDNA). A spec naming two
      different hosts or paths is refused — at `POST /targets` (422) and at evaluation — so the lock
-     can never check one field while an adapter uses another. Deny patterns are normalised too.
+     can never check one field while an adapter uses another. Deny patterns are normalised too: a
+     deny URL's path is compared after percent-decoding, dot/empty-segment resolution, backslash
+     and case folding, on both sides, so any spelling a server could resolve to it is refused.
    - An allow entry's `models`/`paths` restriction requires the target to name one; the path is
      taken from the URL when there is no `path` key.
    - Run `params` may not carry `host`, `url`, `base_url`, `api_base`, `endpoint`, `target` or

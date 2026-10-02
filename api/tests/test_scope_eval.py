@@ -277,6 +277,16 @@ def test_url_deny_rules_match_canonically():
         {"url": "https://x@gw.acme.test/admin"},
         {"url": "https://gw.acme.test/admin/users/delete"},  # below the denied path
         {"host": "gw.acme.test", "path": "/admin"},  # host + path, no URL
+        # Equivalent spellings of the denied path (review): dot segments, doubled slashes,
+        # percent-encoding (single and double), backslashes, no leading slash, case.
+        {"url": "https://gw.acme.test/x/../admin"},
+        {"url": "https://gw.acme.test//admin"},
+        {"url": "https://gw.acme.test/%61dmin"},
+        {"url": "https://gw.acme.test/%2561dmin"},
+        {"url": "https://gw.acme.test/v1/..%2F..%2Fadmin"},
+        {"host": "gw.acme.test", "path": "\\admin\\users"},
+        {"host": "gw.acme.test", "path": "admin"},
+        {"host": "gw.acme.test", "path": "/ADMIN/"},
     ):
         d = _eval(allow=allow, deny=deny, target_type="llm_endpoint", target_spec=spec)
         assert not d.allowed and "deny rule" in d.reason, spec
@@ -299,3 +309,23 @@ def test_huge_numbers_are_rejected_not_crashed():
     )
     assert not d.allowed and "finite number" in d.reason
     assert validate_scope(ALLOW, [], {"max_requests_per_minute": huge})
+
+
+def test_deny_rule_paths_are_canonicalised_too():
+    # The rule side goes through the same canonicalisation as the target side.
+    allow = {"llm_endpoint": [{"host": "gw.acme.test"}]}
+    for rule in ("https://gw.acme.test/v1/../admin/", "https://gw.acme.test/%61dmin"):
+        d = _eval(
+            allow=allow,
+            deny=[{"url": rule}],
+            target_type="llm_endpoint",
+            target_spec={"url": "https://gw.acme.test/admin/x"},
+        )
+        assert not d.allowed, rule
+    root = _eval(
+        allow=allow,
+        deny=[{"url": "https://gw.acme.test/x/.."}],  # resolves to the root: the whole host
+        target_type="llm_endpoint",
+        target_spec={"url": "https://gw.acme.test/v1/chat"},
+    )
+    assert not root.allowed
