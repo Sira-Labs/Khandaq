@@ -48,6 +48,8 @@ def _created_at() -> Mapped[dt.datetime]:
 
 class User(Base):
     __tablename__ = "users"
+    # `auth_token_id` below is a transient, non-column attribute (allowed by this flag).
+    __allow_unmapped__ = True
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=lambda: new_id("usr"))
     email: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
     display_name: Mapped[str | None] = mapped_column(Text)
@@ -57,6 +59,11 @@ class User(Base):
     __table_args__ = (
         CheckConstraint("org_role in ('admin','member','read_only')", name="ck_users_org_role"),
     )
+
+    # Set by deps.current_user when an API token authenticated this request, so audit.record can
+    # attribute the action to the token (spec 008). Not a column: each request has its own DB
+    # session, hence its own User instance, so the value never leaks across requests.
+    auth_token_id: str | None = None
 
 
 class ApiToken(Base):

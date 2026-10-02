@@ -66,6 +66,7 @@ services:
       KHANDAQ_OIDC_CLIENT_ID: khandaq-api
       KHANDAQ_OIDC_CLIENT_SECRET: $$cap_oidc_client_secret
       KHANDAQ_ADMIN_EMAIL: $$cap_admin_email
+      KHANDAQ_ALLOWED_EMAILS: $$cap_allowed_emails
     caproverExtra:
       containerHttpPort: '8000'
       notExposeAsWebApp: 'true'
@@ -145,6 +146,11 @@ caproverOneClickApp:
       label: Owner email
       description: Becomes the owner/admin at first verified sign-in.
       validRegex: /^[^@\s]+@[^@\s]+\.[^@\s]+$/
+    - id: $$cap_allowed_emails
+      label: Other people allowed to sign in (optional)
+      defaultValue: ''
+      description: Comma-separated email addresses. The realm accepts any Google or GitHub account, so everyone else is refused. Leave empty to allow only the owner.
+      validRegex: /^[^\s]*$/
     - id: $$cap_public_url
       label: Public URL of the web console
       defaultValue: https://$$cap_appname-web.$$cap_root_domain
