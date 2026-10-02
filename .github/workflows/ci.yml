@@ -40,8 +40,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
+        with: { components: "rustfmt, clippy" }
       - uses: Swatinem/rust-cache@v2
         with: { workspaces: core }
+      # khandaq-py is outside the core workspace, so the core job's fmt/clippy/audit never saw it.
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - uses: taiki-e/install-action@cargo-audit
+      - run: cargo audit || true   # advisory, as in the core job
       - uses: actions/setup-python@v6
         with: { python-version: "3.12" }
       - run: python -m venv .venv && . .venv/bin/activate && pip install "maturin>=1.5,<2" pytest

@@ -122,12 +122,27 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
   (no image existed at R0). `khandaq-api` boots with `/api/health` + `/api/version`, fail-closed in
   prod (settings.validate_runtime); `khandaq-web` serves the landing and proxies `/api`; both built and
   pushed to GHCR by `release.yml` on push to main. Domain features still land spec by spec.
+- 2026-10-02 — Scope lock hardening (code review): on the old code 8 of 10 crafted targets/requests
+  were allowed (e.g. `host` allowed while `base_url` pointed at a denied host; trailing-dot host
+  dodging a `*.` deny; missing model under a model restriction; params overriding the model; an
+  undeclared rate under a cap; a midnight window opening the previous night; a mistyped zone read as
+  UTC) and a string rate crashed with a 500 and no audit record. Targets are now canonicalised and
+  must be unambiguous; scope documents are validated on write; evaluation never raises. Spec 002 §6.
 - 2026-10-02 — Full code review (4 parallel reviewers, findings verified before fixing). Auth: the
   realm brokers any Google/GitHub account and every login became an org `member` able to create
   engagements and start runs → sign-in now needs a verified email on `KHANDAQ_ALLOWED_EMAILS` (or
   `KHANDAQ_ADMIN_EMAIL`), mirroring Sahifa's `SAHIFA_ALLOWED_EMAILS`; `KHANDAQ_ENV` is strict
   (typos such as `production` would have enabled the dev stub); prod reads only the `__Host-` cookie;
   token attribution moved off a `ContextVar` that never crossed FastAPI's threadpool.
+- 2026-10-02 — Adapters fail closed (code review, checked against the pinned upstream packages):
+  garak 0.17 writes `total_evaluated`/`fails`, not `total`, so every real garak result was dropped
+  and the run read as clean (the recorded fixture was hand-written in the wrong shape; re-recorded in
+  the 0.17 shape). PyRIT is now read by `AttackResult.outcome`, with its string `score_value`
+  ("0.9") understood; promptfoo errors (`failureReason` 2) are no longer findings. Each parser
+  refuses a truncated, incomplete (no garak `completion` record, no wrapper completion count, stats
+  mismatch), empty or all-errored report, and `main()` exits non-zero without writing
+  `findings.jsonl`, so a run that produced nothing trustworthy fails instead of reporting zero
+  findings. Invoking the tools inside the sandbox is still the spec 005/006 Docker follow-up.
 - 2026-10-02 — Run-path integrity (code review): the run row and `run.started` were only flushed
   before the adapter executed, so a DB error while saving results (e.g. two concurrent runs racing
   for the same ledger `seq`) rolled back every trace of a run that had already reached the target.
@@ -138,6 +153,17 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
   row's `object_key`/`run_id`/`kind` are outside the chain (triggers stop app-level edits, not a DBA).
   Binding a canonical evidence record into `evidence_hash` changes ADR-0007's formula and would
   invalidate existing staging chains — proposed, not done; needs an ADR.
+- 2026-10-02 — Rust core hardening (code review): validation dropped every field the typed model
+  did not name, which broke the SARIF superset, and it accepted `HIGH` and non-object locations,
+  unlike the published schema. Both are fixed. Dedup is now independent of input order, keeps
+  every tool's native severity (`x-khandaq.sources`) and unions `also_found_by`. The Navigator
+  counts per finding. The ledger refuses malformed hashes and seq overflow, and gains
+  `verify_pinned` to detect truncation. `khandaq-py` was outside the workspace, so CI never ran
+  fmt/clippy/audit on it; the job now does. pyo3 is bumped from 0.22 to 0.26 (RUSTSEC-2025-0020;
+  the affected API is unused here), which also clears pyo3 0.22's clippy false positive.
+  **Open decision for the owner:** ADR-0013 (Proposed) would take framework mappings out of the
+  fingerprint, because every mapping edit currently re-fingerprints the same issue and defeats
+  cross-run dedup.
 - 2026-10-02 — Staging naming + worker boot fix: staging is deployed as `khandaq-stg-<role>` on
   `https://khandaq-stg.siralabs.org` (the one-click's `<app>-<role>` shape); the docs said
   `khandaq-<role>-stg` and showed only production values. `deploy/caprover.md` now has a

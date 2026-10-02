@@ -3,9 +3,13 @@
 //! Validation is performed by deserialising into this typed model and checking the controlled
 //! vocabularies. The published JSON Schema (`schema/finding.schema.json`) is the external contract
 //! adapters document against and mirrors this model; `validate` is the authoritative check.
+//!
+//! The finding is a **superset**: fields this model does not name (SARIF `message`, `properties`,
+//! `codeFlows`, an adapter's own `x-khandaq` or `source` extras, …) are kept in `extra` and
+//! serialised back unchanged, so validation and dedup never silently drop tool data.
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::severity::Severity;
 
@@ -25,6 +29,9 @@ pub struct Source {
     pub version: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_severity: Option<String>,
+    /// Fields this model does not name, preserved verbatim.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
 }
 
 fn default_status() -> String {
@@ -48,6 +55,13 @@ pub struct XKhandaq {
     /// Tools that independently produced an equivalent finding (filled in on dedup merge).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub also_found_by: Vec<String>,
+    /// Every contributing tool's own report of the finding (tool, version, native severity),
+    /// filled in on dedup merge so no tool's native severity is lost.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<Source>,
+    /// Fields this model does not name, preserved verbatim.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
 }
 
 fn default_confidence() -> String {
@@ -77,6 +91,9 @@ pub struct Finding {
     pub x_khandaq: XKhandaq,
     #[serde(default, rename = "canonical", skip_serializing_if = "Option::is_none")]
     pub canonical: Option<bool>,
+    /// Fields this model does not name (the SARIF superset), preserved verbatim.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
 }
 
 const VALID_CONFIDENCE: [&str; 3] = ["tentative", "firm", "confirmed"];
@@ -110,9 +127,11 @@ pub fn validate(value: &Value) -> Result<Finding, SchemaError> {
             finding.schema
         )));
     }
-    if Severity::parse(&finding.severity).is_none() {
+    // The canonical scale is lowercase (as in the published schema): "HIGH" is not accepted, so
+    // a stored severity always compares, filters and sorts as one of the five canonical values.
+    if Severity::parse(&finding.severity).map(Severity::as_str) != Some(finding.severity.as_str()) {
         return Err(SchemaError(format!(
-            "unknown severity '{}'",
+            "unknown severity '{}' (expected one of info, low, medium, high, critical)",
             finding.severity
         )));
     }
@@ -126,6 +145,11 @@ pub fn validate(value: &Value) -> Result<Finding, SchemaError> {
         return Err(SchemaError(format!(
             "unknown status '{}'",
             finding.x_khandaq.status
+        )));
+    }
+    if let Some(i) = finding.locations.iter().position(|l| !l.is_object()) {
+        return Err(SchemaError(format!(
+            "locations[{i}] must be an object (a SARIF location)"
         )));
     }
     if finding.engagement_id.is_empty() || finding.run_id.is_empty() || finding.rule_id.is_empty() {

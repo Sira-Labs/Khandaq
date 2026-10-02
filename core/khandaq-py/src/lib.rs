@@ -5,7 +5,10 @@
 //! Python object-mapping dependency. Invalid input raises ValueError.
 
 use kcore::ledger::{self, LedgerEntry};
-use kcore::{dedup as kdedup, fingerprint as kfingerprint, map_frameworks, navigator_layer, validate, Mappings};
+use kcore::{
+    dedup as kdedup, fingerprint as kfingerprint, map_frameworks, navigator_layer, validate,
+    Mappings,
+};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use serde_json::Value;
@@ -87,15 +90,32 @@ fn ledger_append(prev_json: Option<&str>, evidence_hash: &str) -> PyResult<Strin
         Some(s) => Some(serde_json::from_str(s).map_err(|e| PyValueError::new_err(e.to_string()))?),
         None => None,
     };
-    let entry = ledger::append(prev.as_ref(), evidence_hash);
+    let entry = ledger::append(prev.as_ref(), evidence_hash)
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
     serde_json::to_string(&entry).map_err(|e| PyValueError::new_err(e.to_string()))
 }
 
-/// Verify a chain (JSON array of entries); returns a VerifyResult as JSON.
+/// Verify a chain (JSON array of entries); returns a VerifyResult as JSON. With a pinned
+/// `expected_root` and `expected_count` (a report records both), the chain must also still contain
+/// that state, which detects entries removed from its end.
 #[pyfunction]
-fn ledger_verify(entries_json: &str) -> PyResult<String> {
+#[pyo3(signature = (entries_json, expected_root=None, expected_count=None))]
+fn ledger_verify(
+    entries_json: &str,
+    expected_root: Option<&str>,
+    expected_count: Option<usize>,
+) -> PyResult<String> {
     let entries = parse_entries(entries_json)?;
-    serde_json::to_string(&ledger::verify(&entries)).map_err(|e| PyValueError::new_err(e.to_string()))
+    let result = match (expected_root, expected_count) {
+        (None, None) => ledger::verify(&entries),
+        (Some(root), Some(count)) => ledger::verify_pinned(&entries, root, count),
+        _ => {
+            return Err(PyValueError::new_err(
+                "expected_root and expected_count must be given together",
+            ))
+        }
+    };
+    serde_json::to_string(&result).map_err(|e| PyValueError::new_err(e.to_string()))
 }
 
 /// Return the chain root (last entry hash) or None for an empty chain.

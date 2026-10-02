@@ -54,6 +54,13 @@ unified findings inbox, mapped to OWASP and ATLAS, with evidence sealed.
 > deploy-verified. The image publishes from `release.yml`. Wiring disk-manifest adapters into the live
 > API registry + Docker execution on the worker is a follow-up (the api registry is builtin-only today).
 
+> Fail closed (code review, 2026-10-02): the parser reads garak 0.17's `passed`/`fails`/
+> `total_evaluated` (the fixture was re-recorded in that shape; it had used a `total` field garak
+> 0.17 does not write, so real reports yielded no findings). A truncated line, a report without
+> garak's `completion` record, or one with no eval records raises `ReportError`; `main()` then
+> exits non-zero and writes no `findings.jsonl`. `main()` still expects the report to be present:
+> invoking garak in the sandbox is part of the Docker-execution follow-up above.
+
 ## Test cases
 
 Adapter contract (`adapters/garak/tests/test_contract.py`): parse fixture → all findings schema-valid +
