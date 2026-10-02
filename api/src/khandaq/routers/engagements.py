@@ -120,6 +120,9 @@ def add_target(
 ) -> Target:
     if access.engagement.state != "draft":
         raise HTTPException(409, "targets can only be added while the engagement is in draft")
+    problem = scope.validate_target(body.type, body.spec)
+    if problem is not None:  # e.g. a spec naming two hosts the lock could not check consistently
+        raise HTTPException(422, f"target cannot be scope-checked: {problem}")
     target = Target(
         engagement_id=access.engagement.id,
         type=body.type,
@@ -148,6 +151,10 @@ def set_scope(
     existing = session.get(Scope, eng.id)
     if eng.state == "closed":
         raise HTTPException(409, "cannot change scope on a closed engagement")
+    errors = scope.validate_scope(body.allow, body.deny, body.roe)
+    if errors:
+        raise HTTPException(422, {"scope_errors": errors})
+    after = {"allow": body.allow, "deny": body.deny, "roe": body.roe}
 
     if existing is None:
         existing = Scope(engagement_id=eng.id, allow=body.allow, deny=body.deny, roe=body.roe)
@@ -157,7 +164,7 @@ def set_scope(
             action="scope.set",
             actor=access.user,
             engagement_id=eng.id,
-            detail={"version": existing.version},
+            detail={"version": 1, "after": after},
         )
     else:
         before = {
@@ -175,7 +182,7 @@ def set_scope(
                 action="scope.changed",
                 actor=access.user,
                 engagement_id=eng.id,
-                detail={"before": before, "after_version": existing.version},
+                detail={"before": before, "after": after, "after_version": existing.version},
             )
         else:
             audit.record(
@@ -183,7 +190,7 @@ def set_scope(
                 action="scope.set",
                 actor=access.user,
                 engagement_id=eng.id,
-                detail={"version": existing.version},
+                detail={"version": existing.version, "before": before, "after": after},
             )
     session.commit()
     session.refresh(existing)

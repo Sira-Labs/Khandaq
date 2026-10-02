@@ -44,6 +44,28 @@ Scope document shape and the lock algorithm: `docs/architecture/04-engagement-sc
    writes `run.rejected` with the reason. **Default deny:** no matching allow rule → rejected.
 4. Every privileged action writes an audit entry (actor, action, engagement, detail, at).
 5. Cross-engagement access is refused: a user without a role on the engagement gets 403.
+6. **Unambiguous targets** (added 2026-10-02 after a code review found bypasses; all now negative
+   tests in `test_scope_eval.py`):
+   - Every host-bearing field (`host`, `url`, `base_url`, `endpoint`) is resolved the way a client
+     connects (port and userinfo dropped, lowercase, trailing dot stripped, IDNA). A spec naming two
+     different hosts or paths is refused — at `POST /targets` (422) and at evaluation — so the lock
+     can never check one field while an adapter uses another. Deny patterns are normalised too: a
+     deny URL's path is compared after percent-decoding, dot/empty-segment resolution, backslash
+     and case folding, on both sides, so any spelling a server could resolve to it is refused.
+   - An allow entry's `models`/`paths` restriction requires the target to name one; the path is
+     taken from the URL when there is no `path` key.
+   - Run `params` may not carry `host`, `url`, `base_url`, `api_base`, `endpoint`, `target` or
+     `model`.
+   - "Requested rate ≤ limit" requires a declared, finite, non-negative `rate_per_minute` whenever
+     the RoE sets a limit (an undeclared rate cannot be shown to comply). `techniques` must be a
+     list of strings.
+   - RoE windows: day lists may mix ranges and days (`Mon-Wed,Fri`); a window crossing midnight
+     admits the listed day's evening and the following early morning, not the listed day's own early
+     morning; an unknown day or time zone is an error, never silently UTC.
+   - `PUT /scope` validates the document (422 with `scope_errors`), including unknown keys — a typo
+     such as `model` for `models` would otherwise silently drop a restriction. A scope or request the
+     lock still cannot read evaluates to a **rejection** (recorded and audited), never a 500.
+   - `scope.set` / `scope.changed` audit entries record the content before and after.
 
 ## Acceptance criteria
 
