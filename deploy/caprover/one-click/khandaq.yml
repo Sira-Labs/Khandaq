@@ -53,7 +53,7 @@ services:
       KHANDAQ_ENV: prod
       KHANDAQ_ROLE: api
       KHANDAQ_MIGRATION_DATABASE_URL: postgresql+psycopg://khandaq:$$cap_db_password@srv-captain--$$cap_appname-db:5432/khandaq
-      KHANDAQ_DATABASE_URL: postgresql+psycopg://khandaq:$$cap_db_password@srv-captain--$$cap_appname-db:5432/khandaq
+      KHANDAQ_DATABASE_URL: postgresql+psycopg://khandaq_app:$$cap_app_db_password@srv-captain--$$cap_appname-db:5432/khandaq
       KHANDAQ_SESSION_SECRET: $$cap_session_secret
       KHANDAQ_EVIDENCE_KEY: $$cap_evidence_key
       KHANDAQ_OBJECT_STORE_URL: s3://khandaq-evidence
@@ -84,7 +84,7 @@ services:
       KHANDAQ_ROLE: worker
       KHANDAQ_ADAPTER_RUNTIME: docker-socket
       KHANDAQ_ADAPTER_REGISTRY: ghcr.io/sira-labs
-      KHANDAQ_DATABASE_URL: postgresql+psycopg://khandaq:$$cap_db_password@srv-captain--$$cap_appname-db:5432/khandaq
+      KHANDAQ_DATABASE_URL: postgresql+psycopg://khandaq_app:$$cap_app_db_password@srv-captain--$$cap_appname-db:5432/khandaq
       KHANDAQ_SESSION_SECRET: $$cap_session_secret
       KHANDAQ_EVIDENCE_KEY: $$cap_evidence_key
       KHANDAQ_OBJECT_STORE_URL: s3://khandaq-evidence
@@ -164,6 +164,11 @@ caproverOneClickApp:
       label: OIDC client secret
       description: Secret of the confidential 'khandaq-api' client in your realm.
       validRegex: /.{1,}/
+    - id: $$cap_app_db_password
+      label: Runtime database password (generated)
+      defaultValue: $$cap_gen_random_hex(24)
+      description: Password of khandaq_app, the API/worker login. The API creates it on boot with row access only, so it cannot rewrite the append-only audit and evidence tables. No need to change.
+      validRegex: /^[a-f0-9]{16,}$/
     - id: $$cap_db_password
       label: Database password (generated)
       defaultValue: $$cap_gen_random_hex(24)
