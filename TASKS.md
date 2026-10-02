@@ -29,7 +29,12 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
       engagement authz. 24 tests pass. Decisions: dev-auth stub refuses in prod (501) pending OIDC
       (spec 008); org admins act as owner; `run.rejected` audit lands with the run path (spec 005).
 - [~] S1-3 — repo plumbing: `api/` uv skeleton (done, CI `api` job green), Dockerfiles for api + web,
-      `release.yml` publishing images to GHCR (done); `core/` cargo + `web/` pnpm skeletons still to do
+      `release.yml` publishing images to GHCR (done); `core/` cargo + `web/` pnpm skeletons still to do.
+      Fix (2026-10-02): the khandaq-api image failed to build once `api/` gained the `khandaq-core`
+      wheel dependency (spec 004) — the build context omitted `core/`, so `uv pip install .` could not
+      resolve the `../core/khandaq-py` path source. The build stage now copies `core/` and a Rust
+      toolchain (maturin builds the wheel; only the venv ships to the runtime stage); a root
+      `.dockerignore` keeps `core/target` and other heavy trees out of the context.
 
 ### Sprint 2 — data spine
 - [x] S2-1 — spec 003 canonical finding, fingerprint, dedup, severity, mapping (Rust core + wheel) —
