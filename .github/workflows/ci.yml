@@ -19,7 +19,7 @@ jobs:
     defaults:
       run: { working-directory: core }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with: { components: "rustfmt, clippy" }
       - uses: Swatinem/rust-cache@v2
@@ -36,7 +36,7 @@ jobs:
     defaults:
       run: { working-directory: core/khandaq-py }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with: { workspaces: core }
@@ -65,7 +65,7 @@ jobs:
     env:
       KHANDAQ_TEST_DATABASE_URL: postgresql+psycopg://khandaq:khandaq@localhost:5432/khandaq
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with: { workspaces: core }
@@ -82,7 +82,7 @@ jobs:
     name: adapters (lint + manifests)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with: { python-version: "3.12" }
       # Validate every adapter.yaml against the manifest schema and confirm each pins an
@@ -95,7 +95,7 @@ jobs:
     defaults:
       run: { working-directory: web }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with: { node-version: "22" }
       - run: corepack enable
