@@ -13,7 +13,7 @@ from fastapi import FastAPI
 
 from . import __version__
 from .db import schema_revision
-from .routers import engagements, ledger, reports, runs
+from .routers import auth, engagements, ledger, reports, runs
 from .settings import get_settings
 
 logging.basicConfig(level=logging.INFO)
@@ -48,6 +48,7 @@ def create_app() -> FastAPI:
             "note": "authorised AI red-team orchestration — see /api/version",
         }
 
+    app.include_router(auth.router)
     app.include_router(engagements.router)
     app.include_router(ledger.router)
     app.include_router(runs.router)

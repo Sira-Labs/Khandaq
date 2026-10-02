@@ -70,6 +70,22 @@ class ApiToken(Base):
     created_at: Mapped[dt.datetime] = _created_at()
 
 
+class UserSession(Base):
+    """A server-side login session (BFF; ADR-0005 / spec 008).
+
+    The browser holds only the ``__Host-khandaq_session`` cookie carrying this row's id — never an
+    OIDC token. ``csrf`` is the double-submit token checked on state-changing requests.
+    """
+
+    __tablename__ = "sessions"
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=lambda: new_id("ses"))
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
+    csrf: Mapped[str] = mapped_column(Text, nullable=False)
+    expires_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[dt.datetime] = _created_at()
+
+
 class Engagement(Base):
     __tablename__ = "engagements"
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=lambda: new_id("eng"))

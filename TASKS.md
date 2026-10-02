@@ -75,7 +75,17 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
       0.118.0, wrap.py parser for promptfoo JSON results, adapter.yaml, fixture, contract test); failed
       red-team tests → mapped findings by plugin family. release.yml publishes
       `khandaq-adapter-promptfoo`. 8 adapter contract tests pass.
-- [ ] S4-4 — spec 008 (to write) OIDC (Keycloak) BFF + real roles
+- [x] S4-4 — spec 008 OIDC (Keycloak) BFF + real roles — auth package (`auth/oidc.py` injectable
+      OIDC client, `auth/signing.py` HMAC login-state cookie, `auth/service.py` sessions + API
+      tokens), `sessions` table (migration 0002), `routers/auth.py` (`/login` `/callback` `/logout`
+      `/me` `/tokens`). `current_user` now resolves Bearer API token → session cookie → dev stub
+      (non-prod); CSRF header enforced on session-authenticated mutations; prod fails closed without
+      OIDC settings and no longer returns 501. 10 new tests (an injected fake IdP drives the full
+      callback→session path) + test_settings; 48 api tests pass, ruff/mypy clean. Decisions:
+      migration 0002 guards `CREATE TABLE sessions` on existence because 0001 is a `create_all`
+      baseline that now also makes the table on a fresh DB; API tokens stored sha256-only, plaintext
+      shown once; token-authenticated actions attributed via an audit contextvar (`actor_token_id`);
+      live Keycloak end-to-end is deploy-verified (realm export at `deploy/keycloak/`).
 - [x] S4-5 — spec 011 first report — `reports.py` builds a management summary (counts by severity +
       framework, evidence-ledger root + verify) and a technical finding list; endpoints `GET /report`
       (JSON), `/report.html` (escaped HTML), `/report/navigator` (ATLAS Navigator via the core). 38 api
@@ -107,6 +117,12 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
   (no image existed at R0). `khandaq-api` boots with `/api/health` + `/api/version`, fail-closed in
   prod (settings.validate_runtime); `khandaq-web` serves the landing and proxies `/api`; both built and
   pushed to GHCR by `release.yml` on push to main. Domain features still land spec by spec.
+- 2026-10-02 — Real authentication landed (spec 008 / ADR-0005): OIDC Authorization-Code + PKCE
+  against Keycloak, a backend-for-frontend `__Host-` session cookie (no tokens in the browser), CSRF
+  on state-changing requests, and revocable, audited API tokens for automation. The dev header stub
+  is now non-prod only; prod fails closed without OIDC and returns 401 (not 501) when unauthenticated.
+  This completes the R1 spine: authenticated users → engagement → scope-locked run → deduped/mapped
+  findings → sealed/verifiable evidence → framework-mapped report. All R1 specs (001–011) implemented.
 - 2026-10-02 — Rust core (PyO3) owns the integrity-critical logic incl. the ledger (ADR-0011/0007);
   Python FastAPI control plane; Procrastinate on Postgres (ADR-0008); adapters isolated per container with
   egress limited to the in-scope target (ADR-0009).
