@@ -99,9 +99,10 @@ jobs:
       run: { working-directory: web }
     steps:
       - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+        with: { package_json_file: web/package.json }
       - uses: actions/setup-node@v6
-        with: { node-version: "22" }
-      - run: corepack enable
+        with: { node-version: "22", cache: pnpm, cache-dependency-path: web/pnpm-lock.yaml }
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm build
