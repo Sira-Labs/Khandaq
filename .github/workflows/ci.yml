@@ -40,7 +40,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with: { workspaces: core }
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with: { python-version: "3.12" }
       - run: python -m venv .venv && . .venv/bin/activate && pip install maturin pytest
       - run: . .venv/bin/activate && maturin develop --release
@@ -83,7 +83,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with: { python-version: "3.12" }
       # Validate every adapter.yaml against the manifest schema and confirm each pins an
       # exact upstream version. Image builds and contract tests run in the release workflow.
