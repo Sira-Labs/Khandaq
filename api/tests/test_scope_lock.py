@@ -83,13 +83,21 @@ def test_full_lifecycle_and_scope_lock(ctx):
     )
     assert r.status_code == 200 and r.json()["state"] == "active"
 
-    # scope-check: in-scope target allowed
+    # scope-check: in-scope target at a declared rate within the RoE → allowed
+    r = client.post(
+        f"/api/engagements/{eng_id}/scope-check",
+        json={"target_id": target_id, "params": {"rate_per_minute": 30}},
+        headers=OWNER,
+    )
+    assert r.status_code == 200 and r.json()["allowed"] is True
+
+    # the RoE caps the rate, so a run that does not declare one cannot be shown to comply → refused
     r = client.post(
         f"/api/engagements/{eng_id}/scope-check",
         json={"target_id": target_id, "params": {}},
         headers=OWNER,
     )
-    assert r.status_code == 200 and r.json()["allowed"] is True
+    assert r.json()["allowed"] is False and "set rate_per_minute" in r.json()["reason"]
 
     # scope-check: over the rate limit → rejected with a reason
     r = client.post(
