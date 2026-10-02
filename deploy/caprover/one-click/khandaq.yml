@@ -1,0 +1,185 @@
+# CapRover one-click app for Khandaq — deploys the whole stack from one form:
+#   <app>-db (PostgreSQL) · <app>-rustfs (evidence object store) · <app>-api ·
+#   <app>-worker (adapter host) · <app>-web (the only public app).
+#
+# Schema: CapRover one-click app, captainVersion 4. Paste the RAW URL of this file into
+# CapRover → Apps → One-Click Apps/Databases → "…via text/url", or add this repo as a custom
+# one-click repository. Secrets are generated for you and reused across the services.
+#
+# NOTE ON IMAGES: the published images (ghcr.io/sira-labs/khandaq-api, -web) exist from R1 onward.
+# Until then this template is ready but will pull once those tags are published; set the image tag
+# in the form.
+#
+# NOTE ON EGRESS (ADR-0009): this one-click uses adapter-execution "shape A" — the worker launches
+# pinned adapter containers via the host Docker socket, restricting each run's egress to the single
+# in-scope target. That makes the worker privileged; keep this server dedicated to Khandaq. For
+# production, prefer the dedicated adapter-runner host ("shape B") in deploy/caprover.md.
+captainVersion: 4
+
+services:
+  # --- PostgreSQL ---
+  $$cap_appname-db:
+    image: postgres:17
+    restart: always
+    volumes:
+      - $$cap_appname-db-data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_USER: khandaq
+      POSTGRES_PASSWORD: $$cap_db_password
+      POSTGRES_DB: khandaq
+    caproverExtra:
+      notExposeAsWebApp: 'true'
+
+  # --- Evidence object store (RustFS, S3-compatible, append-only) ---
+  $$cap_appname-rustfs:
+    image: rustfs/rustfs:1.0.0
+    restart: always
+    volumes:
+      - $$cap_appname-evidence-data:/data
+    environment:
+      RUSTFS_ACCESS_KEY: $$cap_s3_access_key
+      RUSTFS_SECRET_KEY: $$cap_s3_secret_key
+    caproverExtra:
+      containerHttpPort: '9000'
+      notExposeAsWebApp: 'true'
+
+  # --- Control plane API (runs migrations on start; proxied by the web app) ---
+  $$cap_appname-api:
+    image: ghcr.io/sira-labs/khandaq-api:$$cap_khandaq_version
+    restart: always
+    depends_on:
+      - $$cap_appname-db
+      - $$cap_appname-rustfs
+    environment:
+      KHANDAQ_ENV: prod
+      KHANDAQ_ROLE: api
+      KHANDAQ_MIGRATION_DATABASE_URL: postgresql+psycopg://khandaq:$$cap_db_password@srv-captain--$$cap_appname-db:5432/khandaq
+      KHANDAQ_DATABASE_URL: postgresql+psycopg://khandaq:$$cap_db_password@srv-captain--$$cap_appname-db:5432/khandaq
+      KHANDAQ_SESSION_SECRET: $$cap_session_secret
+      KHANDAQ_EVIDENCE_KEY: $$cap_evidence_key
+      KHANDAQ_OBJECT_STORE_URL: s3://khandaq-evidence
+      KHANDAQ_OBJECT_STORE_ENDPOINT: http://srv-captain--$$cap_appname-rustfs:9000
+      KHANDAQ_OBJECT_STORE_ACCESS_KEY_ID: $$cap_s3_access_key
+      KHANDAQ_OBJECT_STORE_SECRET_ACCESS_KEY: $$cap_s3_secret_key
+      KHANDAQ_SIGSTORE: 'off'
+      KHANDAQ_PUBLIC_URL: $$cap_public_url
+      KHANDAQ_OIDC_ISSUER: $$cap_oidc_issuer
+      KHANDAQ_OIDC_CLIENT_ID: khandaq-api
+      KHANDAQ_OIDC_CLIENT_SECRET: $$cap_oidc_client_secret
+      KHANDAQ_ADMIN_EMAIL: $$cap_admin_email
+    caproverExtra:
+      containerHttpPort: '8000'
+      notExposeAsWebApp: 'true'
+
+  # --- Worker / adapter host (launches pinned adapter containers; no web port) ---
+  $$cap_appname-worker:
+    image: ghcr.io/sira-labs/khandaq-api:$$cap_khandaq_version
+    restart: always
+    depends_on:
+      - $$cap_appname-api
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      KHANDAQ_ENV: prod
+      KHANDAQ_ROLE: worker
+      KHANDAQ_ADAPTER_RUNTIME: docker-socket
+      KHANDAQ_ADAPTER_REGISTRY: ghcr.io/sira-labs
+      KHANDAQ_DATABASE_URL: postgresql+psycopg://khandaq:$$cap_db_password@srv-captain--$$cap_appname-db:5432/khandaq
+      KHANDAQ_SESSION_SECRET: $$cap_session_secret
+      KHANDAQ_EVIDENCE_KEY: $$cap_evidence_key
+      KHANDAQ_OBJECT_STORE_URL: s3://khandaq-evidence
+      KHANDAQ_OBJECT_STORE_ENDPOINT: http://srv-captain--$$cap_appname-rustfs:9000
+      KHANDAQ_OBJECT_STORE_ACCESS_KEY_ID: $$cap_s3_access_key
+      KHANDAQ_OBJECT_STORE_SECRET_ACCESS_KEY: $$cap_s3_secret_key
+    caproverExtra:
+      notExposeAsWebApp: 'true'
+
+  # --- Web console (the only public app; Caddy serves the SPA and proxies /api) ---
+  $$cap_appname-web:
+    image: ghcr.io/sira-labs/khandaq-web:$$cap_khandaq_version
+    restart: always
+    depends_on:
+      - $$cap_appname-api
+    environment:
+      KHANDAQ_API_UPSTREAM: srv-captain--$$cap_appname-api:8000
+    caproverExtra:
+      containerHttpPort: '80'
+      websocketSupport: 'true'
+
+caproverOneClickApp:
+  displayName: Khandaq
+  isOfficial: false
+  description: >
+    A self-hosted command post for AUTHORISED AI red-team engagements. Khandaq orchestrates the
+    open-source tools (garak, PyRIT, promptfoo, ART, MCP/model scanners), unifies their findings into
+    one schema mapped to MITRE ATLAS and the OWASP LLM Top 10, keeps a tamper-evident chain of
+    evidence, and monitors targets for regression. Use only against systems you are authorised to test.
+  documentation: >
+    See https://github.com/Sira-Labs/Khandaq/blob/main/deploy/caprover.md . This one-click deploys the
+    full stack (database, evidence object store, API, worker and web console) with generated secrets.
+    Prerequisites: a Keycloak (or other OIDC) realm with a confidential 'khandaq-api' client — put its
+    issuer URL and client secret in the fields below. After deploy, open the web app, connect a domain
+    and enable HTTPS, and set its OIDC redirect URI in your realm. The worker mounts the host Docker
+    socket to launch adapter containers (ADR-0009, "shape A"); keep this server dedicated to Khandaq.
+  instructions:
+    start: >
+      This deploys Khandaq (database + evidence store + API + worker + web). Before you start, create an
+      OIDC client for Khandaq in your identity provider (a confidential 'khandaq-api' client). You will
+      enter its issuer URL and client secret below. Passwords and keys are generated for you — the
+      evidence-encryption key in particular CANNOT be recovered, so copy it from the app's env after
+      deploy and back it up; losing it makes captured evidence unreadable.
+    end: >
+      Deployed. Next: (1) open the "<app>-web" app, connect your domain and enable HTTPS; (2) set that
+      HTTPS URL as the OIDC redirect in your realm and confirm it matches the Public URL you entered;
+      (3) sign in with the admin email you set to claim the owner account; (4) back up the generated
+      KHANDAQ_EVIDENCE_KEY (in the "<app>-api" and "<app>-worker" env) and set up Postgres + evidence
+      backups per deploy/caprover.md. Reminder: run Khandaq only against systems you are authorised to
+      test — the scope lock enforces this per engagement.
+  variables:
+    - id: $$cap_khandaq_version
+      label: Khandaq image tag
+      defaultValue: 'latest'
+      description: The ghcr.io/sira-labs/khandaq-* image tag to deploy (e.g. latest or a v* release). Published from R1 onward.
+      validRegex: /.{1,}/
+    - id: $$cap_admin_email
+      label: Owner email
+      description: Becomes the owner/admin at first verified sign-in.
+      validRegex: /^[^@\s]+@[^@\s]+\.[^@\s]+$/
+    - id: $$cap_public_url
+      label: Public URL of the web console
+      defaultValue: https://$$cap_appname-web.$$cap_root_domain
+      description: The HTTPS URL the web app will serve on (adjust if you connect a custom domain). Used for OIDC redirects.
+      validRegex: /^https?:\/\/.{1,}/
+    - id: $$cap_oidc_issuer
+      label: OIDC issuer URL
+      description: Your realm, e.g. https://keycloak.example.org/realms/khandaq
+      validRegex: /^https?:\/\/.{1,}/
+    - id: $$cap_oidc_client_secret
+      label: OIDC client secret
+      description: Secret of the confidential 'khandaq-api' client in your realm.
+      validRegex: /.{1,}/
+    - id: $$cap_db_password
+      label: Database password (generated)
+      defaultValue: $$cap_gen_random_hex(24)
+      description: Auto-generated PostgreSQL password; no need to change.
+      validRegex: /^[a-f0-9]{16,}$/
+    - id: $$cap_session_secret
+      label: Session secret (generated)
+      defaultValue: $$cap_gen_random_hex(48)
+      description: Auto-generated server session secret; no need to change.
+      validRegex: /^[a-f0-9]{32,}$/
+    - id: $$cap_evidence_key
+      label: Evidence-encryption key (generated — BACK THIS UP)
+      defaultValue: $$cap_gen_random_hex(32)
+      description: Encrypts captured evidence at rest (ADR-0006). Copy it after deploy and store it safely; it cannot be recovered.
+      validRegex: /^[a-f0-9]{32,}$/
+    - id: $$cap_s3_access_key
+      label: Evidence store access key (generated)
+      defaultValue: $$cap_gen_random_hex(12)
+      description: Auto-generated object-store access key; no need to change.
+      validRegex: /^[a-f0-9]{8,}$/
+    - id: $$cap_s3_secret_key
+      label: Evidence store secret key (generated)
+      defaultValue: $$cap_gen_random_hex(32)
+      description: Auto-generated object-store secret key; no need to change.
+      validRegex: /^[a-f0-9]{16,}$/

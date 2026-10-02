@@ -5,6 +5,12 @@ to the control-plane API over the internal network; the worker launches **adapte
 which is the one way Khandaq's deployment differs from Thawr/Tabayyun and needs care (see
 "Adapter execution and egress", below).
 
+> **Fastest path — one-click.** To stand up a single instance (staging or a solo operator) in one step,
+> use the CapRover **one-click app** at [`caprover/one-click/khandaq.yml`](caprover/one-click/) — it
+> deploys the whole stack (db, evidence store, api, worker, web) with generated secrets. The
+> app-by-app guide below is for the **staging + production split with digest promotion** (ADR-0010),
+> which real client-engagement data needs.
+
 ```
 Internet ─▶ CapRover nginx (TLS) ─▶ khandaq-web (Caddy :80) ──/api──▶ khandaq-api (:8000)
                                                                           │

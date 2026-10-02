@@ -1,8 +1,11 @@
 # Deploying Khandaq
 
-Two paths:
+Three paths:
 
-- **CapRover** (staging + production), the family standard — see [`caprover.md`](caprover.md).
+- **CapRover one-click** — the whole stack from one form (staging or a solo instance). See
+  [`caprover/one-click/`](caprover/one-click/).
+- **CapRover app-by-app** (staging + production with digest promotion), the family standard — see
+  [`caprover.md`](caprover.md).
 - **Single-box self-host** with `docker compose` for one operator on a trusted machine — below.
 
 > The published images (`ghcr.io/sira-labs/khandaq-api`, `-web`, and the adapter images
