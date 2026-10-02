@@ -46,7 +46,8 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
 - [ ] Confirm the public name/domain: GitHub `Sira-Labs/Khandaq` is taken (good); check PyPI name and a
       domain if one is wanted.
 - [ ] Production CapRover server (Germany) ordered/confirmed (ADR-0010).
-- [ ] Keycloak `khandaq` realm + `khandaq-api` client (before the first real user).
+- [ ] Keycloak `khandaq` realm + `khandaq-api` client (before the first real user). Realm export ready
+      at `deploy/keycloak/khandaq-realm.json` (render + import, then set the client/broker secrets).
 - [ ] Evidence-encryption key / KMS story and its backup (ADR-0006); **losing it makes evidence unreadable**.
 - [ ] Backup location for Postgres + evidence bucket; first timed restore drill (ADR-0010).
 - [ ] GitHub environments (`staging`, `production`) + secrets + `v*` tag ruleset for promote.yml.

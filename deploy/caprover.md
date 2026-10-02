@@ -116,10 +116,20 @@ Evidence lives on S3-compatible storage, append-only. Use RustFS (Apache-2.0).
 
 ## 5. Keycloak (production, before the first real user)
 
-Create a `khandaq` realm with a confidential `khandaq-api` client (Authorization Code + PKCE), the
-redirect URIs for `https://khandaq.siralabs.org`, and brokers (Google/GitHub/passkeys) as the family
-does. Put the client secret in `KHANDAQ_OIDC_CLIENT_SECRET`. Single-user staging may run with a local
-admin bootstrap, but production requires the realm.
+Use the ready-made realm export [`keycloak/khandaq-realm.json`](keycloak/) — it defines the confidential
+`khandaq-api` client (Authorization Code + PKCE, back-channel logout), the Google/GitHub brokers and the
+passkey browser flow, with no secrets baked in. Render it with your origin and import it:
+
+```bash
+python3 deploy/keycloak/render.py https://khandaq.siralabs.org > /tmp/khandaq-realm.json
+# Admin console → Realm settings → Partial import, or `kc.sh import --file /tmp/khandaq-realm.json`
+```
+
+Then in the admin console set the `khandaq-api` client secret (→ `KHANDAQ_OIDC_CLIENT_SECRET`) and the
+Google/GitHub client id+secret, and confirm the redirect URI `…/api/auth/callback` matches
+`KHANDAQ_PUBLIC_URL`. `KHANDAQ_OIDC_ISSUER` is `https://<keycloak>/realms/khandaq`. Full steps:
+[`keycloak/README.md`](keycloak/README.md). Single-user staging may run with a local admin bootstrap,
+but production requires the realm.
 
 ## 6. Web app: `khandaq-web`
 

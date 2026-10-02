@@ -18,7 +18,9 @@ generated for you and reused across services.
 - A CapRover server (ideally **dedicated to Khandaq** — the worker mounts the Docker socket; see
   egress note below).
 - An OIDC realm with a confidential **`khandaq-api`** client (Keycloak recommended, ADR-0005). You
-  provide its **issuer URL** and **client secret** in the form.
+  provide its **issuer URL** and **client secret** in the form. The ready-made realm export at
+  [`../../keycloak/`](../../keycloak/) sets up exactly this client (plus Google/GitHub and passkeys) —
+  render and import it first, then copy the issuer URL and client secret into the form.
 
 ## Deploy
 
