@@ -15,13 +15,20 @@ The export has a `__PUBLIC_URL__` placeholder for your install's origin. Render 
 
 ```bash
 # 1. Render with your web console's HTTPS origin (no trailing path)
-python3 deploy/keycloak/render.py https://khandaq.siralabs.org > /tmp/khandaq-realm.json
+python3 deploy/keycloak/render.py https://khandaq.siralabs.org > khandaq-realm.json
 
-# 2. Import into Keycloak — either:
-#    (a) Admin console → Realm settings → Partial import → upload the file, or
+# 2. Import into Keycloak as a FULL realm import — either:
+#    (a) Admin console → realm drop-down → Create realm → Resource file: the rendered
+#        file → Create, or
 #    (b) on first boot of a fresh Keycloak:
-#        kc.sh import --file /tmp/khandaq-realm.json
+#        kc.sh import --file khandaq-realm.json
 ```
+
+> **Use _Create realm_ (full import), not _Realm settings → Partial import_.** This realm rebinds the
+> browser flow to `khandaq browser` and defines custom passkey/broker flows. Partial import only
+> brings in clients, roles, identity providers and scopes — it skips `authenticationFlows`,
+> `authenticatorConfig` and the `browserFlow`/`firstBrokerLoginFlow` bindings — so the realm comes up
+> broken ("realm could not be created" / no sign-in). Full import creates everything in one step.
 
 Staging and production each import their own copy with their own origin (and their own secrets).
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Fill in an install's public URL in the realm export before importing it into Keycloak.
 
-    python3 deploy/keycloak/render.py https://khandaq-stg.siralabs.org > /tmp/khandaq-realm.json
+    python3 deploy/keycloak/render.py https://khandaq-stg.siralabs.org > khandaq-realm.json
 
 The export carries no secrets: the Google and GitHub client secrets and the `khandaq-api`
 client secret are set in the admin console after the import (deploy/caprover.md §5).
@@ -18,9 +18,19 @@ TEMPLATE = Path(__file__).with_name("khandaq-realm.json")
 def render(public_url: str) -> str:
     """The realm JSON with `__PUBLIC_URL__` replaced; the URL must be an origin without a path."""
     parts = urlsplit(public_url)
-    if parts.scheme not in ("https", "http") or not parts.netloc or parts.path not in ("", "/"):
+    if (
+        parts.scheme not in ("https", "http")
+        or not parts.hostname
+        or parts.username is not None
+        or parts.password is not None
+        or parts.path not in ("", "/")
+        or parts.query
+        or parts.fragment
+    ):
         raise ValueError(f"expected an origin such as https://khandaq.example.org, got {public_url!r}")
-    origin = f"{parts.scheme}://{parts.netloc}"
+    port = parts.port  # raises ValueError on an invalid port
+    host = f"[{parts.hostname}]" if ":" in parts.hostname else parts.hostname
+    origin = f"{parts.scheme}://{host}" + (f":{port}" if port else "")
     text = TEMPLATE.read_text().replace("__PUBLIC_URL__", origin)
     json.loads(text)  # still valid JSON
     return text
