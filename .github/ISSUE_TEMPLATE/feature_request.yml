@@ -1,0 +1,26 @@
+name: Feature request
+description: Propose a capability for Khandaq
+labels: ["type: feature", "needs: triage"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What can't you do today? Who is the persona (see docs/architecture/01-product-vision.md)?
+    validations: { required: true }
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+    validations: { required: true }
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: checkboxes
+    id: design
+    attributes:
+      label: Design impact
+      options:
+        - label: This changes a documented decision and needs a new ADR
+        - label: This needs a spec in docs/specs/ before implementation

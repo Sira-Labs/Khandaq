@@ -1,0 +1,9 @@
+# Default owner for everything in the repo.
+*       @thedatadudech
+
+# The authorised-use controls and the evidence ledger get extra attention on every change.
+/api/src/khandaq/scope/      @thedatadudech
+/api/src/khandaq/audit/      @thedatadudech
+/core/khandaq-core/src/ledger/   @thedatadudech
+/docs/architecture/04-engagement-scope-and-authz.md  @thedatadudech
+/SECURITY.md   @thedatadudech

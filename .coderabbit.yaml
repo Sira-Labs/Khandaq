@@ -1,0 +1,24 @@
+# CodeRabbit configuration. Schema: https://coderabbit.ai/integrations/schema.v2.json
+#
+# Reviews are triggered by hand with `@coderabbitai review` on the pull request (the
+# repository is below the star threshold for automatic reviews). Docstring pre-merge
+# check is off: Rust/Python public items are covered by clippy and ruff instead.
+reviews:
+  pre_merge_checks:
+    docstrings:
+      mode: off
+  path_instructions:
+    - path: "adapters/**"
+      instructions: >
+        Adapters must be thin: wrap the upstream tool's public interface, pin an exact
+        version in the Dockerfile, and emit only the canonical findings schema. Flag any
+        adapter that implements attack logic itself, reaches a host other than the one
+        passed by the control plane, or lacks a contract test.
+    - path: "api/src/khandaq/scope/**"
+      instructions: >
+        This is the scope lock. Flag anything that could let a run reach a target outside
+        the engagement's declared scope, or that bypasses the server-side check.
+    - path: "core/**/ledger**"
+      instructions: >
+        This is the hash-chained evidence ledger. Flag anything that mutates or deletes a
+        sealed bundle, or that could break the chain without detection.

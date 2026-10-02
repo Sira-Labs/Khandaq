@@ -1,0 +1,33 @@
+# Rust
+/core/target/
+**/*.rs.bk
+# Python
+/api/.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+/api/dist/
+# maturin / bindings
+/core/khandaq-py/target/
+# Node / web
+node_modules/
+/web/dist/
+/web/.vite/
+# Env & secrets — never commit
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+# Engagement data — never commit captured evidence or targets
+/evidence/
+/engagements/
+*.roe.local.yaml
+# Local infra & scratch
+/data/
+*.log
+.DS_Store
+/tmp/

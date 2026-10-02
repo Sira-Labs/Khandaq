@@ -1,0 +1,46 @@
+name: Adapter proposal
+description: Propose orchestrating a new upstream tool
+labels: ["type: adapter", "needs: triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        An adapter wraps a **published, maintained** open-source tool. Khandaq does not accept
+        novel offensive code — only thin, version-pinned wrappers that normalise a tool's output.
+  - type: input
+    id: tool
+    attributes:
+      label: Tool name and repository URL
+    validations: { required: true }
+  - type: input
+    id: licence
+    attributes:
+      label: Upstream licence
+      description: Must be compatible with redistribution/orchestration. Flag NC or copyleft licences.
+    validations: { required: true }
+  - type: dropdown
+    id: phase
+    attributes:
+      label: Which phase/module does it cover?
+      options:
+        - "01 Methodology & taxonomy"
+        - "02 Recon & attack surface"
+        - "03 Scanning & fuzzing"
+        - "04 Prompt injection"
+        - "05 Adversarial ML & privacy"
+        - "06 Data & training pipeline"
+        - "07 Agentic, MCP & A2A"
+        - "08 Infrastructure & supply chain"
+        - "09 Guardrails & hardening"
+        - "10 IR & forensics"
+    validations: { required: true }
+  - type: textarea
+    id: mapping
+    attributes:
+      label: What framework IDs can it emit?
+      description: ATLAS techniques, OWASP LLM/Agentic IDs, NIST functions — so findings map cleanly.
+  - type: textarea
+    id: maintenance
+    attributes:
+      label: Maintenance signal
+      description: Last release, stars, and any acquisition/licence risk (upstream consolidation is common).
