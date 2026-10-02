@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from khandaq.adapters import build_run_request, get_manifest
 from khandaq.adapters.manifest import AdapterManifest
 from khandaq.adapters.runner import DockerRunner
@@ -72,3 +74,39 @@ def test_docker_runner_command_is_locked_down():
     assert "--cap-drop" in cmd and "ALL" in cmd
     assert "khandaq-run-abc" in cmd  # the egress-restricted per-run network
     assert cmd[-1] == "ghcr.io/sira-labs/khandaq-adapter-garak:0.17.0"
+
+
+def test_docker_runner_applies_resource_limits_and_drops_root():
+    manifest = AdapterManifest(
+        name="garak",
+        version="0.17.0",
+        phases=["03-scanning"],
+        severity_table={"fail": "high"},
+        image="ghcr.io/sira-labs/khandaq-adapter-garak:0.17.0",
+        resources={"cpu": "1", "memory": "2Gi"},
+    )
+    cmd = DockerRunner(manifest, Settings()).build_command(
+        "/tmp/req.json", "/tmp/evidence", "khandaq-run-abc"
+    )
+
+    def value(flag: str) -> str:
+        return cmd[cmd.index(flag) + 1]
+
+    assert value("--memory") == "2g" and value("--cpus") == "1"
+    assert value("--pids-limit") == "512"
+    assert value("--user") == "65534:65534"
+    assert value("--tmpfs").startswith("/tmp:") and "noexec" in value("--tmpfs")
+
+
+def test_docker_runner_refuses_mount_paths_that_change_the_volume_spec():
+    manifest = AdapterManifest(
+        name="garak",
+        version="0.17.0",
+        phases=["03-scanning"],
+        severity_table={"fail": "high"},
+        image="ghcr.io/sira-labs/khandaq-adapter-garak:0.17.0",
+    )
+    with pytest.raises(ValueError, match="unsafe mount path"):
+        DockerRunner(manifest, Settings()).build_command(
+            "/tmp/req.json:/etc/passwd", "/tmp/evidence", "net"
+        )

@@ -34,6 +34,7 @@ def _canonical_findings(session: Session, engagement_id: str) -> list[Finding]:
 
 def build_report(session: Session, engagement: Engagement) -> dict:
     findings = _canonical_findings(session, engagement.id)
+    chain = ledger_svc.chain_status(session, engagement.id)  # root + verify from one read
     by_severity: Counter[str] = Counter(f.severity for f in findings)
     by_framework: Counter[str] = Counter()
     finding_views = []
@@ -65,10 +66,7 @@ def build_report(session: Session, engagement: Engagement) -> dict:
             "authorisation_ref": engagement.authorisation_ref,
         },
         "generated_at": dt.datetime.now(dt.UTC).isoformat(),
-        "evidence": {
-            "root": ledger_svc.root(session, engagement.id),
-            "verify": ledger_svc.verify_chain(session, engagement.id),
-        },
+        "evidence": {"root": chain["root"], "verify": chain["verify"]},
         "summary": {
             "total": len(findings),
             "by_severity": {s: by_severity.get(s, 0) for s in _SEV_ORDER if by_severity.get(s)},
