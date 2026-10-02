@@ -265,3 +265,37 @@ def test_validate_target_refuses_ambiguous_specs():
         "llm_endpoint", {"host": "gw.acme.test", "url": "https://other.test/v1"}
     )
     assert validate_target("llm_endpoint", {"model": "x"}) is not None
+
+
+def test_url_deny_rules_match_canonically():
+    # A raw string compare let these past a deny rule for https://gw.acme.test/admin (review).
+    allow = {"llm_endpoint": [{"host": "gw.acme.test"}]}
+    deny = [{"url": "https://gw.acme.test/admin"}]
+    for spec in (
+        {"url": "https://GW.acme.test/admin"},
+        {"url": "https://gw.acme.test:443/admin"},
+        {"url": "https://x@gw.acme.test/admin"},
+        {"url": "https://gw.acme.test/admin/users/delete"},  # below the denied path
+        {"host": "gw.acme.test", "path": "/admin"},  # host + path, no URL
+    ):
+        d = _eval(allow=allow, deny=deny, target_type="llm_endpoint", target_spec=spec)
+        assert not d.allowed and "deny rule" in d.reason, spec
+    ok = _eval(
+        allow=allow,
+        deny=deny,
+        target_type="llm_endpoint",
+        target_spec={"url": "https://gw.acme.test/administrators"},  # a different segment
+    )
+    assert ok.allowed
+
+
+def test_huge_numbers_are_rejected_not_crashed():
+    huge = 10**400  # parses from JSON as an int; float() of it overflows
+    d = _eval(
+        target_type="llm_endpoint",
+        target_spec=OK_SPEC,
+        roe={"max_requests_per_minute": 60},
+        params={"rate_per_minute": huge},
+    )
+    assert not d.allowed and "finite number" in d.reason
+    assert validate_scope(ALLOW, [], {"max_requests_per_minute": huge})

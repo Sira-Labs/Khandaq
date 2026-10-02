@@ -173,22 +173,40 @@ def _match_allow(target_type: str, entries: list[dict], spec: dict) -> Decision:
     return Decision(False, f"unknown target type '{target_type}'")
 
 
+def _path_covered(rule_path: str, target_path: str | None) -> bool:
+    """A denied URL covers its path and everything below it ('/admin' covers '/admin/x'); a URL
+    with no path covers the whole host. Fails closed: when in doubt, the rule applies."""
+    rule = rule_path.rstrip("/")
+    if not rule:
+        return True
+    target = (target_path or "/").rstrip("/")
+    return target == rule or target.startswith(rule + "/")
+
+
 def _match_deny(deny: list[dict], target_type: str, spec: dict) -> Decision:
     host: str | None = None
-    urls: tuple[str, ...] = ()
+    path: str | None = None
     if target_type in ("llm_endpoint", "agent"):
         target = _endpoint(spec)
-        host, urls = target.host, target.urls
+        host, path = target.host, target.path
     elif target_type == "mcp_server" and spec.get("url"):
-        urls = (str(spec["url"]),)
-        mcp_host = urlsplit(urls[0]).hostname
-        host = normalise_host(mcp_host) if mcp_host else None
+        parts = urlsplit(str(spec["url"]))
+        host = normalise_host(parts.hostname) if parts.hostname else None
+        path = parts.path or None
     digest = spec.get("digest")
     for d in deny:
         if "host" in d and host and _host_matches(str(d["host"]), host):
             return Decision(False, f"host '{host}' matches a deny rule")
-        if "url" in d and d["url"] in urls:
-            return Decision(False, f"'{d['url']}' matches a deny rule")
+        if "url" in d and host:
+            # Compare canonically (host normalised like every other host, path by segment): a raw
+            # string compare let 'https://GW.acme.test:443/admin' slip past a rule for '/admin'.
+            rule = urlsplit(str(d["url"]))
+            if (
+                rule.hostname
+                and normalise_host(rule.hostname) == host
+                and _path_covered(rule.path, path)
+            ):
+                return Decision(False, f"'{d['url']}' matches a deny rule")
         if "digest" in d and digest and d["digest"] == digest:
             return Decision(False, "artifact digest matches a deny rule")
     return Decision(True)
@@ -257,7 +275,13 @@ def _within_windows(windows: list, now: dt.datetime) -> bool:
 
 
 def _non_negative_number(value: object, name: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ScopeError(f"{name} must be a finite number, got {value!r}")
+    try:
+        finite = math.isfinite(value)
+    except OverflowError:  # a huge JSON integer cannot become a float
+        finite = False
+    if not finite:
         raise ScopeError(f"{name} must be a finite number, got {value!r}")
     if value < 0:
         raise ScopeError(f"{name} must not be negative")
@@ -290,7 +314,8 @@ def evaluate(
     """
     try:
         return _evaluate(allow, deny, roe, target_type, target_spec, params, now)
-    except (ValueError, TypeError, KeyError, AttributeError) as exc:  # ScopeError is a ValueError
+    # ScopeError is a ValueError; ArithmeticError covers overflow from absurd numbers.
+    except (ValueError, TypeError, KeyError, AttributeError, ArithmeticError) as exc:
         return Decision(False, f"cannot evaluate scope: {exc}")
 
 
@@ -396,6 +421,10 @@ def validate_scope(allow: dict, deny: list, roe: dict) -> list[str]:
                 normalise_host(pattern[2:] if pattern.startswith("*.") else pattern)
             except ScopeError as exc:
                 errors.append(f"{where}: {exc}")
+        if "url" in rule:
+            parts = urlsplit(str(rule["url"]))
+            if not parts.scheme or not parts.hostname:
+                errors.append(f"{where}: 'url' must be an absolute URL")
     unknown = set(roe) - _ROE_KEYS
     if unknown:
         errors.append(f"roe: unknown keys {sorted(unknown)}")
