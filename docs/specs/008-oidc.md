@@ -69,6 +69,20 @@ header stub, **non-prod only**. If none resolve: `401` (prod no longer returns `
    token-authenticated privileged actions record `actor_token_id`.
 5. **Upsert.** The first user to log in whose email equals `admin_email` is created `org_role=admin`;
    others `member`. An existing user keeps their role (login never escalates/downgrades).
+6. **Who may sign in** (added 2026-10-02 after a code review). The realm brokers *any* Google or
+   GitHub account, so the callback admits only an `email_verified=true` address that is
+   `admin_email` or on `KHANDAQ_ALLOWED_EMAILS` (comma-separated, case-insensitive; empty = admin
+   only). Anyone else gets no user row and no session, is redirected to `/?signin=denied`, and is
+   audited as `auth.denied`. The list is re-checked on every session- and token-authenticated
+   request, so removing an address revokes access at once. Users stay keyed by email; keying by
+   (`iss`, `sub`) is a follow-up.
+7. **Strict environment.** `KHANDAQ_ENV` must be `dev`, `test` or `prod`; any other value refuses to
+   start, because every non-prod value enables the dev login stub. In prod only the `__Host-` session
+   cookie is read.
+8. **Token attribution.** The token id is carried on the request's `User` (one DB session per
+   request) and read by `audit.record`. The first version used a `ContextVar` set in the sync
+   `current_user` dependency, which FastAPI runs in a threadpool on a copied context, so endpoints
+   never saw it and token actions were recorded without `actor_token_id`.
 
 ## Acceptance criteria
 

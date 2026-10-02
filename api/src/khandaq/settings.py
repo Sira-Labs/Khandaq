@@ -8,6 +8,7 @@ the full scope/evidence settings are enforced as their specs land (008, 004).
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -23,7 +24,9 @@ _PLACEHOLDERS = {
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="KHANDAQ_", extra="ignore")
 
-    env: str = "dev"  # dev | prod
+    # Strict on purpose: anything other than prod enables the dev login stub, so a typo such as
+    # "production" must stop the app from starting rather than silently open it.
+    env: Literal["dev", "test", "prod"] = "dev"
     role: str = "api"  # api | worker
     public_url: str = ""
 
@@ -43,10 +46,21 @@ class Settings(BaseSettings):
     oidc_client_secret: str = ""
     session_ttl_hours: int = 12
     admin_email: str = ""
+    # Who may sign in besides admin_email: comma-separated addresses. The realm brokers any Google
+    # or GitHub account, so without this list anyone could sign in and start runs.
+    # Empty = admin only.
+    allowed_emails: str = ""
 
     @property
     def oidc_configured(self) -> bool:
         return bool(self.oidc_issuer and self.oidc_client_secret and self.public_url)
+
+    def email_allowed(self, email: str) -> bool:
+        """True if the address is admin_email or on KHANDAQ_ALLOWED_EMAILS (case-insensitive)."""
+        allowed = {e.strip().lower() for e in self.allowed_emails.split(",") if e.strip()}
+        if self.admin_email.strip():
+            allowed.add(self.admin_email.strip().lower())
+        return email.strip().lower() in allowed
 
     sigstore: str = "off"
     adapter_runtime: str = "docker-socket"
@@ -54,7 +68,7 @@ class Settings(BaseSettings):
 
     @property
     def is_prod(self) -> bool:
-        return self.env.lower() == "prod"
+        return self.env == "prod"
 
     def validate_runtime(self) -> None:
         """Fail closed in production on missing/placeholder settings the app relies on today.

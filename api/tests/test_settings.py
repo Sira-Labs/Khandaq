@@ -45,3 +45,19 @@ def test_prod_api_role_still_requires_oidc():
 
 def test_dev_never_fails_closed():
     Settings(env="dev").validate_runtime()  # no raise, even with everything unset
+
+
+def test_unknown_env_refuses_to_start():
+    # Anything but prod enables the dev login stub, so a typo must not silently open the API.
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        Settings(env="production")
+
+
+def test_allow_list_is_case_insensitive_and_includes_admin():
+    s = Settings(admin_email="Owner@Example.org", allowed_emails=" a@x.test, B@X.test ")
+    assert s.email_allowed("owner@example.org")
+    assert s.email_allowed("b@x.test") and s.email_allowed("A@X.TEST")
+    assert not s.email_allowed("c@x.test")
+    assert not Settings().email_allowed("anyone@x.test")  # empty list + no admin = nobody

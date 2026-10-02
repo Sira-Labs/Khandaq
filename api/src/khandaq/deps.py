@@ -20,10 +20,9 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
-from . import audit
 from .auth import service as auth_service
 from .models import Engagement, EngagementMember, User
-from .settings import get_settings
+from .settings import Settings, get_settings
 
 DEV_USER_HEADER = "X-Khandaq-Dev-User"
 CSRF_HEADER = "X-Khandaq-CSRF"
@@ -53,8 +52,18 @@ def get_session() -> Iterator[Session]:
             raise
 
 
-def session_cookie_value(request: Request) -> str | None:
+def session_cookie_value(request: Request, settings: Settings) -> str | None:
+    # Prod accepts only the __Host- cookie: it cannot be set by a sibling subdomain or over plain
+    # http, which is what stops an attacker planting their own session id (login fixation).
+    if settings.is_prod:
+        return request.cookies.get(SESSION_COOKIE)
     return request.cookies.get(SESSION_COOKIE) or request.cookies.get(SESSION_COOKIE_DEV)
+
+
+def _require_allowed(settings: Settings, user: User) -> None:
+    """Refuse accounts not on the allow-list; checked per request, so removal is immediate."""
+    if not settings.email_allowed(user.email):
+        raise HTTPException(403, "no access: this account is not on KHANDAQ_ALLOWED_EMAILS")
 
 
 def _bearer_token(authorization: str | None) -> str | None:
@@ -70,7 +79,6 @@ def current_user(
     session: Session = Depends(get_session),
 ) -> User:
     settings = get_settings()
-    audit.set_actor_token_id(None)
 
     # 1. API token (automation).
     token = _bearer_token(authorization)
@@ -79,11 +87,13 @@ def current_user(
         if resolved is None:
             raise HTTPException(401, "invalid or revoked API token")
         user, token_id = resolved
-        audit.set_actor_token_id(token_id)
+        _require_allowed(settings, user)
+        session.commit()  # persist last_used_at even when the request itself writes nothing
+        user.auth_token_id = token_id  # audit.record attributes this request's actions to the token
         return user
 
     # 2. Server-side session (browser BFF) with CSRF on unsafe methods.
-    sid = session_cookie_value(request)
+    sid = session_cookie_value(request, settings)
     if sid is not None:
         row = auth_service.lookup_session(session, sid)
         if row is None:
@@ -93,6 +103,7 @@ def current_user(
         session_user = session.get(User, row.user_id)
         if session_user is None or session_user.disabled:
             raise HTTPException(401, "session user is not available")
+        _require_allowed(settings, session_user)
         return session_user
 
     # 3. Development stub — never in prod.
