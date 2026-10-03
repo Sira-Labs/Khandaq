@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 from .. import audit
 from ..auth import service as auth_service
 from ..auth import signing
-from ..auth.oidc import OidcClient, make_pkce, provide_oidc_client
+from ..auth.oidc import IdentityProviderUnavailable, OidcClient, make_pkce, provide_oidc_client
 from ..deps import (
     CSRF_HEADER,
     SESSION_COOKIE,
@@ -34,6 +34,8 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 LOGIN_COOKIE = "khandaq_login"
 LOGIN_TTL_SECONDS = 600
+# Where the browser goes when the identity provider cannot be reached: the console explains it.
+SIGNIN_UNAVAILABLE = "/?signin=unavailable"
 
 
 class TokenCreate(BaseModel):
@@ -77,7 +79,10 @@ def login(
         secret=settings.session_secret,
         ttl_seconds=LOGIN_TTL_SECONDS,
     )
-    url = client.authorization_url(state=state, nonce=nonce, code_challenge=challenge)
+    try:
+        url = client.authorization_url(state=state, nonce=nonce, code_challenge=challenge)
+    except IdentityProviderUnavailable:  # logged with its cause by the client
+        return RedirectResponse(SIGNIN_UNAVAILABLE, status_code=307)
     resp = RedirectResponse(url, status_code=307)
     resp.set_cookie(
         LOGIN_COOKIE,
@@ -105,11 +110,16 @@ def callback(
     if payload is None or not secrets.compare_digest(payload.get("state", ""), state):
         raise HTTPException(400, "invalid or expired login state")
 
-    token = client.exchange(code=code, code_verifier=payload["verifier"])
-    id_token = token.get("id_token")
-    if not id_token:
-        raise HTTPException(400, "no id_token in token response")
-    claims = client.claims(id_token=id_token, nonce=payload["nonce"])
+    try:
+        token = client.exchange(code=code, code_verifier=payload["verifier"])
+        id_token = token.get("id_token")
+        if not id_token:
+            raise HTTPException(400, "no id_token in token response")
+        claims = client.claims(id_token=id_token, nonce=payload["nonce"])
+    except IdentityProviderUnavailable:  # logged with its cause by the client
+        resp = RedirectResponse(SIGNIN_UNAVAILABLE, status_code=307)
+        resp.delete_cookie(LOGIN_COOKIE, path="/api/auth")
+        return resp
 
     # Users are keyed by the IdP account (iss, sub). The email still decides the allow-list, links
     # pre-0006 users and bootstraps admin_email, so it must be one the IdP verified — otherwise

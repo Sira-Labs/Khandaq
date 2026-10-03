@@ -359,3 +359,32 @@ def test_an_email_change_onto_another_users_email_is_refused(client, fake, db):
 def test_an_id_token_without_a_subject_is_rejected(client, fake):
     r = _callback(client, fake, _claims("frank@test", ""))
     assert r.status_code == 400
+
+
+# --- An unreachable identity provider (staging, 2026-10-03) --------------------------------------
+
+
+def test_an_unreachable_idp_sends_login_to_a_notice_not_a_500(client, fake, monkeypatch):
+    from khandaq.auth.oidc import IdentityProviderUnavailable
+
+    def down(**_):
+        raise IdentityProviderUnavailable("the identity provider cannot be reached")
+
+    monkeypatch.setattr(fake, "authorization_url", down)
+    r = client.get("/api/auth/login", follow_redirects=False)
+    assert r.status_code == 307 and r.headers["location"] == "/?signin=unavailable"
+
+
+def test_an_idp_failing_during_the_callback_sends_it_to_the_notice(client, fake, monkeypatch):
+    from khandaq.auth.oidc import IdentityProviderUnavailable
+
+    r = client.get("/api/auth/login", follow_redirects=False)
+    state = parse_qs(urlparse(r.headers["location"]).query)["state"][0]
+
+    def down(**_):
+        raise IdentityProviderUnavailable("token endpoint unreachable")
+
+    monkeypatch.setattr(fake, "exchange", down)
+    r2 = client.get(f"/api/auth/callback?code=abc&state={state}", follow_redirects=False)
+    assert r2.status_code == 307 and r2.headers["location"] == "/?signin=unavailable"
+    assert client.get("/api/auth/me").json()["auth"] != "session"  # no session was created

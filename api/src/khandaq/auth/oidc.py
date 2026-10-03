@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import logging
 import secrets
 from typing import Protocol
 from urllib.parse import urlencode
@@ -19,6 +20,13 @@ import jwt
 from fastapi import HTTPException
 
 from ..settings import Settings, get_settings
+
+log = logging.getLogger("khandaq.auth")
+
+
+class IdentityProviderUnavailable(Exception):
+    """The identity provider could not be reached or answered nonsense (discovery, token
+    endpoint or JWKS). The message is safe to show; the cause is in the log."""
 
 
 def make_pkce() -> tuple[str, str]:
@@ -58,9 +66,24 @@ class KeycloakOidcClient:
     def _metadata(self) -> dict:
         if self._meta is None:
             url = self._s.oidc_issuer.rstrip("/") + "/.well-known/openid-configuration"
-            resp = httpx.get(url, timeout=10.0)
-            resp.raise_for_status()
-            self._meta = resp.json()
+            try:
+                resp = httpx.get(url, timeout=10.0)
+                resp.raise_for_status()
+                meta = resp.json()
+                for key in ("authorization_endpoint", "token_endpoint", "jwks_uri"):
+                    if not isinstance(meta.get(key), str):
+                        raise ValueError(f"discovery document has no {key}")
+            except (httpx.HTTPError, ValueError) as exc:
+                # A wrong or unresolvable KHANDAQ_OIDC_ISSUER, a missing realm, or an IdP that is
+                # down: say which in the log, and fail the sign-in clearly instead of with a 500.
+                log.error(
+                    "OIDC discovery failed",
+                    extra={"discovery_url": url, "error": f"{type(exc).__name__}: {exc}"},
+                )
+                raise IdentityProviderUnavailable(
+                    "the identity provider cannot be reached; check KHANDAQ_OIDC_ISSUER"
+                ) from None
+            self._meta = meta
         return self._meta
 
     def _jwks_client(self) -> jwt.PyJWKClient:
@@ -90,13 +113,25 @@ class KeycloakOidcClient:
             "client_secret": self._s.oidc_client_secret,
             "code_verifier": code_verifier,
         }
-        resp = httpx.post(self._metadata()["token_endpoint"], data=data, timeout=10.0)
+        try:
+            resp = httpx.post(self._metadata()["token_endpoint"], data=data, timeout=10.0)
+        except httpx.HTTPError as exc:
+            log.error("OIDC token exchange failed", extra={"error": type(exc).__name__})
+            raise IdentityProviderUnavailable(
+                "the identity provider's token endpoint cannot be reached"
+            ) from None
         if resp.status_code != 200:
             raise HTTPException(400, "token exchange failed")
         return resp.json()
 
     def claims(self, *, id_token: str, nonce: str) -> dict:
-        signing_key = self._jwks_client().get_signing_key_from_jwt(id_token)
+        try:
+            signing_key = self._jwks_client().get_signing_key_from_jwt(id_token)
+        except jwt.PyJWKClientConnectionError as exc:
+            log.error("OIDC signing keys unavailable", extra={"error": str(exc)})
+            raise IdentityProviderUnavailable(
+                "the identity provider's signing keys cannot be fetched"
+            ) from None
         try:
             claims = jwt.decode(
                 id_token,

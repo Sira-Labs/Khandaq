@@ -113,3 +113,18 @@ describe("app sign-in", () => {
   });
 });
 
+
+
+describe("sign-in when the identity provider is unreachable", () => {
+  it("explains it instead of showing a server error", async () => {
+    meMock.mockReset();
+    meMock.mockRejectedValue(new ApiError(401, "authentication required"));
+    window.history.replaceState(null, "", "/?signin=unavailable");
+    await renderApp();
+    expect(await screen.findByRole("alert")).toHaveTextContent("cannot reach its identity provider");
+    expect(screen.getByRole("link", { name: "Sign in" })).toHaveAttribute(
+      "href",
+      "/api/auth/login?next=%2F",
+    );
+  });
+});
