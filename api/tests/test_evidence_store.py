@@ -105,6 +105,35 @@ def test_local_store_is_write_once(tmp_path):
         store.put_new("../outside.txt", b"x")
 
 
+def test_concurrent_writers_of_one_key_never_mix_their_bytes(tmp_path):
+    """Exactly one writer wins; every other gets EvidenceExists, and the stored blob is the
+    winner's own (CodeRabbit on PR #33: temp names used to be per process, not per call)."""
+    import threading
+
+    store = LocalEvidenceStore(tmp_path)
+    barrier = threading.Barrier(8)
+    won: list[bytes] = []
+    lost: list[bytes] = []
+
+    def write(i: int) -> None:
+        blob = f"writer-{i}".encode() * 1000
+        barrier.wait()
+        try:
+            store.put_new(KEY, blob)
+            won.append(blob)
+        except EvidenceExists:
+            lost.append(blob)
+
+    threads = [threading.Thread(target=write, args=(i,)) for i in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(won) == 1 and len(lost) == 7
+    assert store.get(KEY) == won[0]
+    assert [p.name for p in (tmp_path / "eng_1/run_1").iterdir()] == ["report.jsonl"]
+
+
 def test_retain_stores_ciphertext_and_accepts_an_identical_retry(tmp_path):
     store = LocalEvidenceStore(tmp_path)
     retain(store, RING, KEY, b"tool output", sha(b"tool output"))

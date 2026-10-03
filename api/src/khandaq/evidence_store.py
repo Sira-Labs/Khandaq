@@ -17,6 +17,7 @@ import functools
 import hashlib
 import logging
 import os
+import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 from urllib.parse import urlparse
@@ -59,7 +60,8 @@ class EvidenceStore(Protocol):
 
 class LocalEvidenceStore:
     """Files under a root directory, written to a temp name and hard-linked into place: the link
-    fails if the key exists, so nothing is overwritten (spec 012)."""
+    fails if the key exists, so nothing is overwritten (spec 012). Each call gets its own temp file
+    (``mkstemp``), so concurrent writers of one key never link each other's bytes."""
 
     def __init__(self, root: Path) -> None:
         self.root = root
@@ -73,9 +75,11 @@ class LocalEvidenceStore:
     def put_new(self, object_key: str, blob: bytes) -> None:
         path = self._path(object_key)
         path.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
-        tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-        tmp.write_bytes(blob)
+        fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+        tmp = Path(tmp_name)
         try:
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(blob)
             os.chmod(tmp, 0o440)
             os.link(tmp, path)
         except FileExistsError:
