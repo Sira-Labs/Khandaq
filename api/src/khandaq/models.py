@@ -335,9 +335,9 @@ class AlertOutbox(Base):
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=lambda: new_id("alr"))
     engagement_id: Mapped[str] = mapped_column(ForeignKey("engagements.id"), nullable=False)
     campaign_id: Mapped[str] = mapped_column(ForeignKey("campaigns.id"), nullable=False)
-    diff_id: Mapped[str] = mapped_column(
-        ForeignKey("campaign_diffs.id"), nullable=False, unique=True
-    )
+    diff_id: Mapped[str] = mapped_column(ForeignKey("campaign_diffs.id"), nullable=False)
+    # One row per channel per diff (spec 022): each is retried and audited on its own.
+    channel: Mapped[str] = mapped_column(Text, nullable=False, server_default="webhook")
     payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
     state: Mapped[str] = mapped_column(Text, nullable=False, server_default="pending")
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
@@ -347,5 +347,7 @@ class AlertOutbox(Base):
     sent_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
     __table_args__ = (
         CheckConstraint("state in ('pending','sent','failed')", name="ck_alert_outbox_state"),
+        CheckConstraint("channel in ('webhook','email')", name="ck_alert_outbox_channel"),
+        UniqueConstraint("diff_id", "channel", name="uq_alert_outbox_diff_channel"),
         Index("ix_alert_outbox_due", "state", "next_attempt_at"),
     )

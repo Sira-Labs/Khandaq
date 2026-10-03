@@ -7,6 +7,7 @@ the full scope/evidence settings are enforced as their specs land (008, 004).
 
 from __future__ import annotations
 
+import re
 from functools import lru_cache
 from typing import Literal
 
@@ -14,6 +15,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .evidence_crypto import MIN_KEY_CHARS
 from .evidence_store import parse_store_url
+from .smtp import TLS_SCHEMES, SmtpTarget, parse_smtp_url
 
 # Values that must never reach production: the examples shipped in deploy/.env.example.
 _PLACEHOLDERS = {
@@ -22,6 +24,11 @@ _PLACEHOLDERS = {
     "generate-with-openssl-rand-base64-48",
     "generate-with-openssl-rand-base64-32",
 }
+
+
+# A deliberately plain check (no display names, no quoting): enough to catch a typo or a missing
+# From before the first alert is due.
+_ADDRESS = re.compile(r"[^@\s,<>]+@[^@\s,<>]+\.[^@\s,<>]+")
 
 
 class Settings(BaseSettings):
@@ -93,6 +100,17 @@ class Settings(BaseSettings):
     alert_webhook_url: str = ""
     alert_webhook_secret: str = ""
     alert_max_attempts: int = 5
+    # Email as a second alert channel (spec 022): deployment-wide recipients and relay. Empty
+    # KHANDAQ_ALERT_EMAIL_TO = email off.
+    alert_email_to: str = ""
+    alert_email_from: str = ""
+    smtp_url: str = ""
+    smtp_password: str = ""
+
+    @property
+    def alert_email_recipients(self) -> list[str]:
+        return [a.strip() for a in self.alert_email_to.split(",") if a.strip()]
+
     # A deployment overlay for the framework mapping table (spec 021): a khandaq.mappings/1 JSON
     # file adding rules and frameworks such as an internal control catalogue. Empty = built-in only.
     mappings_path: str = ""
@@ -113,6 +131,7 @@ class Settings(BaseSettings):
         from .mapping_overlay import load_overlay
 
         load_overlay(self.mappings_path)
+        smtp_target = self._check_email_alerts()
         if not self.is_prod:
             return
         problems: list[str] = []
@@ -134,6 +153,11 @@ class Settings(BaseSettings):
             parse_store_url(self.object_store_url)
         except ValueError as exc:
             problems.append(str(exc))
+        if self.alert_email_recipients:
+            if smtp_target is None or smtp_target.scheme not in TLS_SCHEMES:
+                problems.append("KHANDAQ_SMTP_URL must be smtps:// or smtp+starttls:// in prod")
+            elif smtp_target.username and self.smtp_password in _PLACEHOLDERS:
+                problems.append("KHANDAQ_SMTP_PASSWORD must be set for the SMTP user")
         if self.alert_webhook_url:
             if not self.alert_webhook_url.startswith("https://"):
                 problems.append("KHANDAQ_ALERT_WEBHOOK_URL must be an https:// URL")
@@ -154,6 +178,22 @@ class Settings(BaseSettings):
             raise RuntimeError(
                 "Refusing to start in prod with insecure configuration: " + "; ".join(problems)
             )
+
+    def _check_email_alerts(self) -> SmtpTarget | None:
+        """Email alert settings that are wrong in any environment (spec 022 §4)."""
+        target = parse_smtp_url(self.smtp_url) if self.smtp_url.strip() else None
+        recipients = self.alert_email_recipients
+        if not recipients:
+            return target
+        if target is None:
+            raise RuntimeError("KHANDAQ_ALERT_EMAIL_TO is set but KHANDAQ_SMTP_URL is not")
+        for address in [*recipients, self.alert_email_from]:
+            if not _ADDRESS.fullmatch(address.strip()):
+                raise RuntimeError(
+                    "KHANDAQ_ALERT_EMAIL_TO and KHANDAQ_ALERT_EMAIL_FROM must be addresses "
+                    f"(local@domain); got {address!r}"
+                )
+        return target
 
 
 @lru_cache

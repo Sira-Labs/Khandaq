@@ -101,3 +101,56 @@ def test_prod_accepts_s3_store_and_retired_keys():
         alert_webhook_secret="d" * 40,
     )
     s.validate_runtime()  # must not raise
+
+
+# --- Email alerts (spec 022) ---------------------------------------------------------------------
+
+_EMAIL = {
+    "alert_email_to": "secops@acme.example, oncall@acme.example",
+    "alert_email_from": "khandaq@acme.example",
+}
+
+
+def test_prod_accepts_email_alerts_over_tls():
+    for url in ("smtps://khandaq@mail.acme.example", "smtp+starttls://mail.acme.example:2587"):
+        Settings(
+            **_PROD_FULL, **_EMAIL, smtp_url=url, smtp_password="a-real-password"
+        ).validate_runtime()
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"smtp_url": "smtp://mail.acme.example"}, r"smtps:// or smtp\+starttls://"),
+        ({"smtp_url": "smtps://khandaq@mail.acme.example"}, "KHANDAQ_SMTP_PASSWORD"),
+    ],
+)
+def test_prod_refuses_email_without_tls_or_password(overrides, message):
+    with pytest.raises(RuntimeError, match=message):
+        Settings(**_PROD_FULL, **_EMAIL, **overrides).validate_runtime()
+
+
+@pytest.mark.parametrize("env", ["dev", "prod"])
+@pytest.mark.parametrize(
+    ("overrides", "error", "message"),
+    [
+        ({"smtp_url": "ftp://mail.acme.example"}, ValueError, "KHANDAQ_SMTP_URL"),
+        ({"smtp_url": "smtps://u:pw@mail.acme.example"}, ValueError, "password"),
+        ({"smtp_url": "smtps://mail.acme.example:notaport"}, ValueError, "port"),
+        ({"smtp_url": ""}, RuntimeError, "KHANDAQ_SMTP_URL is not"),
+        ({"smtp_url": "smtp://localhost:1025", "alert_email_from": ""}, RuntimeError, "addresses"),
+        (
+            {"smtp_url": "smtp://localhost:1025", "alert_email_to": "not-an-address"},
+            RuntimeError,
+            "addresses",
+        ),
+    ],
+)
+def test_bad_email_settings_stop_startup_everywhere(env, overrides, error, message):
+    base = _PROD_FULL if env == "prod" else {"env": "dev"}
+    with pytest.raises(error, match=message):
+        Settings(**{**base, **_EMAIL, **overrides}).validate_runtime()
+
+
+def test_dev_allows_a_plain_local_catcher():
+    Settings(env="dev", **_EMAIL, smtp_url="smtp://localhost:1025").validate_runtime()
