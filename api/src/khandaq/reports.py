@@ -79,7 +79,14 @@ def build_report(session: Session, engagement: Engagement) -> dict:
             "by_framework": dict(sorted(by_framework.items())),
         },
         "findings": finding_views,
+        # The table versions the framework ids refer to (spec 020).
+        "mapping_tables": _mapping_tables(),
     }
+
+
+def _mapping_tables() -> dict:
+    table = json.loads(kc.mapping_table())
+    return {"versions": table["versions"], "sources": table["sources"]}
 
 
 def record_export(session: Session, report: dict, *, fmt: str, actor: User) -> None:
@@ -145,6 +152,10 @@ def render_html(report: dict) -> str:
         f"<tr><td>{html.escape(k)}</td><td>{n}</td></tr>"
         for k, n in report["summary"]["by_framework"].items()
     )
+    tables = " · ".join(
+        f"{html.escape(fw)} {html.escape(v)}"
+        for fw, v in report.get("mapping_tables", {}).get("versions", {}).items()
+    )
     find_rows = "".join(
         "<tr>"
         f"<td>{html.escape(f['severity'])}</td>"
@@ -179,6 +190,7 @@ def render_html(report: dict) -> str:
         (sev_rows or none2) + "</table>",
         "<h2>Summary by framework</h2><table><tr><th>framework id</th><th>count</th></tr>",
         (fw_rows or none2) + "</table>",
+        f"<p>Framework tables: {tables or '—'}.</p>",
         "<h2>Findings</h2><table>",
         "<tr><th>severity</th><th>finding</th><th>frameworks</th><th>evidence</th></tr>",
         (find_rows or none4) + "</table>",
