@@ -9,11 +9,13 @@ finding titles, evidence or target details.
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import hashlib
 import hmac
 import json
 import logging
+import time
 from typing import Protocol
 
 import httpx
@@ -29,23 +31,39 @@ log = logging.getLogger("khandaq.alerts")
 PAYLOAD_SCHEMA = "khandaq.alert/1"
 EVENT = "campaign.worsened"
 DELIVERY_BATCH = 10
-TIMEOUT_SECONDS = 10.0
+TIMEOUT_SECONDS = 10.0  # hard wall-clock limit per delivery, connect to last byte
+BATCH_BUDGET_SECONDS = 30.0  # no new delivery starts after this; the run loop must keep moving
 MAX_BACKOFF_MINUTES = 60
 
 
 class Sender(Protocol):
     def post(self, url: str, body: bytes, headers: dict[str, str]) -> int:
-        """POST ``body``; return the HTTP status. Raise ``httpx.HTTPError`` on transport errors."""
+        """POST ``body``; return the HTTP status. Raise ``httpx.HTTPError`` or ``TimeoutError``
+        on transport errors."""
 
 
 class HttpxSender:
-    """The default sender: no redirects followed (a 3xx is a failed delivery, not a hop)."""
+    """The default sender: no redirects followed (a 3xx is a failed delivery, not a hop).
+
+    httpx timeouts bound inactivity, not the whole exchange, so a receiver dribbling bytes could
+    hold the worker (and every queued run behind it) for as long as it liked. The request runs
+    under ``asyncio.wait_for``, a hard deadline that cancels it mid-stream (PR #34 review). The
+    response body is never read: only the status matters."""
+
+    def __init__(self, deadline_seconds: float = TIMEOUT_SECONDS) -> None:
+        self.deadline_seconds = deadline_seconds
+
+    async def _post(self, url: str, body: bytes, headers: dict[str, str]) -> int:
+        async with httpx.AsyncClient(
+            timeout=self.deadline_seconds, follow_redirects=False
+        ) as client:
+            async with client.stream("POST", url, content=body, headers=headers) as response:
+                return response.status_code
 
     def post(self, url: str, body: bytes, headers: dict[str, str]) -> int:
-        response = httpx.post(
-            url, content=body, headers=headers, timeout=TIMEOUT_SECONDS, follow_redirects=False
+        return asyncio.run(
+            asyncio.wait_for(self._post(url, body, headers), timeout=self.deadline_seconds)
         )
-        return response.status_code
 
 
 def _now() -> dt.datetime:
@@ -148,7 +166,11 @@ def deliver_due(session: Session, sender: Sender | None = None) -> int:
         return 0  # alerts off: pending rows wait, nothing is sent anywhere
     sender = sender or HttpxSender()
     attempted = 0
+    started = time.monotonic()
     for _ in range(DELIVERY_BATCH):
+        if time.monotonic() - started > BATCH_BUDGET_SECONDS:
+            session.rollback()
+            break  # the rest wait for the next loop iteration, in the same order
         alert = session.scalars(
             select(AlertOutbox)
             .where(AlertOutbox.state == "pending", AlertOutbox.next_attempt_at <= _now())
@@ -163,7 +185,7 @@ def deliver_due(session: Session, sender: Sender | None = None) -> int:
         body = json.dumps(alert.payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         try:
             status = sender.post(settings.alert_webhook_url, body, _headers(alert, body, settings))
-        except httpx.HTTPError as exc:
+        except (httpx.HTTPError, TimeoutError) as exc:
             _record_failure(session, alert, type(exc).__name__, settings)
         else:
             if 200 <= status < 300:

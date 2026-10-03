@@ -656,3 +656,65 @@ def test_alert_list_authz(env, alerts_on):
     r = client.get(f"/api/engagements/{eng_id}/alerts", headers=analyst)
     assert r.status_code == 200 and len(r.json()) == 1 and r.json()[0]["state"] == "pending"
     assert client.get(f"/api/engagements/{eng_id}/alerts", headers=viewer).status_code == 403
+
+
+def test_a_dribbling_receiver_cannot_hold_the_worker():
+    """httpx timeouts bound inactivity only; the sender's deadline bounds the whole exchange
+    (PR #34 review). A local server answers one byte every 0.2 s, forever."""
+    import socket
+    import threading
+    import time
+
+    from khandaq.alerts import HttpxSender
+
+    server = socket.socket()
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+    port = server.getsockname()[1]
+    stop = threading.Event()
+
+    def dribble():
+        conn, _ = server.accept()
+        conn.recv(65536)
+        try:
+            while not stop.is_set():
+                conn.send(b"H")  # never completes a status line
+                time.sleep(0.2)
+        except OSError:
+            pass
+        finally:
+            conn.close()
+
+    thread = threading.Thread(target=dribble, daemon=True)
+    thread.start()
+    started = time.monotonic()
+    try:
+        with pytest.raises(TimeoutError):
+            HttpxSender(deadline_seconds=1.0).post(f"http://127.0.0.1:{port}/hook", b"{}", {})
+        assert time.monotonic() - started < 3
+    finally:
+        stop.set()
+        server.close()
+
+
+def test_delivery_stops_starting_sends_when_its_budget_is_spent(env, alerts_on, monkeypatch):
+    from khandaq import alerts
+
+    client, db = env
+    eng_id, tid = _engagement(client, "alert-budget")
+    cid = _create(client, eng_id, tid).json()["id"]
+    _cycle(db, cid, ["a"])
+    _cycle(db, cid, ["a", "b"])
+    _cycle(db, cid, ["a", "b", "c"])  # two worsened diffs → two alerts here (plus any earlier)
+
+    clock = [0.0]
+    monkeypatch.setattr(alerts.time, "monotonic", lambda: clock[0])
+
+    class SlowSender(RecordingSender):
+        def post(self, url, body, headers):
+            clock[0] += alerts.BATCH_BUDGET_SECONDS + 1  # each send eats the whole budget
+            return super().post(url, body, headers)
+
+    sender = SlowSender([200] * 10)
+    assert _deliver(db, sender) == 1  # one send, then the budget stops the batch
+    assert len(sender.calls) == 1
