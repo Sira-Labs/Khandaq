@@ -82,9 +82,65 @@ def test_smoke_script_passes_against_the_app(client):
     lines: list[str] = []
     runner = smoke.Smoke(_transport(client, _token(client)), out=lines.append)
     assert runner.run() is True, "\n".join(lines)
-    assert all(line.startswith("✓") for line in lines)
+    assert all(line.startswith(("✓", "–")) for line in lines)
     assert len(runner.results) == 10
+    # smoke@test is not an organisation admin: the worker check is skipped, not passed.
+    assert runner.skipped == ["a worker is alive (spec 023)"]
     assert any("out-of-scope run rejected" in line for line in lines)
+
+
+@pytest.fixture
+def admin_token(client):
+    from khandaq.settings import get_settings
+
+    settings = get_settings()
+    previous = (settings.admin_email, settings.allowed_emails)
+    settings.admin_email = "smoke-admin@test"
+    settings.allowed_emails = "smoke@test, smoke-admin@test"
+    r = client.post(
+        "/api/auth/tokens",
+        json={"name": "smoke-admin"},
+        headers={"X-Khandaq-Dev-User": "smoke-admin@test"},
+    )
+    assert r.status_code == 201, r.text
+    yield r.json()["token"]
+    settings.admin_email, settings.allowed_emails = previous
+
+
+def _set_heartbeat(seen_minutes_ago: float | None) -> None:
+    import datetime as dt
+
+    eng = create_engine(TEST_URL, future=True)
+    with eng.begin() as conn:
+        conn.execute(text("DELETE FROM worker_heartbeats"))
+        if seen_minutes_ago is not None:
+            seen = dt.datetime.now(dt.UTC) - dt.timedelta(minutes=seen_minutes_ago)
+            conn.execute(
+                text(
+                    "INSERT INTO worker_heartbeats (id, started_at, seen_at, app_version, summary) "
+                    "VALUES ('w:1', :t, :t, '0', :s)"
+                ),
+                {"t": seen, "s": '{"alerts": {"webhook": true, "email": false}}'},
+            )
+    eng.dispose()
+
+
+def test_an_admin_token_checks_that_a_worker_is_alive(client, admin_token):
+    smoke = _load_smoke()
+    _set_heartbeat(seen_minutes_ago=0.1)
+    lines: list[str] = []
+    runner = smoke.Smoke(_transport(client, admin_token), out=lines.append)
+    assert runner.run() is True, "\n".join(lines)
+    assert runner.skipped == [] and len(runner.results) == 11
+    assert "✓ a worker is alive (spec 023) — 1 alive; worker alerts: webhook" in lines
+
+
+def test_no_live_worker_fails_the_smoke_test(client, admin_token):
+    smoke = _load_smoke()
+    _set_heartbeat(seen_minutes_ago=10)
+    lines: list[str] = []
+    assert smoke.Smoke(_transport(client, admin_token), out=lines.append).run() is False
+    assert lines[-1].startswith("✗ a worker is alive (spec 023): AssertionError: no worker")
 
 
 def test_smoke_script_reports_a_failing_check_and_cleans_up(client):
@@ -118,7 +174,7 @@ def test_smoke_script_refuses_an_unmigrated_api():
     assert smoke.Smoke(unmigrated, out=lines.append).run() is False
     assert lines == [
         "✗ API healthy and migrated: AssertionError: schema revision 'none' is missing or older "
-        "than 0010"
+        "than 0011"
     ]
 
 
