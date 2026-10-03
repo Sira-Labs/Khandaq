@@ -138,6 +138,57 @@
       ],
       "rationale": "garak xss probes test output that a downstream renderer would execute (improper output handling)."
     },
+    "mcp-scanner.code-execution": {
+      "mappings": [
+        {
+          "framework": "owasp-agentic",
+          "id": "ASI05"
+        }
+      ],
+      "rationale": "MCP tool code or description that can lead to unexpected code execution by the agent."
+    },
+    "mcp-scanner.data-exfiltration": {
+      "mappings": [
+        {
+          "framework": "owasp-llm-2025",
+          "id": "LLM02"
+        },
+        {
+          "framework": "owasp-llm-2026",
+          "id": "LLM02"
+        },
+        {
+          "framework": "atlas",
+          "id": "AML.T0057"
+        },
+        {
+          "framework": "nist-ai-rmf",
+          "id": "MEASURE-2.10"
+        }
+      ],
+      "rationale": "An MCP tool steering the agent to disclose data through its tools (sensitive information disclosure)."
+    },
+    "mcp-scanner.prompt-injection": {
+      "mappings": [
+        {
+          "framework": "owasp-llm-2025",
+          "id": "LLM01"
+        },
+        {
+          "framework": "owasp-llm-2026",
+          "id": "LLM01"
+        },
+        {
+          "framework": "atlas",
+          "id": "AML.T0051"
+        },
+        {
+          "framework": "nist-ai-rmf",
+          "id": "MEASURE-2.7"
+        }
+      ],
+      "rationale": "Instructions hidden in an MCP tool, prompt or resource that the agent reads (indirect prompt injection)."
+    },
     "mcp-scanner.tool-poisoning": {
       "mappings": [
         {
