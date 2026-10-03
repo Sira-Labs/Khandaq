@@ -113,10 +113,10 @@ any other host fails to connect.
   - a probe adapter reaches the vulnerable target through the forwarder;
   - it **cannot** reach a decoy on the same egress network, or the internet;
   - its tar output is read back.
-- [ ] Container runs are queued by the API and executed by the worker, which re-checks the scope at
+- [x] Container runs are queued by the API and executed by the worker, which re-checks the scope at
       claim time (test: scope narrowed after queueing → `rejected`).
-- [ ] Stale `running` runs are failed at worker start (test).
-- [ ] Evidence bytes are retained write-once and sealed; the ledger verifies.
+- [x] Stale `running` runs are failed at worker start (test).
+- [x] Evidence bytes are retained write-once and sealed; the ledger verifies.
 - [ ] garak, PyRIT and promptfoo adapters invoke their tool, and contract tests assert the built
       command. A CI e2e run of the garak image against the vulnerable target produces schema-valid
       findings.

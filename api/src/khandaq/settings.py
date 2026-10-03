@@ -71,6 +71,10 @@ class Settings(BaseSettings):
     adapter_egress_network: str = "bridge"  # the Docker network targets are reachable from
     adapter_timeout_seconds: int = 3600
     adapter_output_limit_mb: int = 256
+    # Where container runs' evidence bytes are retained, write-once (spec 012; the object-store
+    # upload of ADR-0006 replaces this later). The worker needs this volume.
+    evidence_dir: str = "/var/lib/khandaq/evidence"
+    worker_poll_seconds: float = 5.0
 
     @property
     def is_prod(self) -> bool:

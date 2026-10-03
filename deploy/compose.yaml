@@ -40,9 +40,16 @@ services:
     environment:
       KHANDAQ_ROLE: worker
       KHANDAQ_ADAPTER_RUNTIME: docker-socket
+      # Spec 012: each run's egress forwarder runs from this same image, on this network (where the
+      # bundled target lives; it also routes out to authorised remote targets).
+      KHANDAQ_FORWARDER_IMAGE: ghcr.io/sira-labs/khandaq-api:latest
+      KHANDAQ_ADAPTER_EGRESS_NETWORK: khandaq
     # Shape A (ADR-0009): the worker launches pinned adapter containers with per-run egress limited to
-    # the in-scope target. Only on a trusted machine.
-    volumes: ["/var/run/docker.sock:/var/run/docker.sock"]
+    # the in-scope target. The socket is root-equivalent on the host: only on a trusted machine.
+    group_add: ["${DOCKER_GID:?set DOCKER_GID in .env to the host's docker group id (getent group docker)}"]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - run-evidence:/var/lib/khandaq/evidence
     depends_on:
       postgres: { condition: service_healthy }
 
@@ -62,6 +69,11 @@ services:
     # build: { context: ../deploy/targets/vulnerable-llm }
     profiles: ["demo"]
 
+networks:
+  default:
+    name: khandaq  # fixed, so KHANDAQ_ADAPTER_EGRESS_NETWORK can name it
+
 volumes:
   pgdata:
   evidence:
+  run-evidence:  # container runs' evidence bytes, write-once (spec 012)

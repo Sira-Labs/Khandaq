@@ -12,7 +12,8 @@ from sqlalchemy import select
 
 from ..deps import EngagementAccess, require_engagement_role
 from ..models import Finding, Run
-from ..runs import RunError, create_and_execute_run
+from ..runs import RunError
+from ..runs import create_run as create_run_service
 from ..schemas import FindingOut, RunCreate, RunOut
 
 router = APIRouter(prefix="/api/engagements", tags=["runs"])
@@ -24,7 +25,7 @@ def create_run(
     access: EngagementAccess = Depends(require_engagement_role("owner", "operator")),
 ) -> Run:
     try:
-        return create_and_execute_run(
+        return create_run_service(
             access, adapter_name=body.adapter, target_id=body.target_id, params=body.params
         )
     except RunError as e:

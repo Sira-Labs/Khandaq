@@ -102,8 +102,12 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
       address the worker resolved; loopback/link-local/multicast targets and IP literals are refused;
       the adapter I/O moved from host mounts to `KHANDAQ_RUN_REQUEST` + a stdout tar. A CI `e2e` job
       proves on a real daemon that the adapter reaches the target and not a decoy on the same
-      network (with an uncontained control). Next: worker queue (ADR-0015), tools invoked by the
-      adapters, mapping seeds.
+      network (with an uncontained control). Part 2: the API queues container runs (`run.queued` +
+      `NOTIFY`); the worker claims with `SKIP LOCKED`, **re-checks the scope at claim time**, fails
+      runs a lost worker left `running`, and retains evidence bytes write-once (hard-link, never
+      overwrite) before sealing. The image gains the pinned static Docker CLI; compose gives the
+      worker the socket's group, a fixed `khandaq` network and an evidence volume. Next: tools
+      invoked by the adapters, mapping seeds.
 
 ## Owner / external dependencies (not software; do not block sprints on these)
 

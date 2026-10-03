@@ -19,9 +19,14 @@ COPY api/src ./src
 RUN uv venv /opt/venv && VIRTUAL_ENV=/opt/venv uv pip install --no-cache .
 
 FROM python:3.12-slim
-ENV PYTHONUNBUFFERED=1 PATH="/opt/venv/bin:$PATH"
+ENV PYTHONUNBUFFERED=1 PATH="/opt/venv/bin:$PATH" DOCKER_CONFIG=/tmp/docker-config
 WORKDIR /app
-RUN useradd --system --uid 10001 khandaq
+RUN useradd --system --uid 10001 khandaq \
+ && mkdir -p /var/lib/khandaq/evidence && chown khandaq /var/lib/khandaq/evidence
+# The worker launches adapter containers through the Docker socket with the Docker CLI (spec 012).
+# The static client binary only, pinned by digest; the API role never uses it.
+COPY --from=docker:28.5.2-cli@sha256:625d9431a9f54c5a2bc90f24f0e1c3d55b1349fd857dd85035f98c2c9acbdd4d \
+     /usr/local/bin/docker /usr/local/bin/docker
 COPY --from=build /opt/venv /opt/venv
 COPY api/docker-entrypoint.sh /usr/local/bin/khandaq-entrypoint
 RUN chmod +x /usr/local/bin/khandaq-entrypoint
