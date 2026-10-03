@@ -23,6 +23,15 @@ function Entries({ label, entries, tone }: { label: string; entries: DiffEntry[]
   );
 }
 
+/** A section's request failed: say so, rather than showing an empty list as if it were the answer. */
+function LoadError({ what, error }: { what: string; error: Error }) {
+  return (
+    <p className="text-sm text-red-400" role="alert">
+      Could not load {what}: {error.message}
+    </p>
+  );
+}
+
 function DiffRow({ diff }: { diff: CampaignDiff }) {
   return (
     <li className="rounded border border-white/10 p-3" data-testid="diff-row">
@@ -122,6 +131,7 @@ export function Campaign({ engagementId, campaignId }: { engagementId: string; c
 
       <section className="rounded border border-white/10 p-4">
         <h2 className="mb-2 font-semibold">Diffs</h2>
+        {diffs.error && <LoadError what="diffs" error={diffs.error} />}
         <ul className="space-y-2">
           {diffs.data?.map((d) => <DiffRow key={d.id} diff={d} />)}
           {diffs.data?.length === 0 && <li className="text-sm text-[var(--muted)]">No successful run yet.</li>}
@@ -130,12 +140,14 @@ export function Campaign({ engagementId, campaignId }: { engagementId: string; c
 
       <section className="rounded border border-white/10 p-4">
         <h2 className="mb-2 font-semibold">Runs</h2>
+        {runs.error && <LoadError what="runs" error={runs.error} />}
         {runs.data && <RunList runs={runs.data} />}
       </section>
 
       {!alertsHidden && (
         <section className="rounded border border-white/10 p-4">
           <h2 className="mb-2 font-semibold">Alerts</h2>
+          {alerts.error && <LoadError what="alerts" error={alerts.error} />}
           <ul className="space-y-1 text-sm">
             {ownAlerts.map((a) => (
               <li key={a.id} className="flex gap-2" data-testid="alert-row">
@@ -145,7 +157,7 @@ export function Campaign({ engagementId, campaignId }: { engagementId: string; c
                 </span>
               </li>
             ))}
-            {ownAlerts.length === 0 && <li className="text-[var(--muted)]">No alerts.</li>}
+            {alerts.data && ownAlerts.length === 0 && <li className="text-[var(--muted)]">No alerts.</li>}
           </ul>
         </section>
       )}

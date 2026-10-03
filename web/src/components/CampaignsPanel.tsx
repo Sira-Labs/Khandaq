@@ -18,12 +18,23 @@ export function CampaignsPanel({ engagementId }: { engagementId: string }) {
   const [name, setName] = useState("");
   const [targetId, setTargetId] = useState("");
   const [interval, setInterval] = useState("60");
+  const [rate, setRate] = useState("");
   const minutes = Number(interval);
   const intervalOk = Number.isSafeInteger(minutes) && minutes > 0;
+  // Rules of engagement may cap the request rate; then every run, scheduled ones included, must
+  // declare one (spec 002 §6). Same validation as the run launcher.
+  const rateValue = rate.trim() === "" ? null : Number(rate);
+  const rateOk = rateValue === null || (Number.isSafeInteger(rateValue) && rateValue > 0);
 
   const create = useMutation({
     mutationFn: () =>
-      api.createCampaign(engagementId, { name: name.trim(), adapter: "echo", target_id: targetId, interval_minutes: minutes }),
+      api.createCampaign(engagementId, {
+        name: name.trim(),
+        adapter: "echo",
+        target_id: targetId,
+        interval_minutes: minutes,
+        params: rateValue === null ? {} : { rate_per_minute: rateValue },
+      }),
     onSuccess: () => {
       setName("");
       qc.invalidateQueries({ queryKey: ["campaigns", engagementId] });
@@ -96,14 +107,27 @@ export function CampaignsPanel({ engagementId }: { engagementId: string }) {
           onChange={(e) => setInterval(e.target.value.replace(/[^0-9]/g, ""))}
         />
         <span className="text-[var(--muted)]">min</span>
+        <input
+          aria-label="campaign rate per minute"
+          className="w-28 rounded border border-white/15 bg-black/30 px-2 py-1"
+          inputMode="numeric"
+          placeholder="rate / min"
+          value={rate}
+          onChange={(e) => setRate(e.target.value.replace(/[^0-9]/g, ""))}
+        />
         <button
           type="submit"
           className="rounded bg-[var(--ember)] px-3 py-1 font-medium text-black disabled:opacity-40"
-          disabled={!name.trim() || !targetId || !intervalOk || create.isPending}
+          disabled={!name.trim() || !targetId || !intervalOk || !rateOk || create.isPending}
         >
           New campaign
         </button>
       </form>
+      {!rateOk && (
+        <p className="mt-2 text-sm text-red-400" role="alert">
+          Enter a whole number of requests per minute, at least 1.
+        </p>
+      )}
       {create.error && (
         <p className="mt-2 text-sm text-red-400" role="alert">
           Could not create the campaign: {create.error.message}

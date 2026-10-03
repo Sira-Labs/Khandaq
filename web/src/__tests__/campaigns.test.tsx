@@ -100,7 +100,29 @@ describe("Campaigns panel (spec 018)", () => {
         adapter: "echo",
         target_id: "tgt_1",
         interval_minutes: 120,
+        params: {},
       }),
+    );
+  });
+
+  it("sends a declared rate for engagements whose rules cap it", async () => {
+    const { api } = await import("../api");
+    vi.mocked(api.listCampaigns).mockResolvedValue([]);
+    vi.mocked(api.createCampaign).mockResolvedValueOnce(CAMPAIGN);
+    const { CampaignsPanel } = await import("../components/CampaignsPanel");
+    render(wrap(<CampaignsPanel engagementId="eng_1" />));
+
+    await screen.findByText("No campaigns yet.");
+    fireEvent.change(screen.getByLabelText("campaign name"), { target: { value: "capped" } });
+    await screen.findByRole("option", { name: "llm_endpoint: gw.acme.test" });
+    fireEvent.change(screen.getByLabelText("campaign target"), { target: { value: "tgt_1" } });
+    fireEvent.change(screen.getByLabelText("campaign rate per minute"), { target: { value: "30" } });
+    fireEvent.click(screen.getByRole("button", { name: "New campaign" }));
+    await waitFor(() =>
+      expect(api.createCampaign).toHaveBeenCalledWith(
+        "eng_1",
+        expect.objectContaining({ name: "capped", params: { rate_per_minute: 30 } }),
+      ),
     );
   });
 
@@ -175,6 +197,22 @@ describe("Campaign page (spec 018)", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Pause" }));
     await waitFor(() => expect(api.updateCampaign).toHaveBeenCalledWith("eng_1", "cmp_1", { enabled: false }));
+  });
+
+  it("shows a failed request instead of an empty list", async () => {
+    const { api } = await import("../api");
+    vi.mocked(api.getCampaign).mockResolvedValue(CAMPAIGN);
+    vi.mocked(api.listCampaignDiffs).mockRejectedValue(new Error("diffs down"));
+    vi.mocked(api.listCampaignRuns).mockRejectedValueOnce(new Error("runs down"));
+    vi.mocked(api.listAlerts).mockRejectedValue(new Error("alerts down"));
+    const { Campaign } = await import("../pages/Campaign");
+    render(wrap(<Campaign engagementId="eng_1" campaignId="cmp_1" />));
+
+    await screen.findByText("Could not load alerts: alerts down");
+    expect(screen.getByText("Could not load diffs: diffs down")).toBeInTheDocument();
+    expect(screen.getByText("Could not load runs: runs down")).toBeInTheDocument();
+    expect(screen.queryByText("No alerts.")).toBeNull();
+    expect(screen.queryByText("No successful run yet.")).toBeNull();
   });
 
   it("hides alerts from a viewer instead of erroring", async () => {
