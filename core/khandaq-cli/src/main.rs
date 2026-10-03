@@ -10,7 +10,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use khandaq_core::{
-    dedup, ledger_verify, ledger_verify_pinned, map_frameworks, navigator_layer, validate,
+    dedup, ledger_verify, ledger_verify_pinned, merge_mappings, navigator_layer, validate,
     LedgerEntry, Mappings,
 };
 use serde_json::Value;
@@ -110,9 +110,7 @@ fn run() -> Result<ExitCode, String> {
             let mut findings = Vec::new();
             for (i, item) in items.iter().enumerate() {
                 let mut f = validate(item).map_err(|e| format!("finding {i}: {e}"))?;
-                if f.x_khandaq.mappings.is_empty() {
-                    f.x_khandaq.mappings = map_frameworks(&f, &mappings);
-                }
+                f.x_khandaq.mappings = merge_mappings(&f, &mappings);
                 findings.push(f);
             }
             let result = dedup(findings);

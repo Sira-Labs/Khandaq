@@ -368,6 +368,9 @@ def _persist_results(
         f["target_ref"] = target_id
         f["x-khandaq"]["evidence"] = [local_to_id[k] for k in f.pop("_evidence_local", [])]
         kc.validate_finding(json.dumps(f))
+        # The tool's framework ids plus the core table's, or an explicit `unmapped` marker
+        # (spec 020, ADR-0012). Mappings are not identity (ADR-0013): no fingerprint moves.
+        f["x-khandaq"]["mappings"] = json.loads(kc.merge_mappings(json.dumps(f)))
         raw.append(f)
     result = json.loads(kc.dedup(json.dumps(raw)))
 

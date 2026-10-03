@@ -28,7 +28,7 @@ audited reasons; CI is green across core/api/web stubs.
 |---|---|---|
 | S2-1 Canonical finding, fingerprint, dedup, severity, mapping (Rust core + wheel) | 003 | M |
 | S2-2 Append-only hash-chained evidence ledger | 004 | M |
-| S2-3 Seed framework mapping tables for the R1 adapters' rules | 003 | S |
+| S2-3 Seed framework mapping tables for the R1 adapters' rules | 003, 020 | S |
 
 Exit: findings from mixed sources dedup deterministically, map to frameworks, and seal into a verifiable
 ledger; the `khandaq-core` CLI can validate/normalise/verify offline.
