@@ -136,13 +136,29 @@ def update_campaign(access: EngagementAccess, campaign: Campaign, body: Campaign
     return campaign
 
 
-def disable_for_closed_engagement(session: Session, engagement_id: str, actor: User | None) -> int:
-    """Disable every enabled campaign of a closed engagement, each audited (PR #36 review).
+def _disable_closed(session: Session, campaign: Campaign, actor: User | None) -> None:
+    before = _view(campaign)
+    campaign.enabled = False
+    campaign.updated_at = _now()
+    audit.record(
+        session,
+        action="campaign.updated",
+        actor=actor,
+        engagement_id=campaign.engagement_id,
+        detail={
+            "campaign_id": campaign.id,
+            "before": before,
+            "after": _view(campaign),
+            "reason": "engagement closed",
+        },
+    )
+
+
+def disable_for_closed_engagement(session: Session, engagement_id: str, actor: User) -> int:
+    """Disable every enabled campaign of an engagement being closed, each audited (PR #36 review).
 
     A closed engagement's campaigns cannot be changed through the API, so one left enabled would
-    keep producing a rejected run every window. Called by engagement close (``actor`` is the
-    closer) and by the scheduler for rows that predate this rule (``actor`` None).
-    Caller commits."""
+    keep producing a rejected run every window. Called by engagement close. Caller commits."""
     campaigns = session.scalars(
         select(Campaign)
         .where(Campaign.engagement_id == engagement_id, Campaign.enabled.is_(True))
@@ -150,21 +166,7 @@ def disable_for_closed_engagement(session: Session, engagement_id: str, actor: U
         .with_for_update()
     ).all()
     for campaign in campaigns:
-        before = _view(campaign)
-        campaign.enabled = False
-        campaign.updated_at = _now()
-        audit.record(
-            session,
-            action="campaign.updated",
-            actor=actor,
-            engagement_id=engagement_id,
-            detail={
-                "campaign_id": campaign.id,
-                "before": before,
-                "after": _view(campaign),
-                "reason": "engagement closed",
-            },
-        )
+        _disable_closed(session, campaign, actor)
     return len(campaigns)
 
 
@@ -204,7 +206,9 @@ def schedule_due(session: Session, now: dt.datetime | None = None) -> int:
         if engagement is None or target is None:  # pragma: no cover - never deleted
             raise RuntimeError(f"campaign {campaign.id} lost its engagement or target")
         if engagement.state == "closed":
-            disable_for_closed_engagement(session, engagement.id, actor=None)
+            # A row from before close disabled campaigns. Only the row this batch already holds
+            # is touched: locking its siblings could deadlock with another worker's batch.
+            _disable_closed(session, campaign, actor=None)
             continue
         if _in_flight(session, campaign.id):
             detail["skipped"] = "the previous run is still queued or running"
