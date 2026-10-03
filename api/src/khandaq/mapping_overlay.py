@@ -10,6 +10,7 @@ from every report.
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -64,3 +65,22 @@ def current_overlay() -> Overlay | None:
     from .settings import get_settings
 
     return _cached(get_settings().mappings_path)
+
+
+def table_in_effect() -> dict:
+    """The combined table this process applies: versions, sources and the overlay (or None)."""
+    overlay = current_overlay()
+    table = json.loads(kc.mapping_table(overlay.text if overlay else None))
+    return {
+        "versions": table["versions"],
+        "sources": table["sources"],
+        "overlay": {"name": overlay.name, "sha256": overlay.sha256} if overlay else None,
+    }
+
+
+def provenance() -> dict:
+    """What a finding records about the table that mapped it (PR #38 review): the framework
+    versions and the overlay. A report built later, under another overlay or none, still names
+    the table that actually produced each finding's ids."""
+    table = table_in_effect()
+    return {"versions": table["versions"], "overlay": table["overlay"]}

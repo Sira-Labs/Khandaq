@@ -38,7 +38,7 @@ from .deps import EngagementAccess
 from .evidence_crypto import Keyring
 from .evidence_store import EvidenceStore, retain, store_from_settings
 from .ledger import lock_engagement, seal_evidence
-from .mapping_overlay import current_overlay
+from .mapping_overlay import current_overlay, provenance
 from .models import Engagement, Finding, Run, Scope, Target, User
 from .scope import evaluate
 from .settings import get_settings
@@ -363,6 +363,8 @@ def _persist_results(
     # Identity fields are set by the server, never trusted from the adapter: the fingerprint uses
     # target_ref, so it names the real target row rather than an adapter-chosen label.
     raw = []
+    overlay = current_overlay()
+    mapped_with = provenance()
     for f in artifacts["findings"]:
         f["engagement_id"] = engagement_id
         f["run_id"] = run_id
@@ -371,10 +373,10 @@ def _persist_results(
         kc.validate_finding(json.dumps(f))
         # The tool's framework ids plus the core table's, or an explicit `unmapped` marker
         # (spec 020, ADR-0012). Mappings are not identity (ADR-0013): no fingerprint moves.
-        overlay = current_overlay()
         f["x-khandaq"]["mappings"] = json.loads(
             kc.merge_mappings(json.dumps(f), overlay.text if overlay else None)
         )
+        f["x-khandaq"]["mapping_table"] = mapped_with
         raw.append(f)
     result = json.loads(kc.dedup(json.dumps(raw)))
 

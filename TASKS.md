@@ -190,7 +190,10 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
       `khandaq-core normalize --mappings` takes the same file. Decisions: an overlay may not
       change a built-in framework's version or source (two ATLAS releases in one report would be
       ambiguous); a broken overlay stops startup in every environment rather than falling back
-      to the built-in table, which would quietly drop the deployment's own ids; 1 MiB limit.
+      to the built-in table, which would quietly drop the deployment's own ids; 1 MiB limit; each
+      finding records the table versions and overlay that mapped it (`x-khandaq.mapping_table`),
+      and reports list those recorded tables, so a later restart under another overlay never
+      changes what a report says produced its ids (PR #38 review).
 
 ## Owner / external dependencies (not software; do not block sprints on these)
 

@@ -30,8 +30,12 @@ our ids and the fingerprint of the overlay that produced them.
 - **Wheel.** `merge_mappings(finding_json, overlay=None)` and `mapping_table(overlay=None)`. The
   optional argument is the overlay text.
 - **CLI.** `khandaq-core normalize FILE --mappings OVERLAY`.
-- **Report.** `mapping_tables` gains `overlay`: `null`, or `{"sha256": "sha256:<hex>",
-  "name": "<file name>"}`. The HTML report prints `overlay <name> (sha256:…)` next to the versions.
+- **Finding.** Each finding records the table that mapped it in `x-khandaq.mapping_table`:
+  `{"versions": {...}, "overlay": null | {"name", "sha256"}}`.
+- **Report.** `mapping_tables` describes the table in effect now (`versions`, `sources`, `overlay`).
+  It also lists the tables recorded on the report's findings, as `recorded: [{versions, overlay,
+  findings: n}]`, with `unrecorded: n` for findings stored before this spec. The HTML report prints
+  both.
 
 ## Behaviour
 
@@ -50,8 +54,12 @@ our ids and the fingerprint of the overlay that produced them.
      deployment's own ids from every report.
 4. **Ingest.** `merge_mappings` uses the combined table. The overlay is read once per process and
    cached; changing it takes a restart, the same as any other setting.
-5. **Reports.** `mapping_tables.versions` and `sources` describe the combined table. `overlay` names
-   the file and the sha256 of its exact bytes, so a reader can tell which overlay produced the ids.
+5. **Provenance.** At ingest, every finding records the framework versions and the overlay, by
+   name and the sha256 of its exact bytes, that produced its ids. A report lists each distinct
+   recorded table with its finding count, and separately the table in effect now. A restart under
+   another overlay, or none, therefore never changes what a report says produced an older
+   engagement's ids. Findings stored before this spec are counted as `unrecorded`, never
+   attributed to the current table (PR #38 review).
 6. **No identity change.** Mappings are not identity (ADR-0013). Adding or editing an overlay moves
    no fingerprint and re-maps no stored finding.
 
@@ -63,8 +71,9 @@ our ids and the fingerprint of the overlay that produced them.
       version, or is not the schema, is refused with a reason.
 - [x] A bad `KHANDAQ_MAPPINGS_PATH` (missing, too large, invalid) stops the app at startup in dev
       and prod.
-- [x] An echo run with an overlay stores the overlay's ids; the report's `mapping_tables.overlay`
-      carries its name and sha256; without one it is `null`.
+- [x] An echo run with an overlay stores the overlay's ids and records it on each finding; the
+      report names it under `recorded` even after the overlay is removed; findings without a
+      record are counted as `unrecorded`.
 - [x] `khandaq-core normalize --mappings` applies the overlay.
 
 ## Test cases
@@ -73,8 +82,9 @@ Unit (`core/khandaq-core/tests/core.rs`): `an_overlay_adds_replaces_and_introduc
 `an_overlay_cannot_change_a_builtin_framework`.
 CLI (`core/khandaq-cli/tests/normalize.rs`): `normalize_applies_an_overlay`.
 Bindings: `merge_mappings` and `mapping_table` with an overlay.
-Integration (`api/tests/test_mapping_overlay.py`): echo run with an overlay → overlay ids stored
-and the report names the overlay; `validate_mappings` refuses missing, oversized and invalid files.
+Integration (`api/tests/test_mapping_overlay.py`): echo run with an overlay → overlay ids stored,
+recorded per finding, and still named by the report after the overlay is removed; legacy findings
+counted as unrecorded; `validate_mappings` refuses missing, oversized and invalid files.
 
 ## Out of scope
 

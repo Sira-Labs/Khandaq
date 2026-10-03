@@ -129,7 +129,9 @@ def _echo_run(client, name: str) -> str:
 
 @needs_db
 def test_an_overlay_maps_findings_and_is_named_in_the_report(env, overlay_on):
+    from khandaq import mapping_overlay
     from khandaq.models import Finding
+    from khandaq.settings import get_settings
 
     client, engine = env
     eng_id = _echo_run(client, "overlay-on")
@@ -141,14 +143,28 @@ def test_an_overlay_maps_findings_and_is_named_in_the_report(env, overlay_on):
     # The overlay replaced the built-in echo.leak entry; the adapter's own id is still kept.
     assert ("acme-ctl", "CTL-7") in ids and ("owasp-llm-2026", "LLM02") in ids
     assert ("nist-ai-rmf", "MEASURE-2.10") not in ids
+    sha = load_overlay(overlay_on).sha256
+    assert leak.body["x-khandaq"]["mapping_table"]["overlay"] == {
+        "name": "acme-mappings.json",
+        "sha256": sha,
+    }
 
     report = client.get(f"/api/engagements/{eng_id}/report", headers=OWNER).json()
     tables = report["mapping_tables"]
     assert tables["versions"]["acme-ctl"] == "2026.1"
-    assert tables["overlay"]["name"] == "acme-mappings.json"
-    assert tables["overlay"]["sha256"] == load_overlay(overlay_on).sha256
+    assert tables["overlay"] == {"name": "acme-mappings.json", "sha256": sha}
+    [recorded] = tables["recorded"]
+    assert recorded["overlay"]["sha256"] == sha and recorded["findings"] == 2
     page = client.get(f"/api/engagements/{eng_id}/report.html", headers=OWNER).text
     assert "overlay acme-mappings.json (sha256:" in page
+
+    # After a restart without the overlay, the report still names the overlay that mapped them.
+    get_settings().mappings_path = ""
+    mapping_overlay._cached.cache_clear()
+    later = client.get(f"/api/engagements/{eng_id}/report", headers=OWNER).json()
+    assert later["mapping_tables"]["overlay"] is None
+    assert later["mapping_tables"]["recorded"][0]["overlay"]["sha256"] == sha
+    assert "acme-ctl" not in later["mapping_tables"]["versions"]
 
 
 @needs_db
@@ -157,3 +173,23 @@ def test_without_an_overlay_the_report_says_so(env):
     eng_id = _echo_run(client, "overlay-off")
     report = client.get(f"/api/engagements/{eng_id}/report", headers=OWNER).json()
     assert report["mapping_tables"]["overlay"] is None
+    assert report["mapping_tables"]["recorded"][0]["overlay"] is None
+
+
+@needs_db
+def test_findings_from_before_provenance_are_counted_not_guessed(env):
+    client, engine = env
+    eng_id = _echo_run(client, "overlay-legacy")
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "UPDATE findings SET body = body #- '{x-khandaq,mapping_table}' "
+                "WHERE engagement_id = :e"
+            ),
+            {"e": eng_id},
+        )
+    report = client.get(f"/api/engagements/{eng_id}/report", headers=OWNER).json()
+    assert report["mapping_tables"]["recorded"] == []
+    assert report["mapping_tables"]["unrecorded"] == report["summary"]["total"] == 2
+    page = client.get(f"/api/engagements/{eng_id}/report.html", headers=OWNER).text
+    assert "2 findings predate recorded mapping tables" in page
