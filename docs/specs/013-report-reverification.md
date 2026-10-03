@@ -79,22 +79,22 @@ was not altered, truncated or replaced since it was issued.
 
 ## Acceptance criteria
 
-- [ ] The report JSON carries `evidence.count` equal to the number of ledger entries, with the root of
+- [x] The report JSON carries `evidence.count` equal to the number of ledger entries, with the root of
       the entry at that count; the HTML shows both; an engagement with no evidence pins
       `{root: null, count: 0}`.
-- [ ] Each `GET /report` and `GET /report.html` writes one `report.exported` audit entry with the
+- [x] Each `GET /report` and `GET /report.html` writes one `report.exported` audit entry with the
       format and the pinned root and count.
-- [ ] Posting a report's own `evidence` block back verifies `ok: true, issued: true,
+- [x] Posting a report's own `evidence` block back verifies `ok: true, issued: true,
       appended_since: 0`; after another run appends evidence, the same pin verifies with
       `appended_since > 0`.
-- [ ] A pin whose root is not the chain's entry at `count` → `ok: false` with
+- [x] A pin whose root is not the chain's entry at `count` → `ok: false` with
       `broken_at = count` (`seq` is 1-based, so that is the entry at the pin) and the core's reason; a pin longer than the chain → `ok: false`
       ("entries were removed"); a tampered stored entry → `ok: false` at its `seq`.
-- [ ] A well-formed pin this instance never exported (and that does not verify) → `issued: false`.
-- [ ] Malformed bodies (bad hash, negative count, `root` null with `count > 0`, `root` set with
+- [x] A well-formed pin this instance never exported (and that does not verify) → `issued: false`.
+- [x] Malformed bodies (bad hash, negative count, `root` null with `count > 0`, `root` set with
       `count 0`, non-integer count) → 422.
-- [ ] A non-member → 403; a viewer may verify; a closed engagement can still be verified.
-- [ ] `khandaq-core ledger-verify` exits 0 for an intact exported chain, 1 for a pin that no longer matches
+- [x] A non-member → 403; a viewer may verify; a closed engagement can still be verified.
+- [x] `khandaq-core ledger-verify` exits 0 for an intact exported chain, 1 for a pin that no longer matches
       or for a tampered entry, and 2 for `--root` without `--count`.
 
 ## Test cases
