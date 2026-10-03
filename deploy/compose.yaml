@@ -30,6 +30,7 @@ services:
       KHANDAQ_ROLE: api
     depends_on:
       postgres: { condition: service_healthy }
+      rustfs: { condition: service_started }  # evidence downloads read the object store (spec 014)
     # No published port: reach the API through the web app's /api proxy. Publishing 8000 would expose
     # it directly — with KHANDAQ_ENV=dev that means the dev login stub (anyone becomes admin).
 
@@ -52,6 +53,7 @@ services:
       - run-evidence:/var/lib/khandaq/evidence
     depends_on:
       postgres: { condition: service_healthy }
+      rustfs: { condition: service_started }
 
   web:
     image: ghcr.io/sira-labs/khandaq-web:latest
@@ -76,4 +78,4 @@ networks:
 volumes:
   pgdata:
   evidence:
-  run-evidence:  # container runs' evidence bytes, write-once (spec 012)
+  run-evidence:  # evidence bytes when KHANDAQ_OBJECT_STORE_URL is empty (specs 012, 014)

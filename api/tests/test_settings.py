@@ -1,4 +1,4 @@
-"""Unit tests for fail-closed production configuration (spec 008 extends spec 001)."""
+"""Unit tests for fail-closed production configuration (specs 001, 008, 014)."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ _PROD_BASE = {
     "env": "prod",
     "session_secret": "a-real-session-secret",
     "database_url": "postgresql://u:p@db/khandaq",
-    "evidence_key": "a-real-evidence-key",
+    "evidence_key": "a-real-evidence-key-of-32-characters",
 }
 
 
@@ -61,3 +61,36 @@ def test_allow_list_is_case_insensitive_and_includes_admin():
     assert s.email_allowed("b@x.test") and s.email_allowed("A@X.TEST")
     assert not s.email_allowed("c@x.test")
     assert not Settings().email_allowed("anyone@x.test")  # empty list + no admin = nobody
+
+
+_PROD_FULL = {
+    **_PROD_BASE,
+    "oidc_issuer": "https://idp.example/realms/khandaq",
+    "oidc_client_secret": "a-real-client-secret",
+    "public_url": "https://khandaq.example",
+}
+
+
+@pytest.mark.parametrize(
+    "override, message",
+    [
+        ({"evidence_key": "too-short-evidence-key"}, "at least 32 characters"),
+        ({"evidence_previous_keys": "a" * 40 + ",short"}, "PREVIOUS_KEYS"),
+        ({"object_store_url": "https://bucket.example"}, "s3://"),
+        ({"object_store_url": "s3://"}, "s3://"),
+    ],
+)
+def test_prod_refuses_bad_evidence_settings(override, message):
+    s = Settings(**{**_PROD_FULL, **override})
+    with pytest.raises(RuntimeError) as exc:
+        s.validate_runtime()
+    assert message in str(exc.value)
+
+
+def test_prod_accepts_s3_store_and_retired_keys():
+    s = Settings(
+        **_PROD_FULL,
+        object_store_url="s3://khandaq-evidence/prod",
+        evidence_previous_keys="b" * 32 + ", " + "c" * 44,
+    )
+    s.validate_runtime()  # must not raise

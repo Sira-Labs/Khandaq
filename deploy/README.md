@@ -31,9 +31,14 @@ per run via the host Docker socket (shape A in `caprover.md`); only use this on 
 ## What you must provide (ADR-0006)
 
 - `KHANDAQ_SESSION_SECRET` — `openssl rand -base64 48`
-- `KHANDAQ_EVIDENCE_KEY` — the envelope key that encrypts captured evidence at rest (**back this up
-  separately; losing it makes evidence unreadable**)
-- object-store credentials (RustFS root + a bucket-scoped key)
+- `KHANDAQ_EVIDENCE_KEY` — the envelope key that encrypts captured evidence at rest (ADR-0016): any
+  string of at least 32 characters, e.g. `openssl rand -base64 32`. Production refuses a shorter one.
+  **Back it up separately; losing it makes evidence unreadable** (the ledger still verifies, but the
+  bytes cannot be decrypted). To rotate, set the new key and move the old one to
+  `KHANDAQ_EVIDENCE_PREVIOUS_KEYS`; stored objects are never re-encrypted.
+- object-store credentials (RustFS root + a bucket-scoped key). Evidence is stored encrypted and
+  write-once in `KHANDAQ_OBJECT_STORE_URL` (`s3://bucket[/prefix]`); with an empty URL it stays in the
+  worker's evidence volume, which the API cannot read on a multi-host deployment.
 - OIDC settings for anything beyond a single-user local run
 
 ## Safe-use reminder

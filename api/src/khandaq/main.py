@@ -13,7 +13,7 @@ from fastapi import FastAPI
 
 from . import __version__
 from .db import schema_revision
-from .routers import auth, engagements, ledger, reports, runs
+from .routers import auth, engagements, evidence, ledger, reports, runs
 from .settings import get_settings
 
 logging.basicConfig(level=logging.INFO)
@@ -51,6 +51,7 @@ def create_app() -> FastAPI:
     app.include_router(auth.router)
     app.include_router(engagements.router)
     app.include_router(ledger.router)
+    app.include_router(evidence.router)
     app.include_router(runs.router)
     app.include_router(reports.router)
 

@@ -144,8 +144,10 @@ target and cannot reach a decoy on the same network. On the worker app:
   (`getent group docker`) to the container. In CapRover, use the app's *Service Update Override*,
   for example:
   `{"TaskTemplate":{"ContainerSpec":{"Mounts":[{"Type":"bind","Source":"/var/run/docker.sock","Target":"/var/run/docker.sock"}],"Groups":["<gid>"]}}}`.
-- **Persistent directory.** `/var/lib/khandaq/evidence` holds the runs' evidence bytes, written
-  once. Back it up with Postgres.
+- **Persistent directory.** Only needed when `KHANDAQ_OBJECT_STORE_URL` is empty: then
+  `/var/lib/khandaq/evidence` holds the runs' evidence bytes, encrypted and written once, and the
+  API (another app) cannot serve downloads from it. With the object store set (the default), the
+  worker uploads there (spec 014).
 - **Environment:**
   - `KHANDAQ_FORWARDER_IMAGE=ghcr.io/sira-labs/khandaq-api:<the worker's own tag>`;
   - `KHANDAQ_ADAPTER_EGRESS_NETWORK=bridge`, the default; it routes out to authorised remote
@@ -161,7 +163,16 @@ Evidence lives on S3-compatible storage, append-only. Use RustFS (Apache-2.0).
    No public domain for the S3 API; open the console (9001) only over an SSH tunnel.
 2. In the console: create bucket `khandaq-evidence` with **object versioning on** (so the append-only
    guarantee is backed by the store), and a bucket-scoped access key for the API/worker. Enable a
-   write-once/retention policy on sealed objects where the store supports it.
+   write-once/retention policy on sealed objects where the store supports it. If the bucket is
+   missing and the key may create buckets (the one-click passes the root key), the worker creates it
+   on the first upload and enables versioning itself.
+3. What Khandaq does with it (spec 014, ADR-0016): every evidence file is encrypted with its own
+   data key, wrapped under a key derived from `KHANDAQ_EVIDENCE_KEY`, and uploaded with
+   `If-None-Match: *` after a `HEAD`, so a sealed object is never overwritten (RustFS 1.0.0 honours
+   the condition; CI checks it). The bucket-scoped key needs `s3:GetObject`, `s3:PutObject` and
+   `s3:ListBucket` (for `HEAD`) on the bucket. The API and the worker need the same object-store
+   settings and the same evidence key (and retired keys). Downloads: `GET
+   /api/engagements/{id}/evidence/{evidence_id}/content` (owner/operator/analyst; audited).
 
 ## 5. Keycloak (each environment, before the first sign-in)
 

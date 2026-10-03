@@ -114,11 +114,26 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
       core's `verify_pinned` and says whether this instance issued the pin, and
       `khandaq-core ledger-verify` checks an exported ledger offline (exit 0/1/2). 22 new api tests +
       5 CLI tests. Decisions: a broken pin is a 200 with `ok: false`, like `POST /ledger/verify`;
-      `issued` is reported, not required, so reports exported before this spec still verify; the
+      `issued` is reported, not required (a pin read from `GET /ledger` has no export on record);
+      reports exported before this spec have no `count` and get a 422, not a verdict; the
       GET export routes write the audit entry and commit before responding (doc 04 lists report
       export as audited; spec 011 had missed it); migration 0007 indexes `audit_log (engagement_id,
       action)` for the lookup; the count is a strict integer so `"3"` or `3.0` is refused, not
       coerced.
+
+- [x] S4-8 — spec 014 evidence encrypted at rest + object store + download (ADR-0016, Proposed):
+      every container-run evidence file is AES-256-GCM encrypted under its own data key, wrapped by a
+      KEK derived (HKDF) from `KHANDAQ_EVIDENCE_KEY`, and stored write-once in the S3 store
+      (`KHANDAQ_OBJECT_STORE_URL`, RustFS) or the local evidence dir; `GET …/evidence/{id}/content`
+      (owner/operator/analyst) decrypts, checks the sealed sha256 and audits `evidence.downloaded`
+      (409 + `evidence.integrity_failed` on mismatch). Decisions: the KEK is derived so every key
+      shape already deployed (32 hex chars, base64) keeps working, but prod now refuses a key under
+      32 characters; the AAD binds a blob to its object key; a retry is accepted only if the stored
+      object decrypts to the same hash (ciphertexts differ by nonce); S3 writes HEAD first and then
+      `If-None-Match: *`, so a store ignoring the condition still never overwrites; the worker
+      creates a missing bucket with versioning; a run with bytes but no key fails before sealing;
+      legacy plaintext files are served only if they match their seal. CI runs RustFS 1.0.0.
+      **Owner:** ADR-0016 is Proposed — confirm the envelope format and the ≥ 32-character key rule.
 
 ## Owner / external dependencies (not software; do not block sprints on these)
 

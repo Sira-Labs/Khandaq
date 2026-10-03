@@ -112,9 +112,10 @@ def _was_issued(session: Session, engagement_id: str, root: str | None, count: i
 def verify_pin(session: Session, engagement: Engagement, root: str | None, count: int) -> dict:
     """Re-verify a report's pin against the current chain (spec 013). Read-only.
 
-    ``issued`` is information, not a condition of ``ok``: a report exported before exports were
-    audited verifies without one, and a client reads ``ok and not issued`` as "the evidence is
-    intact, but this instance has no record of issuing this pin"."""
+    ``issued`` is information, not a condition of ``ok``: a well-formed pin with no export on
+    record (one read from ``GET /ledger``) still verifies, and a client reads ``ok and not issued``
+    as "the evidence is intact, but this instance has no record of issuing this pin". A report from
+    before spec 013 has no ``count`` and is refused by ``ReportPin`` (422)."""
     state = ledger_svc.verify_pin(session, engagement.id, root, count)
     ok = bool(state["verify"].get("ok"))
     return {

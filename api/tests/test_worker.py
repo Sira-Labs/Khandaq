@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
-import json
 import os
 import time
 
@@ -100,12 +99,14 @@ def env(tmp_path_factory):
                 raise
 
     settings = get_settings()
-    previous = settings.evidence_dir
+    previous = (settings.evidence_dir, settings.evidence_key, settings.object_store_url)
     settings.evidence_dir = str(tmp_path_factory.mktemp("evidence"))
+    settings.evidence_key = "synthetic-test-evidence-key-0123456789"  # local store, encrypted
+    settings.object_store_url = ""
     app = main.create_app()
     app.dependency_overrides[get_session] = _get_session
     yield TestClient(app), eng, settings
-    settings.evidence_dir = previous
+    settings.evidence_dir, settings.evidence_key, settings.object_store_url = previous
     eng.dispose()
 
 
@@ -184,10 +185,12 @@ def test_the_worker_executes_a_queued_run_and_keeps_its_evidence(env):
     assert request["target"] == {"type": "llm_endpoint", "spec": TARGET}
     inbox = client.get(f"/api/engagements/{eng_id}/findings", headers=OWNER).json()
     assert [f["rule_id"] for f in inbox] == ["garak.promptinject.hijack"]
-    # Evidence bytes are retained write-once under their object key, and the ledger verifies.
+    # Evidence bytes are retained write-once and encrypted under their object key (spec 014), and
+    # the ledger verifies.
     key = f"{eng_id}/{run['id']}/garak.report.jsonl"
     stored = os.path.join(settings.evidence_dir, key)
-    assert open(stored, "rb").read().startswith(b'{"probe"')
+    blob = open(stored, "rb").read()
+    assert blob.startswith(b"KHQE") and b'"probe"' not in blob
     assert not os.access(stored, os.W_OK) or os.geteuid() == 0
     ledger = client.get(f"/api/engagements/{eng_id}/ledger", headers=OWNER).json()
     assert ledger["verify"]["ok"] is True and len(ledger["entries"]) == 1
@@ -292,14 +295,138 @@ def test_a_queued_run_wakes_a_listening_worker(env):
         listener.close()
 
 
-def test_evidence_is_write_once(tmp_path):
-    from khandaq.runs import store_evidence
+# --- spec 014: encrypted evidence, download by role --------------------------------------------
 
-    store_evidence(tmp_path, "eng/run/a.txt", b"one")
-    store_evidence(tmp_path, "eng/run/a.txt", b"one")  # an identical retry is fine
-    with pytest.raises(ValueError, match="other content"):
-        store_evidence(tmp_path, "eng/run/a.txt", b"two")
-    assert (tmp_path / "eng/run/a.txt").read_bytes() == b"one"
-    with pytest.raises(ValueError, match="escapes"):
-        store_evidence(tmp_path, "../outside.txt", b"x")
-    assert json.dumps(sorted(p.name for p in (tmp_path / "eng/run").iterdir())) == '["a.txt"]'
+
+def _executed_run(client, db, name: str) -> tuple[str, str, dict]:
+    """A container run the worker executed; returns (engagement, run id, its evidence entry)."""
+    from khandaq import worker
+
+    eng_id, tid = _engagement(client, name)
+    run = _queue(client, eng_id, tid)
+    worker.drain(db, runner=FakeRunner())
+    assert _run(client, eng_id, run["id"])["state"] == "succeeded"
+    ledger = client.get(f"/api/engagements/{eng_id}/ledger", headers=OWNER).json()
+    [entry] = [e for e in ledger["entries"]]
+    return eng_id, run["id"], entry
+
+
+def _audit(db, eng_id: str, action: str) -> list[dict]:
+    with db.connect() as conn:
+        return list(
+            conn.execute(
+                text(
+                    "SELECT detail FROM audit_log WHERE engagement_id = :e AND action = :a "
+                    "ORDER BY at, id"
+                ),
+                {"e": eng_id, "a": action},
+            ).scalars()
+        )
+
+
+def _add_member(db, eng_id: str, email: str, role: str) -> dict:
+    from khandaq import models as m
+
+    with Session(db) as s:
+        user = s.query(m.User).filter_by(email=email).one_or_none()
+        if user is None:
+            user = m.User(email=email, org_role="member")
+            s.add(user)
+            s.flush()
+        s.add(m.EngagementMember(engagement_id=eng_id, user_id=user.id, role=role))
+        s.commit()
+    return {"X-Khandaq-Dev-User": email}
+
+
+def test_evidence_download_returns_the_sealed_bytes_and_is_audited(env):
+    client, db, _ = env
+    eng_id, run_id, entry = _executed_run(client, db, "download")
+    url = f"/api/engagements/{eng_id}/evidence/{entry['evidence_id']}/content"
+
+    r = client.get(url, headers=OWNER)
+    assert r.status_code == 200
+    assert r.content.startswith(b'{"probe":"promptinject.HijackHateHumans"')
+    sealed = "sha256:" + hashlib.sha256(r.content).hexdigest()
+    assert r.headers["x-khandaq-evidence-sha256"] == sealed
+    assert r.headers["content-type"] == "application/octet-stream"
+    assert r.headers["x-content-type-options"] == "nosniff"
+    assert r.headers["cache-control"] == "no-store"
+    assert r.headers["content-disposition"] == (
+        f'attachment; filename="{entry["evidence_id"]}-garak.report.jsonl"'
+    )
+    assert _audit(db, eng_id, "evidence.downloaded") == [
+        {"evidence_id": entry["evidence_id"], "sha256": sealed, "bytes": len(r.content)}
+    ]
+
+    analyst = _add_member(db, eng_id, "evidence-analyst@test", "analyst")
+    assert client.get(url, headers=analyst).status_code == 200
+
+
+def test_evidence_download_authz(env):
+    client, db, _ = env
+    eng_id, _, entry = _executed_run(client, db, "download-authz")
+    url = f"/api/engagements/{eng_id}/evidence/{entry['evidence_id']}/content"
+
+    viewer = _add_member(db, eng_id, "evidence-viewer@test", "viewer")
+    assert client.get(url, headers=viewer).status_code == 403
+    outsider = {"X-Khandaq-Dev-User": "evidence-outsider@test"}
+    assert client.get(url, headers=outsider).status_code == 403
+    # Another engagement's evidence id is not found here, even for that engagement's owner.
+    other_eng, _ = _engagement(client, "download-other")
+    r = client.get(
+        f"/api/engagements/{other_eng}/evidence/{entry['evidence_id']}/content", headers=OWNER
+    )
+    assert r.status_code == 404
+    assert _audit(db, eng_id, "evidence.downloaded") == []
+
+
+def test_evidence_without_stored_bytes_is_404(env):
+    client, _, _ = env
+    eng_id, tid = _engagement(client, "download-echo")
+    r = client.post(
+        f"/api/engagements/{eng_id}/runs", json={"adapter": "echo", "target_id": tid}, headers=OWNER
+    )
+    assert r.status_code == 201, r.text
+    entry = client.get(f"/api/engagements/{eng_id}/ledger", headers=OWNER).json()["entries"][0]
+    r = client.get(
+        f"/api/engagements/{eng_id}/evidence/{entry['evidence_id']}/content", headers=OWNER
+    )
+    assert r.status_code == 404
+    assert r.json()["detail"] == "no stored content for this evidence"
+
+
+def test_tampered_evidence_is_refused_and_audited(env):
+    client, db, settings = env
+    eng_id, run_id, entry = _executed_run(client, db, "download-tamper")
+    path = os.path.join(settings.evidence_dir, f"{eng_id}/{run_id}/garak.report.jsonl")
+    blob = bytearray(open(path, "rb").read())
+    blob[-1] ^= 0x01
+    os.chmod(path, 0o640)
+    with open(path, "wb") as fh:
+        fh.write(bytes(blob))
+
+    r = client.get(
+        f"/api/engagements/{eng_id}/evidence/{entry['evidence_id']}/content", headers=OWNER
+    )
+    assert r.status_code == 409
+    assert "integrity" in r.json()["detail"]
+    [failed] = _audit(db, eng_id, "evidence.integrity_failed")
+    assert failed["evidence_id"] == entry["evidence_id"]
+    assert _audit(db, eng_id, "evidence.downloaded") == []
+
+
+def test_a_container_run_without_an_evidence_key_fails_before_sealing(env):
+    from khandaq import worker
+
+    client, db, settings = env
+    eng_id, tid = _engagement(client, "no-key")
+    run = _queue(client, eng_id, tid)
+    previous, settings.evidence_key = settings.evidence_key, ""
+    try:
+        worker.drain(db, runner=FakeRunner())
+    finally:
+        settings.evidence_key = previous
+    after = _run(client, eng_id, run["id"])
+    assert after["state"] == "failed"
+    assert "KHANDAQ_EVIDENCE_KEY" in after["reject_reason"]
+    assert client.get(f"/api/engagements/{eng_id}/ledger", headers=OWNER).json()["entries"] == []
