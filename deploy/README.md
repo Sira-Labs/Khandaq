@@ -100,6 +100,21 @@ least one worker is alive and has the alert settings you expect: alerts are work
 console shows the same on its **Deployment** page (admins only), with warnings when no worker is
 alive or a worker's mapping table differs from the API's (spec 024).
 
+## Sign-in says "identity provider cannot be reached"
+
+The API could not fetch `<KHANDAQ_OIDC_ISSUER>/.well-known/openid-configuration`. The API log names
+the cause next to `OIDC discovery failed`:
+- **`ConnectError: No address associated with hostname`** — the issuer's host does not resolve from
+  inside the API container. Use the Keycloak app's public URL (`https://<keycloak host>/realms/khandaq`),
+  or its CapRover internal name (`http://srv-captain--<keycloak app>:8080/realms/khandaq`) only if
+  that app exists on the same server. Then check that the token issuer Keycloak reports matches
+  what browsers see.
+- **`HTTPStatusError … 404`** — the host is right but the `khandaq` realm is missing: import
+  `deploy/keycloak/khandaq-realm.json`.
+- **A timeout or `ConnectError: Connection refused`** — Keycloak is down or not listening there.
+
+Open the discovery URL in a browser: it must return JSON.
+
 ## Smoke test after a deploy (spec 019)
 
 Sign in, open **API tokens** in the console header, create a token, then run:
