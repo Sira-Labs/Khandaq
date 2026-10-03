@@ -158,7 +158,7 @@ caproverOneClickApp:
       validRegex: /^https?:\/\/.{1,}/
     - id: $$cap_oidc_issuer
       label: OIDC issuer URL
-      description: Your realm, e.g. https://keycloak.example.org/realms/khandaq
+      description: 'Your realm''s public URL, e.g. https://keycloak.example.org/realms/khandaq — for Sira Labs staging https://miftachun.apps.data-and-ai-dude.ch/realms/khandaq. Import deploy/keycloak/khandaq-realm-staging.json (or -production.json) first with Create realm; the template file is refused.'
       validRegex: /^https?:\/\/.{1,}/
     - id: $$cap_oidc_client_secret
       label: OIDC client secret

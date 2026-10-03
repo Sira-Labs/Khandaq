@@ -116,7 +116,9 @@ For discovery, the error names the cause:
   that app exists on the same server. Then check that the token issuer Keycloak reports matches
   what browsers see.
 - **`HTTPStatusError … 404`** — the host is right but the `khandaq` realm is missing: import
-  `deploy/keycloak/khandaq-realm.json`.
+  `deploy/keycloak/khandaq-realm-staging.json` (or `-production.json`) with *Create realm* (see
+  `deploy/keycloak/README.md`). If the import itself answers *"unknown_error"*, you uploaded the
+  `.template.json`.
 - **A timeout or `ConnectError: Connection refused`** — Keycloak is down or not listening there.
 
 Open the discovery URL in a browser: it must return JSON.
