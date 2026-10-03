@@ -38,6 +38,7 @@ from .deps import EngagementAccess
 from .evidence_crypto import Keyring
 from .evidence_store import EvidenceStore, retain, store_from_settings
 from .ledger import lock_engagement, seal_evidence
+from .mapping_overlay import current_overlay
 from .models import Engagement, Finding, Run, Scope, Target, User
 from .scope import evaluate
 from .settings import get_settings
@@ -370,7 +371,10 @@ def _persist_results(
         kc.validate_finding(json.dumps(f))
         # The tool's framework ids plus the core table's, or an explicit `unmapped` marker
         # (spec 020, ADR-0012). Mappings are not identity (ADR-0013): no fingerprint moves.
-        f["x-khandaq"]["mappings"] = json.loads(kc.merge_mappings(json.dumps(f)))
+        overlay = current_overlay()
+        f["x-khandaq"]["mappings"] = json.loads(
+            kc.merge_mappings(json.dumps(f), overlay.text if overlay else None)
+        )
         raw.append(f)
     result = json.loads(kc.dedup(json.dumps(raw)))
 

@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 
 from . import audit
 from . import ledger as ledger_svc
+from .mapping_overlay import current_overlay
 from .models import AuditLog, Engagement, Finding, User
 
 EXPORT_ACTION = "report.exported"
@@ -85,8 +86,13 @@ def build_report(session: Session, engagement: Engagement) -> dict:
 
 
 def _mapping_tables() -> dict:
-    table = json.loads(kc.mapping_table())
-    return {"versions": table["versions"], "sources": table["sources"]}
+    overlay = current_overlay()
+    table = json.loads(kc.mapping_table(overlay.text if overlay else None))
+    return {
+        "versions": table["versions"],
+        "sources": table["sources"],
+        "overlay": {"name": overlay.name, "sha256": overlay.sha256} if overlay else None,
+    }
 
 
 def record_export(session: Session, report: dict, *, fmt: str, actor: User) -> None:
@@ -152,10 +158,14 @@ def render_html(report: dict) -> str:
         f"<tr><td>{html.escape(k)}</td><td>{n}</td></tr>"
         for k, n in report["summary"]["by_framework"].items()
     )
+    mapping_tables = report.get("mapping_tables", {})
     tables = " · ".join(
         f"{html.escape(fw)} {html.escape(v)}"
-        for fw, v in report.get("mapping_tables", {}).get("versions", {}).items()
+        for fw, v in mapping_tables.get("versions", {}).items()
     )
+    if mapping_tables.get("overlay"):
+        ov = mapping_tables["overlay"]
+        tables += f" · overlay {html.escape(ov['name'])} ({html.escape(ov['sha256'])})"
     find_rows = "".join(
         "<tr>"
         f"<td>{html.escape(f['severity'])}</td>"
