@@ -430,3 +430,24 @@ def test_a_container_run_without_an_evidence_key_fails_before_sealing(env):
     assert after["state"] == "failed"
     assert "KHANDAQ_EVIDENCE_KEY" in after["reject_reason"]
     assert client.get(f"/api/engagements/{eng_id}/ledger", headers=OWNER).json()["entries"] == []
+
+
+def test_an_unreachable_evidence_store_is_a_503_not_a_crash(env, monkeypatch):
+    """Found by the deployment smoke script (spec 019): a store outage surfaced as a 500."""
+    from khandaq.evidence_store import EvidenceStoreError
+    from khandaq.routers import evidence as evidence_router
+
+    client, db, _ = env
+    eng_id, _, entry = _executed_run(client, db, "download-store-down")
+
+    class DownStore:
+        def get(self, object_key):
+            raise EvidenceStoreError("object store get failed: EndpointConnectionError")
+
+    monkeypatch.setattr(evidence_router, "store_from_settings", lambda settings: DownStore())
+    r = client.get(
+        f"/api/engagements/{eng_id}/evidence/{entry['evidence_id']}/content", headers=OWNER
+    )
+    assert r.status_code == 503
+    assert r.json()["detail"] == "evidence store unavailable; try again later"
+    assert _audit(db, eng_id, "evidence.downloaded") == []

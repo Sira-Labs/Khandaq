@@ -20,6 +20,7 @@ from ..evidence_crypto import EvidenceKeyError, Keyring
 from ..evidence_store import (
     EvidenceIntegrityError,
     EvidenceMissing,
+    EvidenceStoreError,
     read_verified,
     store_from_settings,
 )
@@ -62,6 +63,11 @@ def download_evidence(
         )
     except EvidenceMissing:
         raise HTTPException(404, "no stored content for this evidence") from None
+    except EvidenceStoreError as exc:  # the store is down or refusing us: not the caller's fault
+        log.error(
+            "evidence store unavailable", extra={"evidence_id": evidence.id, "error": str(exc)}
+        )
+        raise HTTPException(503, "evidence store unavailable; try again later") from None
     except EvidenceIntegrityError as exc:
         log.error(
             "evidence integrity check failed",
