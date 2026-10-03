@@ -168,6 +168,13 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
       403). Decision: the run list is shared with the engagement page (`RunList`); the form stays
       `echo`-only like the launcher until adapters run their tools.
 
+- [x] S5-4 — spec 019 API tokens page + `deploy/smoke.py`: the console lists/creates (shown once)/
+      revokes tokens; the stdlib-only script walks a deployment through 10 checks with a token,
+      using the in-process echo adapter against `smoke.khandaq.invalid`, and closes what it
+      creates. Running it found a real bug: an unreachable object store made evidence download a
+      500 with a traceback; it is now a 503. Decision: the script's campaign starts in a day and is
+      paused at once, so the smoke test never schedules a run.
+
 ## Owner / external dependencies (not software; do not block sprints on these)
 
 - [ ] Confirm the public name/domain: GitHub `Sira-Labs/Khandaq` is taken (good); check PyPI name and a

@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import audit, scope
+from .. import audit, campaigns, scope
 from ..deps import (
     EngagementAccess,
     current_user,
@@ -242,6 +242,8 @@ def close(access: EngagementAccess = Depends(require_engagement_role("owner"))) 
     eng.state = "closed"
     eng.closed_at = _now()
     audit.record(session, action="engagement.closed", actor=access.user, engagement_id=eng.id)
+    # Its campaigns stop with it, in the same transaction (spec 016 §5).
+    campaigns.disable_for_closed_engagement(session, eng.id, actor=access.user)
     session.commit()
     session.refresh(eng)
     return eng

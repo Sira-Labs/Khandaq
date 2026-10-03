@@ -272,6 +272,45 @@ def test_a_disabled_campaign_is_not_scheduled(env):
     )
 
 
+def test_closing_an_engagement_disables_its_campaigns(env):
+    client, db = env
+    eng_id, tid = _engagement(client, "cmp-close")
+    campaign = _create(client, eng_id, tid).json()
+
+    assert client.post(f"/api/engagements/{eng_id}/close", headers=OWNER).status_code == 200
+    after = client.get(f"/api/engagements/{eng_id}/campaigns/{campaign['id']}", headers=OWNER)
+    assert after.json()["enabled"] is False
+    [updated] = _audit(db, eng_id, "campaign.updated")
+    assert updated["campaign_id"] == campaign["id"]
+    assert updated["reason"] == "engagement closed"
+    assert (updated["before"]["enabled"], updated["after"]["enabled"]) == (True, False)
+
+    _make_due(db, campaign["id"])
+    _schedule(db)
+    assert _audit(db, eng_id, "campaign.run_scheduled") == []
+
+
+def test_the_scheduler_disables_a_closed_engagements_leftover_campaign(env):
+    client, db = env
+    eng_id, tid = _engagement(client, "cmp-leftover")
+    campaign = _create(client, eng_id, tid).json()
+    # A row from before close disabled campaigns: closed engagement, campaign still enabled.
+    with db.begin() as conn:
+        conn.execute(text("UPDATE engagements SET state = 'closed' WHERE id = :e"), {"e": eng_id})
+    _make_due(db, campaign["id"])
+
+    _schedule(db)
+    runs = client.get(
+        f"/api/engagements/{eng_id}/campaigns/{campaign['id']}/runs", headers=OWNER
+    ).json()
+    assert runs == []
+    assert _audit(db, eng_id, "campaign.run_scheduled") == []
+    [updated] = _audit(db, eng_id, "campaign.updated")
+    assert updated["reason"] == "engagement closed"
+    after = client.get(f"/api/engagements/{eng_id}/campaigns/{campaign['id']}", headers=OWNER)
+    assert after.json()["enabled"] is False
+
+
 def test_two_workers_never_schedule_the_same_window(env):
     from khandaq.campaigns import schedule_due
     from khandaq.models import Campaign

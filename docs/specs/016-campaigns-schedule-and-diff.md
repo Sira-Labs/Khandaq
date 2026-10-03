@@ -74,7 +74,11 @@ assistant, so that after each release I see what got worse, what got fixed and w
      baseline.
 5. **Update.** `PATCH` changes `enabled` and/or `interval_minutes` (floor applies). Enabling a
    campaign whose `next_run_at` is past schedules it at the next tick. `campaign.updated` records
-   before/after. Not allowed on a `closed` engagement (409).
+   before/after. Not allowed on a `closed` engagement (409). Closing the engagement disables its
+   campaigns in the same transaction (`campaign.updated` with `reason: "engagement closed"`); the
+   scheduler does the same, instead of queueing a run, for any enabled campaign it finds on a
+   closed engagement. Without this a closed engagement's campaign, which no one can change any
+   more, would add a rejected run every window (PR #36 review).
 6. **Authz.** Creating and updating need owner or operator (they cause runs against the target);
    reading needs membership. Non-member → 403; another engagement's campaign id → 404.
 

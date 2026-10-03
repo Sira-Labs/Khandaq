@@ -6,6 +6,7 @@ import { Campaign } from "./pages/Campaign";
 import { Engagement } from "./pages/Engagement";
 import { Engagements } from "./pages/Engagements";
 import { Findings } from "./pages/Findings";
+import { Tokens } from "./pages/Tokens";
 import { navigate, usePath } from "./router";
 
 /** Development only: the API runs its dev login stub (never in production). */
@@ -125,7 +126,8 @@ export function App() {
     const findings = path.match(/^\/eng\/([^/]+)\/findings$/);
     const campaign = path.match(/^\/eng\/([^/]+)\/campaigns\/([^/]+)$/);
     const detail = path.match(/^\/eng\/([^/]+)$/);
-    if (findings) body = <Findings engagementId={findings[1]} />;
+    if (path === "/tokens") body = <Tokens />;
+    else if (findings) body = <Findings engagementId={findings[1]} />;
     else if (campaign) body = <Campaign engagementId={campaign[1]} campaignId={campaign[2]} />;
     else if (detail) body = <Engagement engagementId={detail[1]} />;
     else body = <Engagements />;
@@ -137,7 +139,14 @@ export function App() {
         <button className="text-xl font-semibold text-[var(--fg)]" onClick={() => navigate("/")}>
           Khandaq
         </button>
-        {me.data && !me.error && <SignedIn me={me.data} />}
+        {me.data && !me.error && (
+          <div className="flex items-center gap-4">
+            <button className="text-sm text-[var(--muted)]" onClick={() => navigate("/tokens")}>
+              API tokens
+            </button>
+            <SignedIn me={me.data} />
+          </div>
+        )}
       </header>
       <main className="mx-auto max-w-5xl px-6 py-8">{body}</main>
     </div>
