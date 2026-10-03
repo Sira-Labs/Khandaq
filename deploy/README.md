@@ -84,8 +84,9 @@ KHANDAQ_TOKEN=khq_... python3 deploy/smoke.py --url https://khandaq-stg.example.
 ```
 
 The script needs only the Python 3.10+ standard library. It prints one line per check (health and
-schema, token sign-in, engagement + scope lock, an echo run, the ledger, report export and
-re-verification, the evidence route, a paused campaign, alerts, close) and exits 0 when all pass.
+schema, token sign-in, engagement + scope lock, an echo run whose findings carry the core mapping
+table's ids, the ledger, report export and re-verification with the mapping table it names, the
+evidence route, a paused campaign, alerts, close) and exits 0 when all pass.
 It uses the in-process `echo` adapter against `smoke.khandaq.invalid`, so nothing leaves the API.
 It closes the engagement it creates. Revoke the token afterwards if you do not need it.
 
