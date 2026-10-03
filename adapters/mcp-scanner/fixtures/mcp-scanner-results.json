@@ -1,0 +1,116 @@
+{
+  "server_url": "https://tools.acme.test/mcp",
+  "requested_analyzers": ["yara", "api"],
+  "scan_results": [
+    {
+      "status": "completed",
+      "is_safe": false,
+      "item_type": "tool",
+      "tool_name": "read_file",
+      "tool_description": "Synthetic fixture: a file-reading tool whose description the scanner flagged.",
+      "server_name": "acme-tools",
+      "findings": {
+        "yara_analyzer": {
+          "severity": "HIGH",
+          "threat_names": ["TOOL POISONING"],
+          "threat_summary": "Detected 1 threat: tool poisoning",
+          "total_findings": 1,
+          "mcp_taxonomies": [
+            {"scanner_category": "SUSPICIOUS CODE EXECUTION", "aitech": "AITech-12.1", "aitech_name": "Tool Exploitation", "aisubtech": "AISubtech-12.1.2", "aisubtech_name": "Tool Poisoning", "description": "Synthetic taxonomy entry."}
+          ]
+        },
+        "api_analyzer": {
+          "severity": "SAFE",
+          "threat_names": [],
+          "threat_summary": "No threats detected",
+          "total_findings": 0
+        }
+      }
+    },
+    {
+      "status": "completed",
+      "is_safe": false,
+      "item_type": "tool",
+      "tool_name": "send_report",
+      "tool_description": "Synthetic fixture: a reporting tool flagged by two analyzers.",
+      "findings": {
+        "yara_analyzer": {
+          "severity": "MEDIUM",
+          "threat_names": ["DATA EXFILTRATION", "PROMPT INJECTION"],
+          "threat_summary": "Detected 2 threats: data exfiltration, prompt injection",
+          "total_findings": 2,
+          "mcp_taxonomies": []
+        },
+        "api_analyzer": {
+          "severity": "HIGH",
+          "threat_names": ["PROMPT_INJECTION"],
+          "threat_summary": "Detected 1 threat: prompt injection",
+          "total_findings": 1
+        }
+      }
+    },
+    {
+      "status": "partial",
+      "is_safe": null,
+      "item_type": "tool",
+      "tool_name": "list_dir",
+      "tool_description": "Synthetic fixture: one analyzer failed on this tool.",
+      "findings": {
+        "yara_analyzer": {
+          "severity": "SAFE",
+          "threat_names": [],
+          "threat_summary": "No threats detected",
+          "total_findings": 0
+        },
+        "api_analyzer": {
+          "severity": "UNKNOWN",
+          "threat_names": [],
+          "threat_summary": "Analysis failed",
+          "total_findings": 0,
+          "status": "error",
+          "errors": [{"analyzer": "api", "error": "synthetic: API key not configured"}]
+        }
+      },
+      "analyzer_errors": [{"analyzer": "api", "error": "synthetic: API key not configured"}]
+    },
+    {
+      "status": "completed",
+      "is_safe": true,
+      "item_type": "prompt",
+      "prompt_name": "summarise",
+      "prompt_description": "Synthetic fixture: an informational finding leaves the entry at SAFE.",
+      "findings": {
+        "yara_analyzer": {
+          "severity": "SAFE",
+          "threat_names": ["CODE EXECUTION"],
+          "threat_summary": "Detected 1 threat: code execution",
+          "total_findings": 1
+        }
+      }
+    },
+    {
+      "status": "completed",
+      "is_safe": false,
+      "item_type": "resource",
+      "resource_uri": "file:///srv/app/app.conf",
+      "resource_name": "app.conf",
+      "resource_mime_type": "text/plain",
+      "findings": {
+        "yara_analyzer": {
+          "severity": "LOW",
+          "threat_names": ["CREDENTIAL HARVESTING"],
+          "threat_summary": "Detected 1 threat: credential harvesting",
+          "total_findings": 1
+        }
+      }
+    },
+    {
+      "status": "failed",
+      "is_safe": null,
+      "item_type": "tool",
+      "tool_name": "admin_console",
+      "tool_description": "Synthetic fixture: the scan of this tool failed.",
+      "findings": {}
+    }
+  ]
+}
