@@ -47,6 +47,8 @@ MAX_FILES = 1000
 _NAME = re.compile(r"[A-Za-z0-9._-]{1,128}")
 _NOBODY = "65534:65534"
 _STDERR_TAIL = 2000
+# Docker reads an env file line by line with a 64 KiB scanner; stay well below it.
+MAX_REQUEST_BYTES = 60_000
 
 
 class RunnerError(Exception):
@@ -322,11 +324,14 @@ class DockerRunner:
         host, port, address = self.endpoint(request)
         network, forwarder, adapter = f"khq-net-{run_id}", f"khq-fwd-{run_id}", f"khq-run-{run_id}"
         labels = ["--label", f"khandaq.run={run_id}"]
+        # Compact JSON has no raw newline, so it is one env-file line.
+        line = "KHANDAQ_RUN_REQUEST=" + json.dumps(request, separators=(",", ":")) + "\n"
+        if len(line.encode("utf-8")) > MAX_REQUEST_BYTES:
+            raise RunnerError(f"the run request exceeds {MAX_REQUEST_BYTES} bytes")
         fd, env_file = tempfile.mkstemp(prefix="khq-env-", text=True)  # created 0600
         try:
             with os.fdopen(fd, "w") as f:
-                # Compact JSON has no raw newline, so it is one env-file line.
-                f.write("KHANDAQ_RUN_REQUEST=" + json.dumps(request, separators=(",", ":")) + "\n")
+                f.write(line)
             self._ok(["network", "create", "--internal", *labels, network], "create the network")
             self._ok(self.forwarder_args(forwarder, port, address, labels), "start the forwarder")
             self._ok(
