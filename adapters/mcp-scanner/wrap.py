@@ -116,6 +116,8 @@ def parse_report(
             threats = entry.get("threat_names")
             if not isinstance(threats, list) or not threats:
                 raise ReportError(f"{where}: {count} findings counted but no threat names")
+            if item.get("status") in NOT_SCANNED:
+                continue  # validated above, but a failed or skipped item reports nothing
             severity = SEVERITIES.get(level, "info")
             summary = str(entry.get("threat_summary") or "")
             location = {"logicalLocations": [{"fullyQualifiedName": f"{item_type}:{name}"}]}

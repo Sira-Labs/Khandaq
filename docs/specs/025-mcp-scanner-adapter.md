@@ -91,6 +91,8 @@ to OWASP Agentic and ATLAS ids.
    - An entry the tool marks `"status": "error"` (severity `UNKNOWN`): that analyzer failed on that
      item, so it found nothing.
    - An entry marked `partial` still yields its counted findings.
+   - An item marked `failed` or `skipped` yields no findings, even when it lists threats; its
+     entries are still validated.
 4. **Fail closed.** The wrapper raises `ReportError`, and `main` exits 2 without writing
    `findings.jsonl`, when any of these hold. A run without a trustworthy report must surface as a
    failed run, never as "no findings".

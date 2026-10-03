@@ -168,6 +168,21 @@ def test_a_clean_scan_is_an_empty_finding_set():
     assert _parse(report) == []
 
 
+@pytest.mark.parametrize("status", ["failed", "skipped"])
+def test_an_unscanned_item_emits_no_findings_beside_a_scanned_one(status):
+    scanned = _item({"yara_analyzer": _entry("HIGH", ["X"])}, tool_name="scanned")
+    unscanned = _item({"yara_analyzer": _entry("HIGH", ["Y"])}, status=status, tool_name="other")
+    findings = _parse({"scan_results": [scanned, unscanned]})
+    assert {_key(f)[1] for f in findings} == {"tool:scanned"}
+
+
+def test_an_unscanned_items_entries_are_still_validated():
+    scanned = _item({"yara_analyzer": _entry("HIGH", ["X"])})
+    broken = _item({"yara_analyzer": _entry("HIGH", [], count=0)}, status="failed")
+    with pytest.raises(wrap.ReportError, match="no findings counted"):
+        _parse({"scan_results": [scanned, broken]})
+
+
 def test_a_partial_entry_keeps_its_findings():
     entry = _entry("MEDIUM", ["TOOL POISONING"], status="partial", errors=[{"error": "x"}])
     [f] = _parse({"scan_results": [_item({"llm_analyzer": entry}, status="partial")]})
