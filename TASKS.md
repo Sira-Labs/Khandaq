@@ -109,6 +109,10 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
       worker the socket's group, a fixed `khandaq` network and an evidence volume. Next: tools
       invoked by the adapters, mapping seeds.
 
+- [ ] S4-7 — spec 013 report re-verification: reports pin `{root, count}`, exports are audited
+      (`report.exported`), `POST /report/verify` runs the core's `verify_pinned`, and
+      `khandaq-core ledger-verify` checks a pin offline. Spec drafted; awaiting approval.
+
 ## Owner / external dependencies (not software; do not block sprints on these)
 
 - [ ] Confirm the public name/domain: GitHub `Sira-Labs/Khandaq` is taken (good); check PyPI name and a
