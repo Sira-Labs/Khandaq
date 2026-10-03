@@ -151,6 +151,7 @@ export function Campaign({ engagementId, campaignId }: { engagementId: string; c
           <ul className="space-y-1 text-sm">
             {ownAlerts.map((a) => (
               <li key={a.id} className="flex gap-2" data-testid="alert-row">
+                <span className="w-16 text-[var(--muted)]">{a.channel}</span>
                 <span className="flex-1">{a.state}</span>
                 <span className="text-xs text-[var(--muted)]">
                   {a.attempts} attempt(s){a.last_error ? ` · ${a.last_error}` : ""} · {formatTime(a.created_at)}

@@ -217,6 +217,7 @@ export interface Alert {
   id: string;
   campaign_id: string;
   diff_id: string;
+  channel: "webhook" | "email";
   state: string;
   attempts: number;
   last_error: string | null;
