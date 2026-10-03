@@ -23,8 +23,9 @@ import threading
 import time
 from collections.abc import Callable
 
+from psycopg.errors import UndefinedTable
 from sqlalchemy import Engine, create_engine
-from sqlalchemy.exc import OperationalError, SQLAlchemyError
+from sqlalchemy.exc import OperationalError, ProgrammingError, SQLAlchemyError
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import NullPool
 
@@ -102,6 +103,11 @@ def _recover_lost_runs(engine: Engine, settings: Settings) -> None:
             log.warning("failed %d run(s) a previous worker lost", lost)
 
 
+def _schema_missing(exc: ProgrammingError) -> bool:
+    """A table the worker needs does not exist yet: the API's boot migrations have not run."""
+    return isinstance(exc.orig, UndefinedTable)
+
+
 class Heartbeat:
     """Writes this worker's heartbeat at start and then at most every ``every`` seconds (spec
     023), and prunes week-old rows once."""
@@ -158,7 +164,12 @@ def run_forever(
                 if work_once(engine):
                     continue
                 notifications.wait(settings.worker_poll_seconds)
-            except OperationalError as exc:  # database restarting: back off, reconnect
+            except (OperationalError, ProgrammingError) as exc:
+                # A database restarting, or one the API has not migrated yet (a worker can start
+                # first on a fresh install): back off and retry. Any other programming error is a
+                # bug and still ends the loop.
+                if isinstance(exc, ProgrammingError) and not _schema_missing(exc):
+                    raise
                 log.error("database unavailable: %s", exc)
                 if notifications is not None:
                     notifications.close()
