@@ -15,7 +15,9 @@ closed at the end, and its campaign is paused, so nothing keeps running.
 Usage:
     KHANDAQ_TOKEN=khq_... python3 deploy/smoke.py --url https://khandaq-stg.example.org
 
-Create the token in the console (API tokens page). Exit code 0 means every check passed.
+Create the token in the console (API tokens page). The token is only ever sent over https (plain
+http is allowed for localhost) and redirects are not followed. Exit code 0 means every check
+passed, 1 that one failed, 2 a usage error.
 """
 
 from __future__ import annotations
@@ -26,12 +28,17 @@ import json
 import os
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+# UTC that also exists on Python 3.10 (datetime.UTC arrived in 3.11).
+UTC = dt.timezone.utc  # noqa: UP017
+
 TARGET_HOST = "smoke.khandaq.invalid"
+LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1")
 TARGET_MODEL = "smoke-model"
 MIN_SCHEMA = "0009"
 
@@ -44,8 +51,24 @@ class SmokeFailure(Exception):
 Transport = Callable[[str, str, Any], tuple[int, Any]]
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Never follow a redirect: it would carry the bearer token to wherever it points."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
+        return None
+
+
 def http_transport(base_url: str, token: str, timeout: float = 30.0) -> Transport:
-    """Real HTTP against ``base_url`` with ``Authorization: Bearer <token>``."""
+    """Real HTTP against ``base_url`` with ``Authorization: Bearer <token>``.
+
+    The token is sent only over https (plain http is allowed for localhost), and redirects are
+    answered, not followed, so it never reaches another host (PR #36 review)."""
+    parsed = urllib.parse.urlsplit(base_url)
+    if parsed.scheme not in ("https", "http") or not parsed.hostname:
+        raise ValueError(f"not an http(s) URL: {base_url!r}")
+    if parsed.scheme != "https" and parsed.hostname not in LOCAL_HOSTS:
+        raise ValueError("refusing to send the API token over plain http; use https://")
+    opener = urllib.request.build_opener(_NoRedirect)
 
     def call(method: str, path: str, body: Any = None) -> tuple[int, Any]:
         data = None if body is None else json.dumps(body).encode("utf-8")
@@ -56,7 +79,7 @@ def http_transport(base_url: str, token: str, timeout: float = 30.0) -> Transpor
             headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
         )
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with opener.open(req, timeout=timeout) as resp:
                 return resp.status, _decode(resp.read(), resp.headers.get("Content-Type", ""))
         except urllib.error.HTTPError as exc:
             return exc.code, _decode(exc.read(), exc.headers.get("Content-Type", ""))
@@ -86,9 +109,9 @@ class Smoke:
     def check(self, name: str, fn: Callable[[], str | None]) -> Any:
         try:
             note = fn()
-        except (SmokeFailure, KeyError, TypeError, AssertionError) as exc:
+        except Exception as exc:  # a smoke test reports every failure, transport errors included
             self.results.append((name, False))
-            self.out(f"✗ {name}: {exc}")
+            self.out(f"✗ {name}: {type(exc).__name__}: {exc}")
             raise
         self.results.append((name, True))
         self.out(f"✓ {name}" + (f" — {note}" if note else ""))
@@ -96,12 +119,15 @@ class Smoke:
 
     def run(self) -> bool:
         state: dict[str, Any] = {}
-        stamp = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
+        stamp = dt.datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         try:
             self._steps(state, stamp)
-        except (SmokeFailure, KeyError, TypeError, AssertionError):
-            if "eng" in state:  # leave nothing runnable behind
-                self.call("POST", f"/api/engagements/{state['eng']}/close", None)
+        except Exception:  # already reported by check(); now leave nothing runnable behind
+            if "eng" in state:
+                try:
+                    self.call("POST", f"/api/engagements/{state['eng']}/close", None)
+                except Exception as exc:  # report, but never hide the original failure
+                    self.out(f"! cleanup failed: engagement {state['eng']} left open: {exc}")
             return False
         return True
 
@@ -230,7 +256,7 @@ class Smoke:
                     "adapter": "echo",
                     "target_id": s["tgt"],
                     "interval_minutes": 1440,
-                    "start_at": (dt.datetime.now(dt.UTC) + dt.timedelta(days=1)).isoformat(),
+                    "start_at": (dt.datetime.now(UTC) + dt.timedelta(days=1)).isoformat(),
                 },
             )
             paused = self.expect(
@@ -268,7 +294,12 @@ def main(argv: list[str] | None = None) -> int:
     if not args.token:
         print("an API token is required (--token or KHANDAQ_TOKEN)", file=sys.stderr)
         return 2
-    smoke = Smoke(http_transport(args.url, args.token))
+    try:
+        transport = http_transport(args.url, args.token)
+    except ValueError as exc:
+        print(exc, file=sys.stderr)
+        return 2
+    smoke = Smoke(transport)
     ok = smoke.run()
     passed = sum(1 for _, good in smoke.results if good)
     print(f"\n{passed}/{len(smoke.results)} checks passed" + ("" if ok else " — FAILED"))

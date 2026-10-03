@@ -102,7 +102,7 @@ def test_smoke_script_reports_a_failing_check_and_cleans_up(client):
     lines: list[str] = []
     runner = smoke.Smoke(broken, out=lines.append)
     assert runner.run() is False
-    assert lines[-1].startswith("✗ report exports and re-verifies")
+    assert lines[-1].startswith("✗ report exports and re-verifies against its pin: SmokeFailure")
     assert closed, "the engagement it created must be closed after a failure"
 
 
@@ -117,10 +117,104 @@ def test_smoke_script_refuses_an_unmigrated_api():
     lines: list[str] = []
     assert smoke.Smoke(unmigrated, out=lines.append).run() is False
     assert lines == [
-        "✗ API healthy and migrated: schema revision 'none' is missing or older than 0009"
+        "✗ API healthy and migrated: AssertionError: schema revision 'none' is missing or older "
+        "than 0009"
     ]
 
 
 def test_smoke_script_needs_a_token(capsys):
     smoke = _load_smoke()
     assert smoke.main(["--url", "http://localhost:1", "--token", ""]) == 2
+
+
+def test_a_transport_error_is_reported_and_still_cleans_up(client):
+    """A dropped connection mid-run prints a ✗ and closes the engagement (PR #36 review)."""
+    import urllib.error
+
+    smoke = _load_smoke()
+    real = _transport(client, _token(client))
+    closed: list[str] = []
+
+    def flaky(method, path, body=None):
+        if path.endswith("/ledger"):
+            raise urllib.error.URLError("connection refused")
+        if path.endswith("/close"):
+            closed.append(path)
+        return real(method, path, body)
+
+    lines: list[str] = []
+    assert smoke.Smoke(flaky, out=lines.append).run() is False
+    assert lines[-1].startswith("✗ evidence ledger verifies: URLError")
+    assert closed
+
+
+def test_a_failed_cleanup_is_reported_without_hiding_the_failure(client):
+    import urllib.error
+
+    smoke = _load_smoke()
+    real = _transport(client, _token(client))
+
+    def broken(method, path, body=None):
+        if path.endswith("/ledger") or path.endswith("/close"):
+            raise urllib.error.URLError("connection refused")
+        return real(method, path, body)
+
+    lines: list[str] = []
+    assert smoke.Smoke(broken, out=lines.append).run() is False
+    assert lines[-2].startswith("✗ evidence ledger verifies: URLError")
+    assert lines[-1].startswith("! cleanup failed: engagement eng_")
+
+
+@pytest.mark.parametrize(
+    "url, ok",
+    [
+        ("https://khandaq-stg.example.org", True),
+        ("http://localhost:8000", True),
+        ("http://127.0.0.1:8000", True),
+        ("http://khandaq-stg.example.org", False),
+        ("ftp://khandaq.example.org", False),
+        ("khandaq.example.org", False),
+    ],
+)
+def test_the_token_is_only_sent_over_https_or_to_localhost(url, ok):
+    smoke = _load_smoke()
+    if ok:
+        smoke.http_transport(url, "khq_synthetic")
+    else:
+        with pytest.raises(ValueError):
+            smoke.http_transport(url, "khq_synthetic")
+    assert smoke.main(["--url", "http://khandaq.example.org", "--token", "khq_synthetic"]) == 2
+
+
+def test_redirects_are_not_followed():
+    """A 302 comes back as the answer; the token never travels to the Location."""
+    import http.server
+    import threading
+
+    hits: list[str] = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802 - http.server API
+            hits.append(self.path)
+            if self.path == "/api/health":
+                self.send_response(302)
+                self.send_header("Location", "/stolen")
+                self.end_headers()
+            else:
+                self.send_response(200)
+                self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        smoke = _load_smoke()
+        call = smoke.http_transport(f"http://127.0.0.1:{server.server_port}", "khq_synthetic")
+        status, _ = call("GET", "/api/health")
+        assert status == 302
+        assert hits == ["/api/health"]
+    finally:
+        server.shutdown()
