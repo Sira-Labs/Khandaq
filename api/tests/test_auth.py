@@ -35,7 +35,10 @@ class FakeOidc:
         return {"id_token": "fake-jwt", "access_token": "fake-at"}
 
     def claims(self, *, id_token: str, nonce: str) -> dict:
-        return dict(self.claims_to_return, nonce=nonce)
+        # A real id_token always carries iss and sub (the client requires both); default the sub
+        # to one IdP account per email unless a test names its own.
+        defaults = {"iss": ISSUER, "sub": f"sub-{self.claims_to_return.get('email')}"}
+        return dict(defaults, **self.claims_to_return, nonce=nonce)
 
     def end_session_url(self) -> str | None:
         return None
@@ -76,7 +79,11 @@ def app_db():
     eng.dispose()
 
 
-ALLOWED = "alice@test,bob@test,carol@test,dave@test,erin@test"
+ALLOWED = (
+    "alice@test,bob@test,carol@test,dave@test,erin@test,"
+    "frank@test,grace@test,heidi@test,heidi.new@test,ivan@test,judy@test"
+)
+ISSUER = "https://idp.test/realms/khandaq"
 
 
 @pytest.fixture
@@ -263,3 +270,92 @@ def test_logout_audit_names_the_actor(client, fake, db):
     csrf = client.get("/api/auth/me").json()["csrf_token"]
     assert client.post("/api/auth/logout", headers={"X-Khandaq-CSRF": csrf}).status_code == 200
     assert all(row.actor_user_id for row in _audit_rows(db, "auth.logout"))
+
+
+# --- users are keyed by the IdP account (iss, sub) ------------------------------------------------
+
+
+def _claims(email: str, sub: str, **extra) -> dict:
+    return {
+        "email": email,
+        "name": email.split("@")[0],
+        "email_verified": True,
+        "sub": sub,
+        **extra,
+    }
+
+
+def _user_rows(db, email: str) -> list:
+    with db.connect() as conn:
+        return conn.execute(
+            text("SELECT id, email, oidc_issuer, oidc_subject FROM users WHERE email = :e"),
+            {"e": email},
+        ).all()
+
+
+def _audit(db, action: str) -> list[dict]:
+    with db.connect() as conn:
+        return list(
+            conn.execute(
+                text("SELECT detail FROM audit_log WHERE action = :a ORDER BY at"), {"a": action}
+            ).scalars()
+        )
+
+
+def test_a_new_user_is_keyed_by_issuer_and_subject(client, fake, db):
+    r = _callback(client, fake, _claims("frank@test", "kc-frank"))
+    assert r.headers["location"] == "/"
+    [row] = _user_rows(db, "frank@test")
+    assert (row.oidc_issuer, row.oidc_subject) == (ISSUER, "kc-frank")
+
+
+def test_a_user_from_before_identity_keying_is_linked_on_sign_in(client, fake, db):
+    with db.begin() as conn:
+        conn.execute(text("INSERT INTO users (id, email) VALUES ('usr_legacy', 'grace@test')"))
+    r = _callback(client, fake, _claims("grace@test", "kc-grace"))
+    assert r.headers["location"] == "/"
+    [row] = _user_rows(db, "grace@test")
+    assert row.id == "usr_legacy"  # the same user, so its memberships and history carry over
+    assert (row.oidc_issuer, row.oidc_subject) == (ISSUER, "kc-grace")
+    assert {"oidc_issuer": ISSUER, "oidc_subject": "kc-grace"} in _audit(db, "user.identity_linked")
+
+
+def test_an_email_change_at_the_idp_follows_the_same_account(client, fake, db):
+    _callback(client, fake, _claims("heidi@test", "kc-heidi"))
+    [before] = _user_rows(db, "heidi@test")
+    r = _callback(TestClient(client.app), fake, _claims("heidi.new@test", "kc-heidi"))
+    assert r.headers["location"] == "/"
+    assert _user_rows(db, "heidi@test") == []
+    [after] = _user_rows(db, "heidi.new@test")
+    assert after.id == before.id
+    assert {"from": "heidi@test", "to": "heidi.new@test"} in _audit(db, "user.email_changed")
+
+
+def test_another_idp_account_with_a_linked_email_is_refused(client, fake, db):
+    """Keyed by email, a second IdP account that verified the same address became the first
+    user and inherited their engagements. Now it is refused and audited."""
+    _callback(client, fake, _claims("ivan@test", "kc-ivan"))
+    other = TestClient(client.app)
+    r = _callback(other, fake, _claims("ivan@test", "kc-impostor"))
+    assert r.headers["location"] == "/?signin=denied"
+    assert "khandaq_session" not in r.headers.get("set-cookie", "")  # no session was issued
+    [row] = _user_rows(db, "ivan@test")
+    assert row.oidc_subject == "kc-ivan"
+    assert any(
+        d.get("email") == "ivan@test" and "another identity-provider account" in d.get("reason", "")
+        for d in _audit(db, "auth.denied")
+    )
+
+
+def test_an_email_change_onto_another_users_email_is_refused(client, fake, db):
+    _callback(client, fake, _claims("judy@test", "kc-judy"))
+    other = TestClient(client.app)
+    r = _callback(other, fake, _claims("alice@test", "kc-judy"))  # alice@test is someone else's
+    assert r.headers["location"] == "/?signin=denied"
+    [row] = _user_rows(db, "judy@test")
+    assert row.oidc_subject == "kc-judy"
+
+
+def test_an_id_token_without_a_subject_is_rejected(client, fake):
+    r = _callback(client, fake, _claims("frank@test", ""))
+    assert r.status_code == 400

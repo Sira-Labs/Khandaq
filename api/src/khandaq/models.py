@@ -55,12 +55,21 @@ class User(Base):
     __allow_unmapped__ = True
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=lambda: new_id("usr"))
     email: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    # The identity-provider account (OIDC `iss` + `sub`) this user signs in as — the stable key.
+    # Email is for display and the allow-list; NULL until a pre-0006 user's next sign-in links it,
+    # and for dev-stub users. Migration 0006.
+    oidc_issuer: Mapped[str | None] = mapped_column(Text)
+    oidc_subject: Mapped[str | None] = mapped_column(Text)
     display_name: Mapped[str | None] = mapped_column(Text)
     org_role: Mapped[str] = mapped_column(Text, nullable=False, server_default="member")
     disabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
     created_at: Mapped[dt.datetime] = _created_at()
     __table_args__ = (
         CheckConstraint("org_role in ('admin','member','read_only')", name="ck_users_org_role"),
+        CheckConstraint(
+            "(oidc_issuer IS NULL) = (oidc_subject IS NULL)", name="ck_users_oidc_identity_pair"
+        ),
+        Index("uq_users_oidc_identity", "oidc_issuer", "oidc_subject", unique=True),
     )
 
     # Set by deps.current_user when an API token authenticated this request, so audit.record can
