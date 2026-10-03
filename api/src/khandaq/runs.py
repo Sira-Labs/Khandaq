@@ -1,27 +1,33 @@
-"""Run creation and execution (spec 005).
+"""Run creation and execution (spec 005, spec 012).
 
 Creating a run applies the **same scope lock** as spec 002 on the run path: an out-of-scope call is
 recorded as a `rejected` run and audited, and nothing is launched. An authorised run executes its
 adapter, seals the evidence into the ledger (spec 004), normalises and deduplicates the findings
 through the Rust core (spec 003), persists the canonical findings, and is audited throughout.
 
-For R1 the built-in echo adapter runs in-process and synchronously; real tool adapters (Docker) and
-asynchronous execution on the worker queue are a follow-up (ADR-0008).
+Two paths (spec 012, ADR-0015):
+
+- **Builtin** adapters (the in-process ``echo``) run synchronously in the request.
+- **Container** adapters are committed ``queued`` (``run.queued``) and announced with
+  ``NOTIFY khandaq_runs``. The worker claims the oldest queued run with ``FOR UPDATE SKIP LOCKED``,
+  **re-checks the scope lock at claim time** (the engagement may have been paused, the scope
+  narrowed or the window closed since), and then executes it exactly like a builtin run.
 
 Record durability (code review, 2026-10-02): the run row and ``run.started`` are **committed
 before** the adapter touches the target, and any later failure is recorded in a fresh transaction.
-Before, both were only flushed, so a database error while saving results rolled back the whole
-record of a run that had already reached the target. Results are persisted under a per-engagement
-lock, which serialises ledger appends and cross-run deduplication between concurrent runs.
+Results are persisted under a per-engagement lock, which serialises ledger appends and cross-run
+deduplication between concurrent runs.
 """
 
 from __future__ import annotations
 
 import datetime as dt
 import json
+import os
+from pathlib import Path
 
 import khandaq_core as kc
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
@@ -30,9 +36,11 @@ from . import audit
 from .adapters import build_run_request, get_manifest, get_runner
 from .deps import EngagementAccess
 from .ledger import lock_engagement, seal_evidence
-from .models import Finding, Run, Scope, Target
+from .models import Engagement, Finding, Run, Scope, Target, User
 from .scope import evaluate
 from .settings import get_settings
+
+NOTIFY_CHANNEL = "khandaq_runs"
 
 
 def _now() -> dt.datetime:
@@ -62,9 +70,55 @@ def _refuse(access: EngagementAccess, status: int, detail: str, **context: str) 
     return RunError(status, detail)
 
 
-def create_and_execute_run(
-    access: EngagementAccess, *, adapter_name: str, target_id: str, params: dict
-) -> Run:
+def scope_refusal(
+    session: Session, engagement: Engagement, target: Target | None, params: dict
+) -> str | None:
+    """Why the scope lock refuses this run now, or ``None`` if it may proceed (default deny)."""
+    if target is None or target.engagement_id != engagement.id:
+        return "the target no longer exists in this engagement"
+    if engagement.state != "active":
+        return f"engagement is '{engagement.state}', not active"
+    scope_row = session.get(Scope, engagement.id)
+    if scope_row is None:
+        return "no scope defined for this engagement"
+    decision = evaluate(
+        allow=scope_row.allow,
+        deny=scope_row.deny,
+        roe=scope_row.roe,
+        target_type=target.type,
+        target_spec=target.spec,
+        params=params,
+        now=_now(),
+    )
+    return None if decision.allowed else decision.reason
+
+
+def _reject(session: Session, run: Run, reason: str, actor: User | None, **detail) -> None:
+    run.state = "rejected"
+    run.reject_reason = reason
+    audit.record(
+        session,
+        action="run.rejected",
+        actor=actor,
+        engagement_id=run.engagement_id,
+        detail={"run_id": run.id, "adapter": run.adapter, "reason": reason, **detail},
+    )
+
+
+def _start(session: Session, run: Run, actor: User | None, **detail) -> None:
+    run.state = "running"
+    run.started_at = _now()
+    audit.record(
+        session,
+        action="run.started",
+        actor=actor,
+        engagement_id=run.engagement_id,
+        detail={"run_id": run.id, "adapter": run.adapter, **detail},
+    )
+
+
+def create_run(access: EngagementAccess, *, adapter_name: str, target_id: str, params: dict) -> Run:
+    """Create a run: rejected (scope), executed now (builtin), or queued for the worker."""
     session: Session = access.session
     eng = access.engagement
 
@@ -86,82 +140,127 @@ def create_and_execute_run(
     session.add(run)
     session.flush()
 
-    # --- Scope lock on the run path (default deny) ---
-    scope_row = session.get(Scope, eng.id)
-    reason: str | None = None
-    if eng.state != "active":
-        reason = f"engagement is '{eng.state}', not active"
-    elif scope_row is None:
-        reason = "no scope defined for this engagement"
-    else:
-        decision = evaluate(
-            allow=scope_row.allow,
-            deny=scope_row.deny,
-            roe=scope_row.roe,
-            target_type=target.type,
-            target_spec=target.spec,
-            params=params,
-            now=_now(),
-        )
-        reason = None if decision.allowed else decision.reason
-
+    reason = scope_refusal(session, eng, target, params)
     if reason is not None:
-        run.state = "rejected"
-        run.reject_reason = reason
-        audit.record(
-            session,
-            action="run.rejected",
-            actor=access.user,
-            engagement_id=eng.id,
-            detail={"run_id": run.id, "adapter": adapter_name, "reason": reason},
-        )
+        _reject(session, run, reason, access.user)
         session.commit()
         session.refresh(run)
         return run
 
-    # --- Authorised: make the record durable BEFORE anything reaches the target ---
-    run.state = "running"
-    run.started_at = _now()
-    audit.record(
-        session,
-        action="run.started",
-        actor=access.user,
-        engagement_id=eng.id,
-        detail={"run_id": run.id, "adapter": adapter_name},
-    )
+    if not manifest.builtin:
+        audit.record(
+            session,
+            action="run.queued",
+            actor=access.user,
+            engagement_id=eng.id,
+            detail={"run_id": run.id, "adapter": adapter_name},
+        )
+        session.execute(text(f"NOTIFY {NOTIFY_CHANNEL}"))  # delivered on commit
+        session.commit()
+        session.refresh(run)
+        return run
+
+    # Builtin: make the record durable BEFORE anything reaches the target, then run it here.
+    _start(session, run, access.user)
     session.commit()
-    run_id = run.id
+    return execute_run(session, run.id, actor=access.user)
 
+
+def claim_next_run(session: Session) -> str | None:
+    """Worker: take the oldest queued run, re-check its scope, and mark it running or rejected.
+
+    Returns the id of a run that is now ``running`` (committed), or ``None`` when the queue is
+    empty or the claimed run was rejected. ``SKIP LOCKED`` makes concurrent workers take
+    different runs.
+    """
+    run = session.scalars(
+        select(Run)
+        .where(Run.state == "queued")
+        .order_by(Run.created_at, Run.id)
+        .with_for_update(skip_locked=True)
+        .limit(1)
+    ).first()
+    if run is None:
+        session.rollback()
+        return None
+    engagement = session.get(Engagement, run.engagement_id)
+    target = session.get(Target, run.target_id) if run.target_id else None
+    if engagement is None:  # pragma: no cover - engagements are never deleted
+        raise RuntimeError(f"run {run.id} has no engagement")
+    reason = scope_refusal(session, engagement, target, run.params or {})
+    if reason is None and get_manifest(run.adapter) is None:
+        reason = f"adapter '{run.adapter}' is no longer available"
+    if reason is not None:
+        _reject(session, run, reason, None, at="claim")
+        session.commit()
+        return None
+    _start(session, run, None, by="worker")
+    session.commit()
+    return run.id
+
+
+def execute_run(session: Session, run_id: str, *, actor: User | None = None, runner=None) -> Run:
+    """Execute a ``running`` run and record the outcome; every failure ends in ``failed``."""
+    run = session.get(Run, run_id)
+    if run is None:  # pragma: no cover - the running row was committed before execution
+        raise RuntimeError(f"run {run_id} does not exist")
+    eng_id = run.engagement_id
     try:
-        # Inside the boundary: the commit above expired `target`, and reloading it can fail too.
-        request = build_run_request(run_id, eng.id, target.type, target.spec, params)
-        artifacts = get_runner(manifest, get_settings()).run(request)
+        # Inside the boundary: reloading the target or the manifest can fail too.
+        target = session.get(Target, run.target_id) if run.target_id else None
+        manifest = get_manifest(run.adapter)
+        if target is None or manifest is None:
+            raise ValueError("the target or the adapter is gone")
+        request = build_run_request(run_id, eng_id, target.type, target.spec, run.params or {})
+        target_id = target.id
+        artifacts = (runner or get_runner(manifest, get_settings())).run(request)
     except Exception as exc:  # third-party tool execution: every failure is recorded, never lost
-        return _fail(access, run_id, f"adapter failed: {exc}")
+        return _fail(session, eng_id, run_id, f"adapter failed: {exc}", actor)
 
     try:
-        result = _persist_results(session, eng.id, run_id, target.id, artifacts)
+        result = _persist_results(session, eng_id, run_id, target_id, artifacts)
         run.state = "succeeded"
         run.ended_at = _now()
         audit.record(
             session,
             action="run.succeeded",
-            actor=access.user,
-            engagement_id=eng.id,
+            actor=actor,
+            engagement_id=eng_id,
             detail={"run_id": run_id, **result},
         )
         session.commit()  # also releases the engagement lock
-    except (SQLAlchemyError, ValueError, KeyError, TypeError) as exc:
-        # Bad adapter output (schema/validation) or a database error while saving results.
-        return _fail(access, run_id, f"recording results failed: {exc}")
+    except (SQLAlchemyError, ValueError, KeyError, TypeError, OSError) as exc:
+        # Bad adapter output (schema/validation), evidence storage, or a database error.
+        return _fail(session, eng_id, run_id, f"recording results failed: {exc}", actor)
 
     session.refresh(run)
     return run
 
 
-def _fail(access: EngagementAccess, run_id: str, error: str) -> Run:
+def recover_stale_runs(session: Session, *, older_than: dt.timedelta) -> int:
+    """Worker start: fail runs left ``running`` longer than any run can take (a lost worker)."""
+    cutoff = _now() - older_than
+    stale = session.scalars(
+        select(Run)
+        .where(Run.state == "running", Run.started_at < cutoff)
+        .with_for_update(skip_locked=True)
+    ).all()
+    for run in stale:
+        run.state = "failed"
+        run.ended_at = _now()
+        run.reject_reason = "the worker lost the run (still running past the timeout)"
+        audit.record(
+            session,
+            action="run.failed",
+            engagement_id=run.engagement_id,
+            detail={"run_id": run.id, "error": run.reject_reason},
+        )
+    session.commit()
+    return len(stale)
+
+
+def _fail(session: Session, engagement_id: str, run_id: str, error: str, actor: User | None) -> Run:
     """Record a failed run in a fresh transaction (the current one may be unusable)."""
-    session = access.session
     session.rollback()
     run = session.get(Run, run_id)
     if run is None:  # pragma: no cover - the running row was committed before execution
@@ -172,13 +271,35 @@ def _fail(access: EngagementAccess, run_id: str, error: str) -> Run:
     audit.record(
         session,
         action="run.failed",
-        actor=access.user,
-        engagement_id=access.engagement.id,
+        actor=actor,
+        engagement_id=engagement_id,
         detail={"run_id": run_id, "error": error[:500]},
     )
     session.commit()
     session.refresh(run)
     return run
+
+
+def store_evidence(root: Path, object_key: str, content: bytes) -> None:
+    """Retain evidence bytes write-once at ``root/object_key`` (spec 012).
+
+    The file is written to a temporary name and hard-linked into place, which fails if the key
+    already exists: sealed evidence is never overwritten (ADR-0007). An identical retry is fine.
+    """
+    path = (root / object_key).resolve()
+    if not path.is_relative_to(root.resolve()):
+        raise ValueError(f"evidence key {object_key!r} escapes the evidence directory")
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp.write_bytes(content)
+    try:
+        os.chmod(tmp, 0o440)
+        os.link(tmp, path)
+    except FileExistsError:
+        if path.read_bytes() != content:
+            raise ValueError(f"evidence {object_key!r} already exists with other content") from None
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def _persist_results(
@@ -189,7 +310,10 @@ def _persist_results(
 
     # Seal each evidence artefact; map the adapter's local ids to persisted evidence ids.
     local_to_id: dict[str, str] = {}
+    evidence_root = Path(get_settings().evidence_dir)
     for ev in artifacts["evidence"]:
+        if "content" in ev:  # container runs return the bytes; keep them before sealing the hash
+            store_evidence(evidence_root, ev["object_key"], ev["content"])
         evidence, _ = seal_evidence(
             session,
             engagement_id=engagement_id,
