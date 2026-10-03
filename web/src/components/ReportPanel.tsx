@@ -43,12 +43,13 @@ export function ReportPanel({ engagementId }: { engagementId: string }) {
 
   async function verify(file: File) {
     setVerdict(null);
-    const parsed = parseReport(await file.text());
-    if (!parsed) {
-      setVerdict({ kind: "error", text: "This file is not a Khandaq report export." });
-      return;
-    }
     try {
+      // Reading the file can fail too (permissions, a vanished file): same error path as the API.
+      const parsed = parseReport(await file.text());
+      if (!parsed) {
+        setVerdict({ kind: "error", text: "This file is not a Khandaq report export." });
+        return;
+      }
       const result = await api.verifyReport(engagementId, parsed.pin);
       const other = parsed.engagementId && parsed.engagementId !== engagementId ? parsed.engagementId : null;
       setVerdict({ kind: "result", result, otherEngagement: other });

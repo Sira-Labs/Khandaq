@@ -83,6 +83,16 @@ describe("Report re-verification (spec 015)", () => {
     expect(api.verifyReport).not.toHaveBeenCalled();
   });
 
+  it("shows a file that cannot be read instead of failing silently", async () => {
+    const { ReportPanel } = await import("../components/ReportPanel");
+    render(<ReportPanel engagementId="eng_1" />);
+    const input = screen.getByLabelText("report file") as HTMLInputElement;
+    const file = new File(["{}"], "report.json", { type: "application/json" });
+    Object.defineProperty(file, "text", { value: async () => Promise.reject(new Error("file vanished")) });
+    fireEvent.change(input, { target: { files: [file] } });
+    expect(await screen.findByRole("alert")).toHaveTextContent("file vanished");
+  });
+
   it("points out a report that names another engagement", async () => {
     const { api } = await import("../api");
     vi.mocked(api.verifyReport).mockResolvedValueOnce(intact);
