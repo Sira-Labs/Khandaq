@@ -6,8 +6,8 @@
 
 use kcore::ledger::{self, LedgerEntry};
 use kcore::{
-    dedup as kdedup, fingerprint as kfingerprint, map_frameworks, navigator_layer, validate,
-    Mappings,
+    dedup as kdedup, fingerprint as kfingerprint, map_frameworks,
+    merge_mappings as core_merge_mappings, navigator_layer, validate, Mappings, MAPPINGS_SCHEMA,
 };
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -66,6 +66,27 @@ fn framework_mappings(finding_json: &str) -> PyResult<String> {
     let f = validate(&v).map_err(|e| PyValueError::new_err(e.to_string()))?;
     let mappings = map_frameworks(&f, &Mappings::builtin());
     serde_json::to_string(&mappings).map_err(|e| PyValueError::new_err(e.to_string()))
+}
+
+/// The finding's own mappings plus the built-in table's, or the `unmapped` marker (spec 020).
+#[pyfunction]
+fn merge_mappings(finding_json: &str) -> PyResult<String> {
+    let v = parse(finding_json)?;
+    let f = validate(&v).map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let mappings = core_merge_mappings(&f, &Mappings::builtin());
+    serde_json::to_string(&mappings).map_err(|e| PyValueError::new_err(e.to_string()))
+}
+
+/// The built-in table's schema, framework versions and sources as JSON.
+#[pyfunction]
+fn mapping_table() -> String {
+    let m = Mappings::builtin();
+    serde_json::json!({
+        "schema": MAPPINGS_SCHEMA,
+        "versions": m.versions(),
+        "sources": m.sources(),
+    })
+    .to_string()
 }
 
 /// Build a MITRE ATLAS Navigator layer from an array of findings; returns JSON.
@@ -140,6 +161,8 @@ fn khandaq_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(fingerprint, m)?)?;
     m.add_function(wrap_pyfunction!(dedup, m)?)?;
     m.add_function(wrap_pyfunction!(framework_mappings, m)?)?;
+    m.add_function(wrap_pyfunction!(merge_mappings, m)?)?;
+    m.add_function(wrap_pyfunction!(mapping_table, m)?)?;
     m.add_function(wrap_pyfunction!(navigator, m)?)?;
     m.add_function(wrap_pyfunction!(ledger_append, m)?)?;
     m.add_function(wrap_pyfunction!(ledger_verify, m)?)?;

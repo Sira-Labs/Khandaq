@@ -2,7 +2,8 @@
 
 use khandaq_core::{
     dedup as dedup_builtin, dedup_with, fingerprint, fingerprint_with, map_frameworks,
-    navigator_layer, validate, DedupResult, Equivalence, Finding, Mappings, Severity,
+    merge_mappings, navigator_layer, validate, DedupResult, Equivalence, Finding, Mappings,
+    Severity,
 };
 use serde_json::{json, Value};
 
@@ -208,6 +209,130 @@ fn map_frameworks_known_and_unmapped() {
     assert_eq!(um.len(), 1);
     assert_eq!(um[0].framework, "unmapped");
     assert_eq!(um[0].id, "x.unheard-of");
+}
+
+fn ids(ms: &[khandaq_core::Mapping]) -> Vec<(String, String)> {
+    ms.iter()
+        .map(|m| (m.framework.clone(), m.id.clone()))
+        .collect()
+}
+
+#[test]
+fn the_builtin_table_names_a_version_and_source_per_framework() {
+    let m = Mappings::builtin();
+    for fw in ["atlas", "owasp-llm-2025", "owasp-llm-2026", "nist-ai-rmf"] {
+        assert!(m.versions().contains_key(fw), "{fw} has no version");
+        assert!(
+            m.sources()[fw].starts_with("https://"),
+            "{fw} has no source"
+        );
+    }
+    // A framework used without a version, a wrong schema, or an empty rule is refused.
+    let table = |versions: &str, rules: &str| {
+        format!(
+            r#"{{"schema":"khandaq.mappings/1","versions":{versions},"sources":{{"atlas":"https://x"}},"rules":{rules}}}"#
+        )
+    };
+    let rule = r#"{"r":{"mappings":[{"framework":"atlas","id":"AML.T0051"}],"rationale":"x"}}"#;
+    assert!(Mappings::from_json(&table(r#"{"atlas":"1"}"#, rule)).is_ok());
+    assert!(Mappings::from_json(&table("{}", rule)).is_err());
+    assert!(Mappings::from_json(&table(
+        r#"{"atlas":"1"}"#,
+        r#"{"r":{"mappings":[],"rationale":"x"}}"#
+    ))
+    .is_err());
+    assert!(Mappings::from_json(&table(
+        r#"{"atlas":"1"}"#,
+        r#"{"r.":{"mappings":[{"framework":"atlas","id":"A"}],"rationale":"x"}}"#
+    ))
+    .is_err());
+    assert!(Mappings::from_json(
+        &table(r#"{"atlas":"1"}"#, rule).replace("mappings/1", "mappings/9")
+    )
+    .is_err());
+}
+
+#[test]
+fn longest_prefix_on_a_boundary() {
+    let m = Mappings::builtin();
+    let atlas = |rule: &str| {
+        m.for_rule(rule).map(|ms| {
+            ms.iter()
+                .filter(|x| x.framework == "atlas")
+                .map(|x| x.id.clone())
+                .collect::<Vec<_>>()
+        })
+    };
+    // A family probe uses the family entry; a colon boundary counts too.
+    assert_eq!(
+        atlas("garak.promptinject.hijackhatehumansmini"),
+        Some(vec!["AML.T0051".into()])
+    );
+    assert_eq!(
+        atlas("promptfoo.harmful:hate"),
+        Some(vec!["AML.T0048".into()])
+    );
+    // The longest key wins over the tool default.
+    assert_eq!(atlas("pyrit.crescendo"), Some(vec!["AML.T0054".into()]));
+    assert_eq!(atlas("pyrit.something_new"), Some(vec!["AML.T0051".into()]));
+    // A non-boundary prefix does not match, and garak has no default.
+    assert_eq!(m.for_rule("garak.promptinjectx"), None);
+    assert_eq!(m.for_rule("garak.unknownprobe"), None);
+    assert_eq!(m.for_rule(""), None);
+}
+
+#[test]
+fn merge_keeps_adapter_ids_and_adds_the_table() {
+    let f = validate(&finding_json(
+        "echo",
+        "echo.inject",
+        "medium",
+        "t",
+        &[("atlas", "AML.T0051"), ("custom", "X-1")],
+        &[],
+    ))
+    .unwrap();
+    let merged = ids(&merge_mappings(&f, &Mappings::builtin()));
+    assert!(merged.contains(&("custom".into(), "X-1".into())));
+    assert!(merged.contains(&("nist-ai-rmf".into(), "MEASURE-2.7".into())));
+    assert!(merged.contains(&("owasp-llm-2025".into(), "LLM01".into())));
+    assert_eq!(
+        merged
+            .iter()
+            .filter(|(fw, id)| fw == "atlas" && id == "AML.T0051")
+            .count(),
+        1
+    );
+    let mut sorted = merged.clone();
+    sorted.sort();
+    assert_eq!(merged, sorted);
+}
+
+#[test]
+fn merge_marks_unmapped_only_when_both_are_empty() {
+    let m = Mappings::builtin();
+    let bare = validate(&finding_json("x", "x.unheard-of", "low", "t", &[], &[])).unwrap();
+    assert_eq!(
+        ids(&merge_mappings(&bare, &m)),
+        vec![("unmapped".into(), "x.unheard-of".into())]
+    );
+    let tool_only = validate(&finding_json(
+        "x",
+        "x.unheard-of",
+        "low",
+        "t",
+        &[("atlas", "AML.T0051")],
+        &[],
+    ))
+    .unwrap();
+    assert_eq!(
+        ids(&merge_mappings(&tool_only, &m)),
+        vec![("atlas".into(), "AML.T0051".into())]
+    );
+    // Merging twice is stable: an earlier marker does not survive next to real ids.
+    let mut again = bare.clone();
+    again.x_khandaq.mappings = merge_mappings(&bare, &m);
+    assert_eq!(merge_mappings(&again, &m), merge_mappings(&bare, &m));
 }
 
 #[test]

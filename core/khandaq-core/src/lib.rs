@@ -21,5 +21,7 @@ pub use ledger::{
     verify as ledger_verify, verify_pinned as ledger_verify_pinned, EvidenceRecord, LedgerEntry,
     LedgerError, VerifyResult, LEDGER_FORMAT,
 };
-pub use mapping::{map_frameworks, navigator_layer, Mappings};
+pub use mapping::{
+    map_frameworks, merge_mappings, navigator_layer, Mappings, MappingsError, MAPPINGS_SCHEMA,
+};
 pub use severity::{AdapterSeverityTable, Severity};

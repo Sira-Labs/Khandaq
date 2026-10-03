@@ -160,3 +160,18 @@ def test_ledger_writes_format_2_and_binds_evidence_metadata():
     assert json.loads(kc.ledger_verify(json.dumps([entry])))["ok"] is True
     entry["format"] = 1  # a format-2 entry cannot be re-read as format 1
     assert json.loads(kc.ledger_verify(json.dumps([entry])))["ok"] is False
+
+
+def test_merge_mappings_and_mapping_table():
+    # Spec 020: the tool's ids are kept, the table adds the frameworks the tool does not name.
+    f = _finding(rule="garak.promptinject.hijackhatehumansmini")
+    merged = {(m["framework"], m["id"]) for m in json.loads(kc.merge_mappings(json.dumps(f)))}
+    assert ("owasp-llm-2026", "LLM01") in merged
+    assert ("nist-ai-rmf", "MEASURE-2.7") in merged
+    bare = _finding(rule="nobody.mapped.this", mappings=())
+    assert json.loads(kc.merge_mappings(json.dumps(bare))) == [
+        {"framework": "unmapped", "id": "nobody.mapped.this"}
+    ]
+    table = json.loads(kc.mapping_table())
+    assert table["schema"] == "khandaq.mappings/1"
+    assert table["versions"]["atlas"] and table["sources"]["atlas"].startswith("https://")

@@ -1,34 +1,328 @@
 {
-  "_meta": {
-    "note": "Seed cross-walk from upstream tool rule ids to framework ids (ADR-0012). Keyed by rule_id. Both OWASP LLM editions are kept in parallel. Extend as adapters land; cite sources per entry upstream.",
-    "owasp_llm_2025_version": "2025",
-    "owasp_llm_2026_version": "2026",
-    "atlas_version": "v2026.09"
+  "schema": "khandaq.mappings/1",
+  "note": "Cross-walk from tool rule ids to framework ids (ADR-0012, spec 020). Keys are rule-id prefixes, matched on a '.' or ':' boundary; the longest key wins, and a bare tool key is that tool's default. Both OWASP LLM editions are kept in parallel. Changing an entry is a data change with a test.",
+  "versions": {
+    "atlas": "v2026.09",
+    "owasp-llm-2025": "2025",
+    "owasp-llm-2026": "2026",
+    "owasp-agentic": "2026",
+    "nist-ai-rmf": "1.0"
+  },
+  "sources": {
+    "atlas": "https://atlas.mitre.org/techniques/",
+    "owasp-llm-2025": "https://genai.owasp.org/llm-top-10/",
+    "owasp-llm-2026": "https://genai.owasp.org/llm-top-10/",
+    "owasp-agentic": "https://genai.owasp.org/initiatives/agentic-security-initiative/",
+    "nist-ai-rmf": "https://airc.nist.gov/airmf-resources/airmf/5-sec-core/"
   },
   "rules": {
-    "garak.promptinject.hijack": [
-      {"framework": "owasp-llm-2025", "id": "LLM01"},
-      {"framework": "owasp-llm-2026", "id": "LLM01"},
-      {"framework": "atlas", "id": "AML.T0051"},
-      {"framework": "nist-ai-rmf", "id": "MEASURE-2.7"}
-    ],
-    "garak.leakreplay": [
-      {"framework": "owasp-llm-2025", "id": "LLM02"},
-      {"framework": "owasp-llm-2026", "id": "LLM02"},
-      {"framework": "atlas", "id": "AML.T0057"}
-    ],
-    "pyrit.crescendo": [
-      {"framework": "owasp-llm-2025", "id": "LLM01"},
-      {"framework": "owasp-llm-2026", "id": "LLM01"},
-      {"framework": "atlas", "id": "AML.T0054"}
-    ],
-    "promptfoo.harmful": [
-      {"framework": "owasp-llm-2026", "id": "LLM07"},
-      {"framework": "atlas", "id": "AML.T0048"}
-    ],
-    "mcp-scanner.tool-poisoning": [
-      {"framework": "owasp-agentic", "id": "ASI04"},
-      {"framework": "atlas", "id": "AML.T0053"}
-    ]
+    "echo.inject": {
+      "mappings": [
+        {
+          "framework": "owasp-llm-2025",
+          "id": "LLM01"
+        },
+        {
+          "framework": "owasp-llm-2026",
+          "id": "LLM01"
+        },
+        {
+          "framework": "atlas",
+          "id": "AML.T0051"
+        },
+        {
+          "framework": "nist-ai-rmf",
+          "id": "MEASURE-2.7"
+        }
+      ],
+      "rationale": "Built-in synthetic adapter: a recorded prompt-injection finding."
+    },
+    "echo.leak": {
+      "mappings": [
+        {
+          "framework": "owasp-llm-2025",
+          "id": "LLM02"
+        },
+        {
+          "framework": "owasp-llm-2026",
+          "id": "LLM02"
+        },
+        {
+          "framework": "atlas",
+          "id": "AML.T0057"
+        },
+        {
+          "framework": "nist-ai-rmf",
+          "id": "MEASURE-2.10"
+        }
+      ],
+      "rationale": "Built-in synthetic adapter: a recorded data-leakage finding."
+    },
+    "garak.dan": {
+      "mappings": [
+        {
+          "framework": "owasp-llm-2025",
+          "id": "LLM01"
+        },
+        {
+          "framework": "owasp-llm-2026",
+          "id": "LLM01"
+        },
+        {
+          "framework": "atlas",
+          "id": "AML.T0054"
+        },
+        {
+          "framework": "nist-ai-rmf",
+          "id": "MEASURE-2.7"
+        }
+      ],
+      "rationale": "garak dan probes are jailbreak prompts that bypass the model's guardrails."
+    },
+    "garak.leakreplay": {
+      "mappings": [
+        {
+          "framework": "owasp-llm-2025",
+          "id": "LLM02"
+        },
+        {
+          "framework": "owasp-llm-2026",
+          "id": "LLM02"
+        },
+        {
+          "framework": "atlas",
+          "id": "AML.T0057"
+        },
+        {
+          "framework": "nist-ai-rmf",
+          "id": "MEASURE-2.10"
+        }
+      ],
+      "rationale": "garak leakreplay probes test whether the model replays memorised training text."
+    },
+    "garak.promptinject": {
+      "mappings": [
+        {
+          "framework": "owasp-llm-2025",
+          "id": "LLM01"
+        },
+        {
+          "framework": "owasp-llm-2026",
+          "id": "LLM01"
+        },
+        {
+          "framework": "atlas",
+          "id": "AML.T0051"
+        },
+        {
+          "framework": "nist-ai-rmf",
+          "id": "MEASURE-2.7"
+        }
+      ],
+      "rationale": "garak promptinject probes test direct prompt injection (goal hijacking)."
+    },
+    "garak.xss": {
+      "mappings": [
+        {
+          "framework": "owasp-llm-2025",
+          "id": "LLM05"
+        },
+        {
+          "framework": "owasp-llm-2026",
+          "id": "LLM10"
+        },
+        {
+          "framework": "nist-ai-rmf",
+          "id": "MEASURE-2.7"
+        }
+      ],
+      "rationale": "garak xss probes test output that a downstream renderer would execute (improper output handling)."
+    },
+    "mcp-scanner.tool-poisoning": {
+      "mappings": [
+        {
+          "framework": "owasp-agentic",
+          "id": "ASI04"
+        },
+        {
+          "framework": "atlas",
+          "id": "AML.T0053"
+        }
+      ],
+      "rationale": "MCP tool poisoning: a compromised tool description steers the agent (agentic supply chain)."
+    },
+    "promptfoo": {
+      "mappings": [
+        {
+          "framework": "owasp-llm-2026",
+          "id": "LLM07"
+        }
+      ],
+      "rationale": "Default for promptfoo red-team plugins without a curated family."
+    },
+    "promptfoo.harmful": {
+      "mappings": [
+        {
+          "framework": "owasp-llm-2026",
+          "id": "LLM07"
+        },
+        {
+          "framework": "atlas",
+          "id": "AML.T0048"
+        },
+        {
+          "framework": "nist-ai-rmf",
+          "id": "MEASURE-2.6"
+        }
+      ],
+      "rationale": "promptfoo harmful:* plugins test generation of harmful content; OWASP LLM 2025 has no category for it as such."
+    },
+    "promptfoo.pii": {
+      "mappings": [
+        {
+          "framework": "owasp-llm-2025",
+          "id": "LLM02"
+        },
+        {
+          "framework": "owasp-llm-2026",
+          "id": "LLM02"
+        },
+        {
+          "framework": "atlas",
+          "id": "AML.T0057"
+        },
+        {
+          "framework": "nist-ai-rmf",
+          "id": "MEASURE-2.10"
+        }
+      ],
+      "rationale": "promptfoo pii:* plugins test disclosure of personal data."
+    },
+    "promptfoo.prompt-extraction": {
+      "mappings": [
+        {
+          "framework": "owasp-llm-2025",
+          "id": "LLM07"
+        },
+        {
+          "framework": "owasp-llm-2026",
+          "id": "LLM01"
+        },
+        {
+          "framework": "atlas",
+          "id": "AML.T0051"
+        },
+        {
+          "framework": "nist-ai-rmf",
+          "id": "MEASURE-2.7"
+        }
+      ],
+      "rationale": "promptfoo prompt-extraction tests system prompt leakage through injection."
+    },
+    "pyrit": {
+      "mappings": [
+        {
+          "framework": "owasp-llm-2025",
+          "id": "LLM01"
+        },
+        {
+          "framework": "owasp-llm-2026",
+          "id": "LLM01"
+        },
+        {
+          "framework": "atlas",
+          "id": "AML.T0051"
+        },
+        {
+          "framework": "nist-ai-rmf",
+          "id": "MEASURE-2.7"
+        }
+      ],
+      "rationale": "Default for PyRIT strategies: multi-turn prompt injection against a stated objective."
+    },
+    "pyrit.crescendo": {
+      "mappings": [
+        {
+          "framework": "owasp-llm-2025",
+          "id": "LLM01"
+        },
+        {
+          "framework": "owasp-llm-2026",
+          "id": "LLM01"
+        },
+        {
+          "framework": "atlas",
+          "id": "AML.T0054"
+        },
+        {
+          "framework": "nist-ai-rmf",
+          "id": "MEASURE-2.7"
+        }
+      ],
+      "rationale": "Crescendo: gradual multi-turn jailbreak."
+    },
+    "pyrit.pair": {
+      "mappings": [
+        {
+          "framework": "owasp-llm-2025",
+          "id": "LLM01"
+        },
+        {
+          "framework": "owasp-llm-2026",
+          "id": "LLM01"
+        },
+        {
+          "framework": "atlas",
+          "id": "AML.T0051"
+        },
+        {
+          "framework": "nist-ai-rmf",
+          "id": "MEASURE-2.7"
+        }
+      ],
+      "rationale": "PAIR: iterative prompt refinement towards an objective (prompt injection)."
+    },
+    "pyrit.skeleton_key": {
+      "mappings": [
+        {
+          "framework": "owasp-llm-2025",
+          "id": "LLM01"
+        },
+        {
+          "framework": "owasp-llm-2026",
+          "id": "LLM01"
+        },
+        {
+          "framework": "atlas",
+          "id": "AML.T0054"
+        },
+        {
+          "framework": "nist-ai-rmf",
+          "id": "MEASURE-2.7"
+        }
+      ],
+      "rationale": "Skeleton Key: a jailbreak that asks the model to augment rather than drop its guidelines."
+    },
+    "pyrit.tap": {
+      "mappings": [
+        {
+          "framework": "owasp-llm-2025",
+          "id": "LLM01"
+        },
+        {
+          "framework": "owasp-llm-2026",
+          "id": "LLM01"
+        },
+        {
+          "framework": "atlas",
+          "id": "AML.T0051"
+        },
+        {
+          "framework": "nist-ai-rmf",
+          "id": "MEASURE-2.7"
+        }
+      ],
+      "rationale": "Tree of Attacks with Pruning: iterative prompt injection."
+    }
   }
 }
