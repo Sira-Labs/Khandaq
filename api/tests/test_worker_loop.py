@@ -96,3 +96,42 @@ def test_a_failing_heartbeat_never_stops_the_work(monkeypatch):
     monkeypatch.setattr(worker, "work_once", work_once)
     worker.run_forever(Settings(database_url="sqlite://", worker_poll_seconds=0.01), stop)
     assert len(loops) == 2
+
+
+def test_a_worker_started_before_the_migrations_waits_for_them(monkeypatch):
+    # A fresh install can start the worker before the API has created the tables.
+    from psycopg.errors import UndefinedTable
+    from sqlalchemy.exc import ProgrammingError
+
+    stop = threading.Event()
+    attempts: list[int] = []
+
+    def recover(session, older_than):
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise ProgrammingError("SELECT", {}, UndefinedTable('relation "runs" does not exist'))
+        stop.set()
+        return 0
+
+    monkeypatch.setattr(worker, "recover_stale_runs", recover)
+    monkeypatch.setattr(worker, "Notifications", _Quiet)
+    monkeypatch.setattr(worker, "work_once", lambda engine, runner=None: False)
+    monkeypatch.setattr(worker, "schedule_campaigns", lambda engine: 0)
+    monkeypatch.setattr(worker, "deliver_alerts", lambda engine: 0)
+    worker.run_forever(Settings(database_url="sqlite://", worker_poll_seconds=0.01), stop)
+    assert len(attempts) == 2  # waited and retried, not crashed
+
+
+def test_any_other_programming_error_still_ends_the_loop(monkeypatch):
+    import pytest
+    from sqlalchemy.exc import ProgrammingError
+
+    def recover(session, older_than):
+        raise ProgrammingError("SELECT", {}, ValueError("a real bug"))
+
+    monkeypatch.setattr(worker, "recover_stale_runs", recover)
+    monkeypatch.setattr(worker, "Notifications", _Quiet)
+    with pytest.raises(ProgrammingError):
+        worker.run_forever(
+            Settings(database_url="sqlite://", worker_poll_seconds=0.01), threading.Event()
+        )
