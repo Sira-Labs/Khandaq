@@ -56,6 +56,13 @@ ADR-0006), `KHANDAQ_SIGSTORE=off|on`.
 > a previously pinned count still has the pinned root. Wiring that into report re-verification is
 > a follow-up.
 
+> Evidence metadata (ADR-0014, 2026-10-03): entries carry a `format`. Format 1 (every entry sealed
+> before migration 0005) seals `Evidence.sha256` alone; format 2, which `append` now writes, seals
+> the core's `evidence_record_hash` over the row's id, engagement, run, kind, object key, sha256,
+> bytes and redaction flag, and tags the entry hash with `khandaq.ledger/2`. Reason: a DBA who
+> disabled the 0003 triggers could move or relabel sealed evidence and the chain still verified.
+> `verify` refuses unknown or decreasing formats; downgrading 0005 is refused once format 2 is used.
+
 
 ## Test cases
 

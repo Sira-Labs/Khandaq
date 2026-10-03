@@ -118,6 +118,15 @@ fn ledger_verify(
     serde_json::to_string(&result).map_err(|e| PyValueError::new_err(e.to_string()))
 }
 
+/// Return the `evidence_hash` a format-2 ledger entry seals for an evidence row (ADR-0014): a hash
+/// over its content hash and metadata. The record must carry exactly the `EvidenceRecord` fields.
+#[pyfunction]
+fn evidence_record_hash(record_json: &str) -> PyResult<String> {
+    let record: ledger::EvidenceRecord = serde_json::from_str(record_json)
+        .map_err(|e| PyValueError::new_err(format!("invalid evidence record JSON: {e}")))?;
+    ledger::evidence_record_hash(&record).map_err(|e| PyValueError::new_err(e.to_string()))
+}
+
 /// Return the chain root (last entry hash) or None for an empty chain.
 #[pyfunction]
 fn ledger_root(entries_json: &str) -> PyResult<Option<String>> {
@@ -135,5 +144,6 @@ fn khandaq_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(ledger_append, m)?)?;
     m.add_function(wrap_pyfunction!(ledger_verify, m)?)?;
     m.add_function(wrap_pyfunction!(ledger_root, m)?)?;
+    m.add_function(wrap_pyfunction!(evidence_record_hash, m)?)?;
     Ok(())
 }

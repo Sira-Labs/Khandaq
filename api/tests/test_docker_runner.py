@@ -279,3 +279,12 @@ def test_forbidden_addresses(raw):
 
 def test_private_addresses_are_allowed_for_self_hosted_targets():
     assert check_address("172.18.0.5") == "172.18.0.5"
+
+
+def test_an_oversized_request_is_refused_before_anything_is_created():
+    cli = FakeCli(CliResult(0, GOOD_OUTPUT, b""))
+    request = _request()
+    request["params"] = {"notes": "x" * 70_000}
+    with pytest.raises(RunnerError, match="exceeds"):
+        _runner(cli).run(request)
+    assert cli.calls == []

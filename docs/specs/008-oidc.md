@@ -74,8 +74,15 @@ header stub, **non-prod only**. If none resolve: `401` (prod no longer returns `
    `admin_email` or on `KHANDAQ_ALLOWED_EMAILS` (comma-separated, case-insensitive; empty = admin
    only). Anyone else gets no user row and no session, is redirected to `/?signin=denied`, and is
    audited as `auth.denied`. The list is re-checked on every session- and token-authenticated
-   request, so removing an address revokes access at once. Users stay keyed by email; keying by
-   (`iss`, `sub`) is a follow-up.
+   request, so removing an address revokes access at once.
+9. **Identity key** (2026-10-03, owner decision). Users are keyed by the IdP account — the id_token's
+   (`iss`, `sub`), stored in `users.oidc_issuer`/`oidc_subject` (migration 0006, unique, both set or
+   both NULL). A known (iss, sub) is that user even after its verified email changes (audited
+   `user.email_changed`, refused if another user has the new email). A user from before 0006 is
+   linked by email on its next verified sign-in (`user.identity_linked`). An email already linked to
+   a different (iss, sub) is refused (`auth.denied`), never merged. Reason: keyed by email, a second
+   IdP account that verified the same address became the first user. An id_token without `iss` or
+   `sub` is a 400.
 7. **Strict environment.** `KHANDAQ_ENV` must be `dev`, `test` or `prod`; any other value refuses to
    start, because every non-prod value enables the dev login stub. In prod only the `__Host-` session
    cookie is read.

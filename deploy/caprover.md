@@ -96,6 +96,13 @@ rendered file to `khandaq-stg`) and use `…/realms/khandaq-stg` as its issuer.
   | `KHANDAQ_ALLOWED_EMAILS` | other people who may sign in, comma-separated (empty = owner only). The realm brokers any Google/GitHub account; everyone not listed lands on "no access" and is audited as `auth.denied` |
   | `KHANDAQ_SIGSTORE` | `off` (default) or `on` |
 
+  Users are bound to their Keycloak account (`iss` + `sub`) at first sign-in. If a Keycloak user is
+  deleted and recreated, the new account gets a new `sub`, and its sign-in is refused (`auth.denied`:
+  "email is linked to another identity-provider account") so a second account can never inherit the
+  first one's engagements. After confirming it is the same person, unlink the old account so the next
+  sign-in links the new one:
+  `UPDATE users SET oidc_issuer = NULL, oidc_subject = NULL WHERE email = '<their email>';`
+
   With `KHANDAQ_ENV=prod` the API refuses to start without the DB, session, evidence-key and OIDC
   settings (fail closed). The worker needs the same minus OIDC — it serves no logins and is not given
   the client secret.
