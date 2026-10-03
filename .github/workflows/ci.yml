@@ -98,6 +98,24 @@ jobs:
       - run: uv run mypy
       - run: uv run pytest -q
 
+  e2e:
+    name: e2e (docker egress containment)
+    runs-on: ubuntu-latest
+    defaults:
+      run: { working-directory: api }
+    env:
+      KHANDAQ_E2E_DOCKER: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with: { workspaces: core }
+      - uses: astral-sh/setup-uv@v7
+        with: { python-version: "3.12" }
+      - run: uv sync --extra dev
+      # Real daemon: an adapter must reach its in-scope target and nothing else (spec 012, ADR-0009).
+      - run: uv run pytest -q tests/e2e -rA
+
   web:
     name: web
     runs-on: ubuntu-latest
