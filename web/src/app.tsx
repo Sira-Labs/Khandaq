@@ -131,6 +131,9 @@ export function App() {
   } else if (deniedLanding) {
     // The callback refused the account; a still-valid earlier session must not hide that.
     body = <SignIn denied />;
+  } else if (unavailableLanding) {
+    // The same for a failed retry: the earlier session is still valid, but the notice must show.
+    body = <SignIn denied={false} unavailable />;
   } else {
     const findings = path.match(/^\/eng\/([^/]+)\/findings$/);
     const campaign = path.match(/^\/eng\/([^/]+)\/campaigns\/([^/]+)$/);

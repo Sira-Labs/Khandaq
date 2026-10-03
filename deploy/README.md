@@ -102,8 +102,14 @@ alive or a worker's mapping table differs from the API's (spec 024).
 
 ## Sign-in says "identity provider cannot be reached"
 
-The API could not fetch `<KHANDAQ_OIDC_ISSUER>/.well-known/openid-configuration`. The API log names
-the cause next to `OIDC discovery failed`:
+The API could not talk to Keycloak. The API log names the step and the cause:
+- `OIDC discovery failed` — fetching `<KHANDAQ_OIDC_ISSUER>/.well-known/openid-configuration`
+  failed (the causes below);
+- `OIDC token exchange failed` — discovery worked, but the token endpoint could not be reached or
+  answered with a 5xx after the user came back from Keycloak;
+- `OIDC signing keys unavailable` — the realm's signing keys (`jwks_uri`) could not be fetched.
+
+For discovery, the error names the cause:
 - **`ConnectError: No address associated with hostname`** — the issuer's host does not resolve from
   inside the API container. Use the Keycloak app's public URL (`https://<keycloak host>/realms/khandaq`),
   or its CapRover internal name (`http://srv-captain--<keycloak app>:8080/realms/khandaq`) only if

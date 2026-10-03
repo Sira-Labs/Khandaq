@@ -113,8 +113,6 @@ describe("app sign-in", () => {
   });
 });
 
-
-
 describe("sign-in when the identity provider is unreachable", () => {
   it("explains it instead of showing a server error", async () => {
     meMock.mockReset();
@@ -126,5 +124,13 @@ describe("sign-in when the identity provider is unreachable", () => {
       "href",
       "/api/auth/login?next=%2F",
     );
+  });
+
+  it("shows the notice even when an earlier session still answers /me", async () => {
+    meMock.mockReset();
+    meMock.mockResolvedValue(SESSION_ME);
+    window.history.replaceState(null, "", "/?signin=unavailable");
+    await renderApp();
+    expect(await screen.findByRole("alert")).toHaveTextContent("cannot reach its identity provider");
   });
 });

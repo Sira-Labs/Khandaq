@@ -70,8 +70,11 @@ class KeycloakOidcClient:
                 resp = httpx.get(url, timeout=10.0)
                 resp.raise_for_status()
                 meta = resp.json()
+                if not isinstance(meta, dict):
+                    raise ValueError("discovery document is not a JSON object")
                 for key in ("authorization_endpoint", "token_endpoint", "jwks_uri"):
-                    if not isinstance(meta.get(key), str):
+                    value = meta.get(key)
+                    if not isinstance(value, str) or not value.strip():
                         raise ValueError(f"discovery document has no {key}")
             except (httpx.HTTPError, ValueError) as exc:
                 # A wrong or unresolvable KHANDAQ_OIDC_ISSUER, a missing realm, or an IdP that is
@@ -120,6 +123,10 @@ class KeycloakOidcClient:
             raise IdentityProviderUnavailable(
                 "the identity provider's token endpoint cannot be reached"
             ) from None
+        if resp.status_code >= 500:
+            # The provider is up enough to answer but failing: not the user's code, not a 400.
+            log.error("OIDC token exchange failed", extra={"error": f"HTTP {resp.status_code}"})
+            raise IdentityProviderUnavailable("the identity provider's token endpoint is failing")
         if resp.status_code != 200:
             raise HTTPException(400, "token exchange failed")
         return resp.json()
