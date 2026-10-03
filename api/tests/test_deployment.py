@@ -142,3 +142,26 @@ def test_only_organisation_admins_may_read_it(env):
     client, _ = env
     assert client.get("/api/deployment", headers=MEMBER).status_code == 403
     assert client.get("/api/deployment", headers=ADMIN).status_code == 200
+
+
+def test_a_restart_with_the_same_id_records_its_own_start(env):
+    from khandaq import deployment
+    from khandaq.models import WorkerHeartbeat
+    from khandaq.settings import get_settings
+
+    _, engine = env
+    first = dt.datetime.now(dt.UTC) - dt.timedelta(hours=3)
+    second = dt.datetime.now(dt.UTC)
+    with Session(engine) as s:
+        deployment.beat(s, get_settings(), wid="host:1", started_at=first)
+        deployment.beat(s, get_settings(), wid="host:1", started_at=second)  # restarted as PID 1
+    with Session(engine) as s:
+        assert s.get(WorkerHeartbeat, "host:1").started_at == second
+
+
+def test_a_malformed_store_url_is_summarised_not_raised():
+    from khandaq.deployment import settings_summary
+    from khandaq.settings import Settings
+
+    summary = settings_summary(Settings(object_store_url="ftp://nope"))
+    assert summary["evidence"]["store"] == "invalid" and summary["evidence"]["bucket"] is None

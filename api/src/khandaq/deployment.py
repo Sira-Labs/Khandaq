@@ -33,7 +33,11 @@ def _now() -> dt.datetime:
 
 def settings_summary(settings: Settings) -> dict:
     """The non-secret shape of a process's configuration."""
-    store = parse_store_url(settings.object_store_url)
+    try:
+        store = parse_store_url(settings.object_store_url)
+        store_kind = "s3" if store else "local"
+    except ValueError:  # prod refuses it at startup; elsewhere the summary must still build
+        store, store_kind = None, "invalid"
     retired = [k for k in settings.evidence_previous_keys.split(",") if k.strip()]
     table = table_in_effect()
     return {
@@ -42,7 +46,7 @@ def settings_summary(settings: Settings) -> dict:
         "evidence": {
             "key": bool(settings.evidence_key),
             "retired_keys": len(retired),
-            "store": "s3" if store else "local",
+            "store": store_kind,
             "bucket": store[0] if store else None,
         },
         "alerts": {
@@ -73,7 +77,12 @@ def beat(session: Session, settings: Settings, *, wid: str, started_at: dt.datet
     session.execute(
         stmt.on_conflict_do_update(
             index_elements=[WorkerHeartbeat.id],
-            set_={"seen_at": now, "app_version": __version__, "summary": values["summary"]},
+            set_={  # a restart can reuse the id (same hostname, PID 1): it is a new process
+                "started_at": started_at,
+                "seen_at": now,
+                "app_version": __version__,
+                "summary": values["summary"],
+            },
         )
     )
     session.commit()
