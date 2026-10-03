@@ -60,6 +60,9 @@ target, with its findings normalised and its evidence sealed.
      TRUNCATE (migration 0003).
    - The Docker runner applies the manifest's memory/CPU limits, a pid limit, runs the tool as
      `nobody` with a `noexec` tmpfs `$HOME`, and refuses mount paths containing `:` or `,`.
+     **Superseded by spec 012 (2026-10-03):** the adapter I/O no longer uses host mounts at all.
+     The request arrives in `KHANDAQ_RUN_REQUEST`, and the evidence leaves as a tar on stdout.
+     Reason: with the Docker socket, `-v` paths resolve on the host, not in the worker container.
    - An org `read_only` user is capped at `viewer` on every engagement, whatever their membership.
 
 ## Acceptance criteria
