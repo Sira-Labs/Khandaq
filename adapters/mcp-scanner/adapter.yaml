@@ -1,0 +1,19 @@
+# Cisco mcp-scanner adapter (spec 025). mcp-scanner is Cisco's MCP server scanner (Apache-2.0).
+name: mcp-scanner
+version: "4.8.5"
+image: ghcr.io/sira-labs/khandaq-adapter-mcp-scanner:4.8.5
+entrypoint: /usr/local/bin/wrap.py
+phases:
+  - 07-agentic-mcp
+frameworks:
+  - owasp-agentic
+  - owasp-llm-2026
+  - atlas
+severity_table:
+  HIGH: high
+  MEDIUM: medium
+  LOW: low
+  INFO: info
+resources:
+  cpu: "1"
+  memory: 1Gi

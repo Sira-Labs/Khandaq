@@ -37,6 +37,9 @@ jobs:
           - name: khandaq-adapter-promptfoo
             file: adapters/promptfoo/Dockerfile
             context: adapters/promptfoo
+          - name: khandaq-adapter-mcp-scanner
+            file: adapters/mcp-scanner/Dockerfile
+            context: adapters/mcp-scanner
     steps:
       - uses: actions/checkout@v7
       - uses: docker/setup-buildx-action@v3

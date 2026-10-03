@@ -65,7 +65,7 @@ to CapRover staging.
 | Sprint | Focus | Specs (to write) |
 |---|---|---|
 | 5 | Campaigns: scheduler, baseline, diff (new/resolved/regressed), alerts (webhook + email); console, tokens + smoke test, mapping tables + overlay, deployment status (API + console) | 016–024 (written) |
-| 6 | Cisco mcp-scanner adapter (phase 07) + agent target type | 025 |
+| 6 | Cisco mcp-scanner adapter (phase 07) + agent target type | 025 (written; the scope lock already had the `mcp_server` and `agent` types) |
 | 7 | ART adapter (phase 05) + model_artifact/dataset target types | 026–027 |
 | 8 | Supply chain: ModelAudit/ModelScan consensus + AI-BOM (phase 08) | 028–029 |
 | 9 | Guardrail-regression harness (phase 09) | 030 |

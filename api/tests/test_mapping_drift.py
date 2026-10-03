@@ -50,6 +50,8 @@ def _families() -> list[tuple[str, list[tuple[str, str]]]]:
     cases.append(("pyrit.a_strategy_nobody_curated", pyrit.DEFAULT_FRAMEWORKS))
     cases += [(f"promptfoo.{k}:x", v[1]) for k, v in promptfoo.PLUGIN_FAMILY.items()]
     cases.append(("promptfoo.a-plugin-nobody-curated", promptfoo.DEFAULT_FAMILY[1]))
+    mcp = _wrapper("mcp-scanner")
+    cases += [(f"mcp-scanner.{k}", v) for k, v in mcp.THREAT_FRAMEWORKS.items()]
     return cases
 
 
@@ -66,6 +68,12 @@ def test_every_echo_id_is_in_the_core_table():
     for f in out["findings"]:
         ids = {(m["framework"], m["id"]) for m in f["x-khandaq"]["mappings"]}
         assert ids <= _table(f["rule_id"]), f["rule_id"]
+
+
+def test_an_uncurated_mcp_scanner_threat_is_unmapped():
+    """Spec 025: no mcp-scanner default, as for garak; the table names only what it curated."""
+    for rule in ("mcp-scanner.credential-harvesting", "mcp-scanner"):
+        assert _table(rule) == {("unmapped", rule)}
 
 
 def test_the_drift_guard_notices_a_missing_id():
