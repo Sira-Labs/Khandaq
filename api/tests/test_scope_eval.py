@@ -365,3 +365,72 @@ def test_network_endpoint_refuses_ambiguous_targets(spec):
 
     with pytest.raises(ScopeError):
         network_endpoint("llm_endpoint", spec)
+
+
+# --- phase 07 targets (spec 025): an MCP server is one exact URL, an agent is host + paths -------
+
+AGENT_ALLOW = {
+    **ALLOW,
+    "agent": [{"host": "agent.acme.test", "paths": ["/v1/run"]}],
+}
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://tools.acme.test/mcp",  # another scheme
+        "https://tools.acme.test:8443/mcp",  # another port
+        "https://tools.acme.test/admin",  # another path
+        "https://tools.acme.test/mcp/../admin",  # a dot segment
+        "https://user:pw@tools.acme.test/mcp",  # user info
+        "https://TOOLS.acme.test/mcp",  # another spelling of the host: refused, never widened
+        "https://tools.acme.test.evil.test/mcp",
+    ],
+)
+def test_an_mcp_server_matches_only_its_exact_url(url):
+    d = _eval(target_type="mcp_server", target_spec={"url": url})
+    assert not d.allowed and "not in the allow-list" in d.reason
+
+
+@pytest.mark.parametrize(
+    ("spec", "reason"),
+    [
+        ({"host": "evil.test"}, "not in the allow-list"),
+        ({"url": "https://agent.acme.test/v1/admin"}, "is not permitted"),
+        ({"host": "agent.acme.test", "path": "/v1/admin"}, "is not permitted"),
+    ],
+)
+def test_an_agent_matches_its_host_and_paths(spec, reason):
+    assert _eval(
+        allow=AGENT_ALLOW,
+        target_type="agent",
+        target_spec={"url": "https://agent.acme.test/v1/run"},
+    ).allowed
+    d = _eval(allow=AGENT_ALLOW, target_type="agent", target_spec=spec)
+    assert not d.allowed and reason in d.reason
+
+
+def test_an_agent_is_not_authorised_by_an_llm_endpoint_rule():
+    d = _eval(target_type="agent", target_spec={"host": "gw.acme.test", "model": "assistant-v3"})
+    assert not d.allowed and "no allow rule for target type" in d.reason
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("https://tools.acme.test/mcp", ("tools.acme.test", 443)),
+        ("http://tools.acme.test:8080/mcp", ("tools.acme.test", 8080)),
+    ],
+)
+def test_an_mcp_server_network_endpoint_is_its_urls_host_and_port(url, expected):
+    from khandaq.scope import network_endpoint
+
+    assert network_endpoint("mcp_server", {"url": url}) == expected
+
+
+@pytest.mark.parametrize("url", ["tools.acme.test/mcp", "", "gopher://tools.acme.test/"])
+def test_an_mcp_server_without_a_usable_url_has_no_endpoint(url):
+    from khandaq.scope import ScopeError, network_endpoint
+
+    with pytest.raises(ScopeError):
+        network_endpoint("mcp_server", {"url": url})
