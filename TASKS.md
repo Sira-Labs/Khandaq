@@ -162,6 +162,12 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
       exfiltration target); the payload carries rule ids, severities and counts only, never titles,
       evidence or target details; prod requires https + a 32-character secret. Email is a follow-up.
 
+- [x] S5-3 — spec 018 console campaigns: campaigns panel on the engagement page (list, create,
+      enabled/paused), a campaign page with Pause/Resume, its runs (polling while in flight), its
+      diffs (baseline / worsened / counts / escaped entries) and its alerts (hidden for viewers on
+      403). Decision: the run list is shared with the engagement page (`RunList`); the form stays
+      `echo`-only like the launcher until adapters run their tools.
+
 ## Owner / external dependencies (not software; do not block sprints on these)
 
 - [ ] Confirm the public name/domain: GitHub `Sira-Labs/Khandaq` is taken (good); check PyPI name and a

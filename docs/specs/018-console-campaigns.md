@@ -41,12 +41,12 @@ was alerted.
 
 ## Acceptance criteria
 
-- [ ] Campaigns panel lists campaigns, links to the campaign page, and creates one; refusals show
+- [x] Campaigns panel lists campaigns, links to the campaign page, and creates one; refusals show
       the API's message.
-- [ ] Campaign page shows header, runs, diffs (baseline / worsened / counts / escaped entries) and
+- [x] Campaign page shows header, runs, diffs (baseline / worsened / counts / escaped entries) and
       alerts; Pause/Resume calls the API and updates the badge.
-- [ ] A viewer sees no alerts section and no error.
-- [ ] `pnpm lint`, `pnpm test`, `pnpm build` pass.
+- [x] A viewer sees no alerts section and no error.
+- [x] `pnpm lint`, `pnpm test`, `pnpm build` pass.
 
 ## Test cases
 
