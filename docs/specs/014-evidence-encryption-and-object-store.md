@@ -76,26 +76,26 @@ know the bytes are the ones that were sealed.
 ## Acceptance criteria
 
 Part 1 (encryption, local store, download):
-- [ ] Round trip: `decrypt(key, encrypt(key, b))` returns `b`; a blob decrypted under another object
+- [x] Round trip: `decrypt(key, encrypt(key, b))` returns `b`; a blob decrypted under another object
       key, with a flipped header byte, a flipped ciphertext byte, or an unknown `kid` raises.
-- [ ] A retired key in `KHANDAQ_EVIDENCE_PREVIOUS_KEYS` decrypts its old objects; new writes use
+- [x] A retired key in `KHANDAQ_EVIDENCE_PREVIOUS_KEYS` decrypts its old objects; new writes use
       the current key.
-- [ ] A container run stores ciphertext (no plaintext bytes on disk) and the ledger still verifies;
+- [x] A container run stores ciphertext (no plaintext bytes on disk) and the ledger still verifies;
       an identical retry is accepted, different content under the same key fails.
-- [ ] Without a key, a container run fails before sealing.
-- [ ] `GET …/content` returns the original bytes with the documented headers and records
+- [x] Without a key, a container run fails before sealing.
+- [x] `GET …/content` returns the original bytes with the documented headers and records
       `evidence.downloaded`; a viewer gets 403; another engagement's evidence id gets 404; echo
       evidence (no bytes) gets 404.
-- [ ] A stored blob altered on disk → 409 and `evidence.integrity_failed`; a legacy plaintext file
+- [x] A stored blob altered on disk → 409 and `evidence.integrity_failed`; a legacy plaintext file
       is served only when it matches the seal.
-- [ ] Prod refuses a short evidence key.
+- [x] Prod refuses a short evidence key.
 
 Part 2 (object store):
-- [ ] With `s3://bucket/prefix`, evidence goes to the S3 store under the prefix, via `If-None-Match`,
+- [x] With `s3://bucket/prefix`, evidence goes to the S3 store under the prefix, via `If-None-Match`,
       after a `HEAD`; an existing object is never overwritten; a missing bucket is created.
-- [ ] Download reads through the S3 store.
-- [ ] An unsupported store URL is refused in prod and by the factory.
-- [ ] `deploy/` documents the key (format, backup, rotation) and the object store.
+- [x] Download reads through the S3 store.
+- [x] An unsupported store URL is refused in prod and by the factory.
+- [x] `deploy/` documents the key (format, backup, rotation) and the object store.
 
 ## Test cases
 
@@ -103,10 +103,16 @@ Unit (`api/tests/test_evidence_crypto.py`): round trip, AAD binding, tamper case
 rotation, short key refused. Unit (`api/tests/test_evidence_store.py`): local write-once, path escape,
 `retain` idempotent retry and conflicting retry, legacy plaintext read, S3 store against an injected
 fake client (bootstrap, HEAD-then-conditional-PUT, 412 → exists, prefix, error mapping), factory
-selection. Integration (`api/tests/test_evidence_download.py`): container-run result persisted
-through the run path with a key, download round trip + audit, viewer 403, cross-engagement 404, echo
-404, tamper 409 + audit, no-key run failure.
+selection. Live (`api/tests/test_evidence_s3_live.py`, CI runs RustFS 1.0.0 as a service): round
+trip, bucket bootstrap + versioning, server-side refusal of a conditional overwrite. Integration (in
+`api/tests/test_worker.py`, which already drives container runs through the worker): download round
+trip + audit, viewer 403, cross-engagement 404, echo 404, tamper 409 + audit, no-key run failure.
 Security: tamper, cross-engagement and viewer cases above; no test uses real credentials.
+
+> Notes (2026-10-03): the download tests live in `test_worker.py` next to the container-run fixtures
+> rather than a new file. RustFS 1.0.0 was checked live: it honours `If-None-Match: *`
+> (`PreconditionFailed`) and enables versioning on request. `retain` also refuses bytes whose hash
+> differs from the one about to be sealed, before anything is written.
 
 ## Out of scope
 
