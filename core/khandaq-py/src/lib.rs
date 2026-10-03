@@ -68,25 +68,39 @@ fn framework_mappings(finding_json: &str) -> PyResult<String> {
     serde_json::to_string(&mappings).map_err(|e| PyValueError::new_err(e.to_string()))
 }
 
-/// The finding's own mappings plus the built-in table's, or the `unmapped` marker (spec 020).
+fn table(overlay: Option<&str>) -> PyResult<Mappings> {
+    let builtin = Mappings::builtin();
+    match overlay {
+        None => Ok(builtin),
+        Some(text) => builtin
+            .with_overlay(text)
+            .map_err(|e| PyValueError::new_err(e.to_string())),
+    }
+}
+
+/// The finding's own mappings plus the table's (built-in, extended by an optional overlay's JSON
+/// text), or the `unmapped` marker (specs 020, 021).
 #[pyfunction]
-fn merge_mappings(finding_json: &str) -> PyResult<String> {
+#[pyo3(signature = (finding_json, overlay=None))]
+fn merge_mappings(finding_json: &str, overlay: Option<&str>) -> PyResult<String> {
     let v = parse(finding_json)?;
     let f = validate(&v).map_err(|e| PyValueError::new_err(e.to_string()))?;
-    let mappings = core_merge_mappings(&f, &Mappings::builtin());
+    let mappings = core_merge_mappings(&f, &table(overlay)?);
     serde_json::to_string(&mappings).map_err(|e| PyValueError::new_err(e.to_string()))
 }
 
-/// The built-in table's schema, framework versions and sources as JSON.
+/// The table's schema, framework versions and sources as JSON. Raises ValueError for an invalid
+/// overlay, so it doubles as the overlay check.
 #[pyfunction]
-fn mapping_table() -> String {
-    let m = Mappings::builtin();
-    serde_json::json!({
+#[pyo3(signature = (overlay=None))]
+fn mapping_table(overlay: Option<&str>) -> PyResult<String> {
+    let m = table(overlay)?;
+    Ok(serde_json::json!({
         "schema": MAPPINGS_SCHEMA,
         "versions": m.versions(),
         "sources": m.sources(),
     })
-    .to_string()
+    .to_string())
 }
 
 /// Build a MITRE ATLAS Navigator layer from an array of findings; returns JSON.

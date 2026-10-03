@@ -32,6 +32,9 @@ enum Command {
         /// Adapter name (recorded for provenance; reserved for per-adapter normalisation, spec 006).
         #[arg(long)]
         adapter: Option<String>,
+        /// A deployment overlay for the framework mapping table (spec 021).
+        #[arg(long)]
+        mappings: Option<String>,
     },
     /// Export a MITRE ATLAS Navigator layer from a set of findings.
     Navigator { file: String },
@@ -104,9 +107,22 @@ fn run() -> Result<ExitCode, String> {
             }
             println!("ok: {} finding(s) valid", items.len());
         }
-        Command::Normalize { file, adapter: _ } => {
+        Command::Normalize {
+            file,
+            adapter: _,
+            mappings: overlay,
+        } => {
             let items = load(&file)?;
-            let mappings = Mappings::builtin();
+            let mappings = match overlay {
+                None => Mappings::builtin(),
+                Some(path) => {
+                    let text = fs::read_to_string(&path)
+                        .map_err(|e| format!("cannot read {path}: {e}"))?;
+                    Mappings::builtin()
+                        .with_overlay(&text)
+                        .map_err(|e| format!("{path}: {e}"))?
+                }
+            };
             let mut findings = Vec::new();
             for (i, item) in items.iter().enumerate() {
                 let mut f = validate(item).map_err(|e| format!("finding {i}: {e}"))?;
