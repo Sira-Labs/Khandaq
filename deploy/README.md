@@ -49,6 +49,20 @@ campaign gets worse, set `KHANDAQ_ALERT_WEBHOOK_URL` (https in prod) and
 `KHANDAQ_ALERT_WEBHOOK_SECRET` on the **worker**. Alerts carry rule ids and counts, not finding text,
 and are retried with backoff (`KHANDAQ_ALERT_MAX_ATTEMPTS`, default 5).
 
+## Smoke test after a deploy (spec 019)
+
+Sign in, open **API tokens** in the console header, create a token, then run:
+
+```sh
+KHANDAQ_TOKEN=khq_... python3 deploy/smoke.py --url https://khandaq-stg.example.org
+```
+
+The script needs only the Python 3.10+ standard library. It prints one line per check (health and
+schema, token sign-in, engagement + scope lock, an echo run, the ledger, report export and
+re-verification, the evidence route, a paused campaign, alerts, close) and exits 0 when all pass.
+It uses the in-process `echo` adapter against `smoke.khandaq.invalid`, so nothing leaves the API.
+It closes the engagement it creates. Revoke the token afterwards if you do not need it.
+
 ## Safe-use reminder
 
 Khandaq runs offensive tooling. Every run must belong to an engagement whose targets you are authorised
