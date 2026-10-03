@@ -52,6 +52,7 @@ findings, and the egress negative test passes; out-of-scope runs are refused.
 | S4-4 OIDC (Keycloak) BFF + real roles, replacing the auth stub | 008 (to write) | M |
 | S4-5 First management + technical report (pins ledger root; Navigator export) | 011 (to write) | M |
 | S4-6 Adapter execution: egress-contained containers on the worker (closes the R1 exit gap) | 012 | M |
+| S4-7 Report re-verification against the pinned ledger root (spec 004 follow-up) | 013 | S |
 
 Exit (**R1 done**): a full engagement — scope → run garak/PyRIT/promptfoo against the bundled target →
 deduped findings inbox → sealed evidence → exported report — works end to end, behind real OIDC, deployed
@@ -61,13 +62,14 @@ to CapRover staging.
 
 | Sprint | Focus | Specs (to write) |
 |---|---|---|
-| 5 | Campaigns: scheduler, baseline, diff (new/resolved/regressed), alerts | 013–014 |
-| 6 | Cisco mcp-scanner adapter (phase 07) + agent target type | 015 |
-| 7 | ART adapter (phase 05) + model_artifact/dataset target types | 016–017 |
-| 8 | Supply chain: ModelAudit/ModelScan consensus + AI-BOM (phase 08) | 018–019 |
-| 9 | Guardrail-regression harness (phase 09) | 020 |
+| 5 | Campaigns: scheduler, baseline, diff (new/resolved/regressed), alerts | 014–015 |
+| 6 | Cisco mcp-scanner adapter (phase 07) + agent target type | 016 |
+| 7 | ART adapter (phase 05) + model_artifact/dataset target types | 017–018 |
+| 8 | Supply chain: ModelAudit/ModelScan consensus + AI-BOM (phase 08) | 019–020 |
+| 9 | Guardrail-regression harness (phase 09) | 021 |
 
-(Forecast numbers shifted by one on 2026-10-03: spec 012 closes R1's execution gap.)
+(Forecast numbers shifted by one on 2026-10-03: spec 012 closes R1's execution gap; and by one
+again the same day: spec 013 wires the pinned ledger root into report re-verification.)
 
 Exit (**R2 done**): continuous monitoring with regression alerts; coverage across phases 03–09.
 

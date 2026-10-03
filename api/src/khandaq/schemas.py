@@ -5,7 +5,7 @@ from __future__ import annotations
 import datetime as dt
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 TargetType = Literal["llm_endpoint", "agent", "mcp_server", "model_artifact", "dataset"]
 
@@ -122,3 +122,20 @@ class AuditOut(BaseModel):
     engagement_id: str | None
     detail: dict[str, Any]
     at: dt.datetime
+
+
+class ReportPin(BaseModel):
+    """The ``evidence`` pin of an exported report, posted back for re-verification (spec 013).
+
+    Extra keys (the report's ``verify`` block) are ignored, so the block can be posted as is. The
+    count is a strict integer: ``"3"`` or ``3.0`` is a malformed pin, not a coercible one."""
+
+    model_config = ConfigDict(extra="ignore")
+    root: str | None = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    count: int = Field(strict=True, ge=0, le=2**63 - 1)
+
+    @model_validator(mode="after")
+    def _root_iff_entries(self) -> ReportPin:
+        if (self.root is None) != (self.count == 0):
+            raise ValueError("root is null exactly when count is 0")
+        return self

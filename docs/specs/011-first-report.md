@@ -30,6 +30,9 @@ ledger root** so it is bound to the exact evidence it relies on (ADR-0007).
 - [x] `report.html` returns `text/html` 200 and escapes finding text.
 - [x] `report/navigator` returns an ATLAS layer listing the findings' techniques (AML.T0051).
 
+> Spec 013 (2026-10-03): the evidence block is `{root, count, verify}`, each JSON/HTML export is
+> audited as `report.exported` with that pin, and `POST /report/verify` re-verifies a pin.
+
 ## Test cases
 
 Integration (`api/tests/test_report.py`): run echo → report counts (1 high, 1 low), frameworks include

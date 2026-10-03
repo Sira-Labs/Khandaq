@@ -275,3 +275,8 @@ class AuditLog(Base):
     at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+    __table_args__ = (
+        # Per-engagement action lookups, e.g. "did this instance export this report pin?" (spec
+        # 013). Migration 0007.
+        Index("ix_audit_log_engagement_action", "engagement_id", "action"),
+    )

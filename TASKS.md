@@ -109,6 +109,17 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
       worker the socket's group, a fixed `khandaq` network and an evidence volume. Next: tools
       invoked by the adapters, mapping seeds.
 
+- [x] S4-7 — spec 013 report re-verification: reports pin `{root, count}` from one chain read, JSON
+      and HTML exports are audited as `report.exported` with that pin, `POST /report/verify` runs the
+      core's `verify_pinned` and says whether this instance issued the pin, and
+      `khandaq-core ledger-verify` checks an exported ledger offline (exit 0/1/2). 22 new api tests +
+      5 CLI tests. Decisions: a broken pin is a 200 with `ok: false`, like `POST /ledger/verify`;
+      `issued` is reported, not required, so reports exported before this spec still verify; the
+      GET export routes write the audit entry and commit before responding (doc 04 lists report
+      export as audited; spec 011 had missed it); migration 0007 indexes `audit_log (engagement_id,
+      action)` for the lookup; the count is a strict integer so `"3"` or `3.0` is refused, not
+      coerced.
+
 ## Owner / external dependencies (not software; do not block sprints on these)
 
 - [ ] Confirm the public name/domain: GitHub `Sira-Labs/Khandaq` is taken (good); check PyPI name and a

@@ -53,8 +53,8 @@ ADR-0006), `KHANDAQ_SIGSTORE=off|on`.
 > overflow on a hostile `seq`). `verify` also rejects malformed hashes. Plain `verify` cannot
 > notice entries removed from the end of a chain, so `verify_pinned(entries, root, count)` (and
 > `ledger_verify(entries, expected_root, expected_count)` in Python) also checks that the entry at
-> a previously pinned count still has the pinned root. Wiring that into report re-verification is
-> a follow-up.
+> a previously pinned count still has the pinned root. Report re-verification uses it since spec
+> 013 (`POST /report/verify`, `khandaq-core ledger-verify`).
 
 > Evidence metadata (ADR-0014, 2026-10-03): entries carry a `format`. Format 1 (every entry sealed
 > before migration 0005) seals `Evidence.sha256` alone; format 2, which `append` now writes, seals
