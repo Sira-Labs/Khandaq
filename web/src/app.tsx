@@ -2,6 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
 import { ApiError, api, getDevUser, loginUrl, setDevUser, type Me } from "./api";
+import { Campaign } from "./pages/Campaign";
 import { Engagement } from "./pages/Engagement";
 import { Engagements } from "./pages/Engagements";
 import { Findings } from "./pages/Findings";
@@ -122,8 +123,10 @@ export function App() {
     body = <SignIn denied />;
   } else {
     const findings = path.match(/^\/eng\/([^/]+)\/findings$/);
+    const campaign = path.match(/^\/eng\/([^/]+)\/campaigns\/([^/]+)$/);
     const detail = path.match(/^\/eng\/([^/]+)$/);
     if (findings) body = <Findings engagementId={findings[1]} />;
+    else if (campaign) body = <Campaign engagementId={campaign[1]} campaignId={campaign[2]} />;
     else if (detail) body = <Engagement engagementId={detail[1]} />;
     else body = <Engagements />;
   }

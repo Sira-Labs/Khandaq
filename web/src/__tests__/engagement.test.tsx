@@ -14,6 +14,7 @@ vi.mock("../api", async (orig) => {
       })),
       listTargets: vi.fn(async () => [{ id: "tgt_1", type: "llm_endpoint", spec: { host: "gw.acme.test" } }]),
       listRuns: vi.fn(async () => []),
+      listCampaigns: vi.fn(async () => []),
       ledger: vi.fn(async () => ({ root: null, verify: { ok: true } })),
       scopeCheck: vi.fn(async () => ({ allowed: false, reason: "host 'gw.acme.test' is not in the allow-list" })),
       createRun: vi.fn(async () => ({ id: "run_1", adapter: "echo", state: "succeeded", reject_reason: null, target_id: "tgt_1" })),
