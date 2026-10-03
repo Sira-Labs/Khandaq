@@ -203,3 +203,9 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
   verify. Existing entries stay format 1 (migration 0005 adds the column without rewriting a row),
   so pinned report roots stay valid; formats may only rise along a chain; the 0005 downgrade is
   refused once format 2 is in use.
+- 2026-10-03 — Users keyed by (`iss`, `sub`) (owner decision, spec 008 behaviour 9): keyed by email,
+  a second IdP account that verified the same address became the first user and inherited their
+  engagements. Migration 0006 adds `oidc_issuer`/`oidc_subject` (unique pair, both-or-neither) and
+  changes no row; pre-0006 users are linked by email on their next verified sign-in. A known account
+  follows a verified email change; an email linked to another account is refused, not merged.
+  Recovery for a recreated Keycloak user (new `sub`) is a documented, deliberate unlink.
