@@ -125,8 +125,25 @@ in-scope target. On CapRover there are two supported shapes; pick one per server
   launch surface from the control plane entirely. Recommended once real client engagements run.
 
 Either way: adapter images are pinned and pulled from GHCR; air-gapped installs mirror them into a local
-registry; egress is **default-deny** with a per-run allow for the target only, and a negative test (the
-echo adapter cannot reach a second host) runs in CI (spec 005).
+registry; egress is **default-deny** with a per-run allow for the target only.
+
+**Shape A, as implemented (spec 012).** No host firewall rules are needed. Each run gets an
+`--internal` Docker network, so it has no route out. Its only other member is a small forwarder
+(`KHANDAQ_FORWARDER_IMAGE`, the same `khandaq-api` image) that answers to the target's hostname and
+relays to the one address the worker resolved. The CI `e2e` job proves the adapter reaches its
+target and cannot reach a decoy on the same network. On the worker app:
+
+- **Socket.** Mount `/var/run/docker.sock`, and add the host's `docker` group
+  (`getent group docker`) to the container. In CapRover, use the app's *Service Update Override*,
+  for example:
+  `{"TaskTemplate":{"ContainerSpec":{"Mounts":[{"Type":"bind","Source":"/var/run/docker.sock","Target":"/var/run/docker.sock"}],"Groups":["<gid>"]}}}`.
+- **Persistent directory.** `/var/lib/khandaq/evidence` holds the runs' evidence bytes, written
+  once. Back it up with Postgres.
+- **Environment:**
+  - `KHANDAQ_FORWARDER_IMAGE=ghcr.io/sira-labs/khandaq-api:<the worker's own tag>`;
+  - `KHANDAQ_ADAPTER_EGRESS_NETWORK=bridge`, the default; it routes out to authorised remote
+    targets;
+  - optionally `KHANDAQ_ADAPTER_TIMEOUT_SECONDS`.
 
 ## 4. Object store: `khandaq-rustfs` (staging: `khandaq-stg-rustfs`)
 
