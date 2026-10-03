@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 
 import { api, type Finding } from "../api";
+import { EvidenceList } from "../components/EvidenceList";
 import { navigate } from "../router";
 
 const SEV_ORDER = ["critical", "high", "medium", "low", "info"];
@@ -88,7 +89,9 @@ export function Findings({ engagementId }: { engagementId: string }) {
             <dt className="text-[var(--muted)]">frameworks</dt>
             <dd>{selected.mappings.map((m) => `${m.framework}:${m.id}`).join(", ") || "unmapped"}</dd>
             <dt className="text-[var(--muted)]">evidence</dt>
-            <dd>{selected.evidence.length} sealed artefact(s)</dd>
+            <dd>
+              <EvidenceList engagementId={engagementId} evidenceIds={selected.evidence} />
+            </dd>
           </dl>
         </aside>
       )}

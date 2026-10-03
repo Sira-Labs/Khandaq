@@ -2,13 +2,14 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 
 import { api, type RunParams } from "../api";
+import { ReportPanel } from "../components/ReportPanel";
+import { RunsPanel } from "../components/RunsPanel";
 import { navigate } from "../router";
 
 export function Engagement({ engagementId }: { engagementId: string }) {
   const qc = useQueryClient();
   const eng = useQuery({ queryKey: ["eng", engagementId], queryFn: () => api.getEngagement(engagementId) });
   const targets = useQuery({ queryKey: ["targets", engagementId], queryFn: () => api.listTargets(engagementId) });
-  const runs = useQuery({ queryKey: ["runs", engagementId], queryFn: () => api.listRuns(engagementId) });
   const ledger = useQuery({ queryKey: ["ledger", engagementId], queryFn: () => api.ledger(engagementId) });
 
   const [targetId, setTargetId] = useState("");
@@ -140,18 +141,7 @@ export function Engagement({ engagementId }: { engagementId: string }) {
       </section>
 
       <section className="grid gap-4 sm:grid-cols-2">
-        <div className="rounded border border-white/10 p-4">
-          <h2 className="mb-2 font-semibold">Runs</h2>
-          <ul className="space-y-1 text-sm">
-            {runs.data?.map((r) => (
-              <li key={r.id} className="flex justify-between">
-                <span>{r.adapter}</span>
-                <span className="text-[var(--muted)]">{r.state}</span>
-              </li>
-            ))}
-            {runs.data?.length === 0 && <li className="text-[var(--muted)]">No runs yet.</li>}
-          </ul>
-        </div>
+        <RunsPanel engagementId={engagementId} />
         <div className="rounded border border-white/10 p-4">
           <h2 className="mb-2 font-semibold">Evidence ledger</h2>
           {ledger.data ? (
@@ -167,6 +157,8 @@ export function Engagement({ engagementId }: { engagementId: string }) {
           )}
         </div>
       </section>
+
+      <ReportPanel engagementId={engagementId} />
 
       <button className="text-[var(--ember)]" onClick={() => navigate(`/eng/${engagementId}/findings`)}>
         View findings →

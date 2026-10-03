@@ -43,29 +43,73 @@ export function loginUrl(next: string): string {
   return `/api/auth/login?next=${encodeURIComponent(safeNext)}`;
 }
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+function headersFor(method: string): Record<string, string> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   const dev = getDevUser();
   if (devMode && dev) headers["X-Khandaq-Dev-User"] = dev;
   if (!SAFE_METHODS.has(method) && csrfToken) headers[CSRF_HEADER] = csrfToken;
+  return headers;
+}
+
+async function errorFrom(res: Response): Promise<ApiError> {
+  let detail = res.statusText;
+  try {
+    const data = await res.json();
+    if (data?.detail) detail = typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail);
+  } catch {
+    /* ignore */
+  }
+  return new ApiError(res.status, detail);
+}
+
+async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const res = await fetch(`/api${path}`, {
     method,
-    headers,
+    headers: headersFor(method),
     credentials: "same-origin",
     body: body === undefined ? undefined : JSON.stringify(body),
   });
-  if (!res.ok) {
-    let detail = res.statusText;
-    try {
-      const data = await res.json();
-      if (data?.detail) detail = typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail);
-    } catch {
-      /* ignore */
-    }
-    throw new ApiError(res.status, detail);
-  }
+  if (!res.ok) throw await errorFrom(res);
   const ct = res.headers.get("content-type") ?? "";
   return (ct.includes("application/json") ? await res.json() : undefined) as T;
+}
+
+/** A file the API serves for saving (evidence, report exports): bytes plus the server's name. */
+export interface Download {
+  blob: Blob;
+  filename: string;
+}
+
+function filenameFrom(res: Response, fallback: string): string {
+  const cd = res.headers.get("content-disposition") ?? "";
+  const match = /filename="([^"]+)"/.exec(cd);
+  return match ? match[1] : fallback;
+}
+
+async function download(path: string, fallback: string): Promise<Download> {
+  const res = await fetch(`/api${path}`, {
+    method: "GET",
+    headers: headersFor("GET"),
+    credentials: "same-origin",
+  });
+  if (!res.ok) throw await errorFrom(res);
+  return { blob: await res.blob(), filename: filenameFrom(res, fallback) };
+}
+
+/** Save a download through a short-lived object URL. Never rendered in the console's origin. */
+export function saveDownload({ blob, filename }: Download): void {
+  const url = URL.createObjectURL(blob);
+  try {
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.rel = "noopener";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  } finally {
+    URL.revokeObjectURL(url);
+  }
 }
 
 export interface Me {
@@ -111,6 +155,24 @@ export interface Run {
   state: string;
   reject_reason: string | null;
   target_id: string | null;
+  created_at?: string;
+  started_at?: string | null;
+  ended_at?: string | null;
+}
+
+/** The `evidence` block of an exported report (spec 013): the ledger pin it was bound to. */
+export interface ReportPin {
+  root: string | null;
+  count: number;
+}
+
+export interface ReportVerify {
+  ok: boolean;
+  pinned: ReportPin;
+  current: ReportPin;
+  appended_since: number | null;
+  issued: boolean;
+  verify: { ok: boolean; count: number; broken_at?: number; reason?: string };
 }
 
 export type RunParams = Record<string, unknown>;
@@ -148,6 +210,15 @@ export const api = {
     }),
   createRun: (id: string, adapter: string, targetId: string, params: RunParams = {}) =>
     request<Run>("POST", `/engagements/${id}/runs`, { adapter, target_id: targetId, params }),
+  downloadEvidence: (id: string, evidenceId: string) =>
+    download(`/engagements/${id}/evidence/${evidenceId}/content`, `${evidenceId}.bin`),
+  downloadReport: (id: string, format: "json" | "html") =>
+    download(
+      format === "json" ? `/engagements/${id}/report` : `/engagements/${id}/report.html`,
+      `khandaq-report-${id}.${format}`,
+    ).then((d) => ({ ...d, filename: `khandaq-report-${id}.${format}` })),
+  verifyReport: (id: string, pin: ReportPin) =>
+    request<ReportVerify>("POST", `/engagements/${id}/report/verify`, pin),
   ledger: (id: string) =>
     request<{ root: string | null; verify: { ok: boolean; broken_at?: number } }>(
       "GET",
