@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import datetime as dt
 
+import pytest
+
 from khandaq.scope import evaluate
 
 UTC = dt.UTC
@@ -329,3 +331,37 @@ def test_deny_rule_paths_are_canonicalised_too():
         target_spec={"url": "https://gw.acme.test/v1/chat"},
     )
     assert not root.allowed
+
+
+# --- network_endpoint: the one endpoint a container run may reach (spec 012) ---------------------
+
+
+@pytest.mark.parametrize(
+    ("spec", "expected"),
+    [
+        ({"host": "gw.acme.test", "base_url": "https://gw.acme.test/v1"}, ("gw.acme.test", 443)),
+        ({"base_url": "http://Target.Test.:8900/v1"}, ("target.test", 8900)),
+        ({"url": "https://a.test:8443/x", "base_url": "https://a.test:8443/x"}, ("a.test", 8443)),
+    ],
+)
+def test_network_endpoint_is_the_canonical_host_and_port(spec, expected):
+    from khandaq.scope import network_endpoint
+
+    assert network_endpoint("llm_endpoint", spec) == expected
+
+
+@pytest.mark.parametrize(
+    "spec",
+    [
+        {"host": "gw.acme.test"},  # no URL, so no port
+        {"base_url": "https://a.test/v1", "url": "https://a.test:8443/v1"},  # two ports
+        {"base_url": "https://a.test/v1", "url": "https://b.test/v1"},  # two hosts
+        {"base_url": "gopher://a.test/"},  # no default port
+        {"base_url": "https://a.test:99999/"},  # invalid port
+    ],
+)
+def test_network_endpoint_refuses_ambiguous_targets(spec):
+    from khandaq.scope import ScopeError, network_endpoint
+
+    with pytest.raises(ScopeError):
+        network_endpoint("llm_endpoint", spec)

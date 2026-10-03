@@ -96,6 +96,15 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
       (JSON), `/report.html` (escaped HTML), `/report/navigator` (ATLAS Navigator via the core). 38 api
       tests pass.
 
+- [~] S4-6 — spec 012 adapter execution (closes R1: the exit criterion needs the tools to actually
+      run). Part 1: `DockerRunner.run` builds a per-run `--internal` network whose only member
+      besides the adapter is a stdlib TCP forwarder aliased as the target host and pinned to the
+      address the worker resolved; loopback/link-local/multicast targets and IP literals are refused;
+      the adapter I/O moved from host mounts to `KHANDAQ_RUN_REQUEST` + a stdout tar. A CI `e2e` job
+      proves on a real daemon that the adapter reaches the target and not a decoy on the same
+      network (with an uncontained control). Next: worker queue (ADR-0015), tools invoked by the
+      adapters, mapping seeds.
+
 ## Owner / external dependencies (not software; do not block sprints on these)
 
 - [ ] Confirm the public name/domain: GitHub `Sira-Labs/Khandaq` is taken (good); check PyPI name and a
