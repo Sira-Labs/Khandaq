@@ -66,9 +66,11 @@ was not altered, truncated or replaced since it was issued.
    gives `ok: false` with the core's `broken_at` and `reason`. It is still a 200: the answer is the
    verification result, the same as `POST /ledger/verify`.
 5. `issued` is looked up in `audit_log` (`action = 'report.exported'`, this engagement, matching root
-   and count). It is information, not a condition of `ok`: a report from before this spec has no audit
-   entry yet can verify. A client must treat `ok: true, issued: false` as "the evidence is intact,
-   but this instance has no record of issuing this pin".
+   and count). It is information, not a condition of `ok`: a well-formed pin can verify without an
+   export on record (e.g. a pin taken from `GET /ledger`). A client must treat `ok: true,
+   issued: false` as "the evidence is intact, but this instance has no record of issuing this pin".
+   A report exported before this spec carries `{root, verify}` and no `count`, so it cannot be
+   posted as is (422): its pin is incomplete (code review, PR #32).
 6. Re-verification only reads; it writes no audit entry and changes no engagement state. It works in
    every engagement state, `closed` included (doc 04: reports remain verifiable).
 7. Authorisation follows the other report routes (`require_engagement_role()`): any engagement member

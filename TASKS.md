@@ -114,7 +114,8 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
       core's `verify_pinned` and says whether this instance issued the pin, and
       `khandaq-core ledger-verify` checks an exported ledger offline (exit 0/1/2). 22 new api tests +
       5 CLI tests. Decisions: a broken pin is a 200 with `ok: false`, like `POST /ledger/verify`;
-      `issued` is reported, not required, so reports exported before this spec still verify; the
+      `issued` is reported, not required (a pin read from `GET /ledger` has no export on record);
+      reports exported before this spec have no `count` and get a 422, not a verdict; the
       GET export routes write the audit entry and commit before responding (doc 04 lists report
       export as audited; spec 011 had missed it); migration 0007 indexes `audit_log (engagement_id,
       action)` for the lookup; the count is a strict integer so `"3"` or `3.0` is refused, not
