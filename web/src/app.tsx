@@ -71,12 +71,18 @@ function SignedIn({ me }: { me: Me }) {
 
 /** Not signed in, or signed in without access. Never redirects on its own: with an IdP session
  * for a refused account, an automatic redirect would bounce between the IdP and this page. */
-function SignIn({ denied }: { denied: boolean }) {
-  const next = window.location.pathname + window.location.search.replace(/[?&]signin=denied/, "");
+function SignIn({ denied, unavailable = false }: { denied: boolean; unavailable?: boolean }) {
+  const next =
+    window.location.pathname + window.location.search.replace(/[?&]signin=(denied|unavailable)/, "");
   return (
     <div className="mx-auto mt-16 max-w-md space-y-4 text-center">
       <h1 className="text-2xl font-semibold">Sign in to Khandaq</h1>
-      {denied ? (
+      {unavailable ? (
+        <p role="alert" className="text-red-400">
+          Sign-in is unavailable: Khandaq cannot reach its identity provider. Ask the operator to
+          check <code>KHANDAQ_OIDC_ISSUER</code> and the API log, then try again.
+        </p>
+      ) : denied ? (
         <p role="alert" className="text-red-400">
           That account has no access to this Khandaq. Ask the owner to add your email address to the
           allow-list, or sign in with another account.
@@ -104,7 +110,9 @@ export function App() {
     retry: (failures, err) =>
       !(err instanceof ApiError && (err.status === 401 || err.status === 403)) && failures < 2,
   });
-  const deniedLanding = new URLSearchParams(window.location.search).get("signin") === "denied";
+  const signinParam = new URLSearchParams(window.location.search).get("signin");
+  const deniedLanding = signinParam === "denied";
+  const unavailableLanding = signinParam === "unavailable";
 
   let body: React.ReactNode;
   if (me.isLoading) {
@@ -112,7 +120,7 @@ export function App() {
   } else if (me.error) {
     const status = me.error instanceof ApiError ? me.error.status : 0;
     if (status === 401 || status === 403) {
-      body = <SignIn denied={deniedLanding || status === 403} />;
+      body = <SignIn denied={deniedLanding || status === 403} unavailable={unavailableLanding} />;
     } else {
       body = (
         <p role="alert" className="text-red-400">
@@ -123,6 +131,9 @@ export function App() {
   } else if (deniedLanding) {
     // The callback refused the account; a still-valid earlier session must not hide that.
     body = <SignIn denied />;
+  } else if (unavailableLanding) {
+    // The same for a failed retry: the earlier session is still valid, but the notice must show.
+    body = <SignIn denied={false} unavailable />;
   } else {
     const findings = path.match(/^\/eng\/([^/]+)\/findings$/);
     const campaign = path.match(/^\/eng\/([^/]+)\/campaigns\/([^/]+)$/);

@@ -19,10 +19,11 @@ generated for you and reused across services.
   egress note below).
 - An OIDC realm with a confidential **`khandaq-api`** client (Keycloak recommended, ADR-0005). You
   provide its **issuer URL** and **client secret** in the form. The ready-made realm export at
-  [`../../keycloak/`](../../keycloak/) sets up exactly this client (plus Google/GitHub and passkeys) —
-  render it with the **exact public URL you will enter in the form** (your custom domain, e.g.
-  `https://khandaq-stg.siralabs.org`), import it with *Create realm*, then copy the issuer URL and
-  client secret into the form.
+  [`../../keycloak/`](../../keycloak/) sets up exactly this client (plus Google/GitHub and passkeys).
+  For `https://khandaq-stg.siralabs.org` import `khandaq-realm-staging.json`, for
+  `https://khandaq.siralabs.org` `khandaq-realm-production.json`, with *Create realm*; for any other
+  public URL render the template with that exact URL first. Then copy the issuer URL (staging:
+  `https://miftachun.apps.data-and-ai-dude.ch/realms/khandaq`) and the client secret into the form.
 - Pick the app name per environment: `khandaq-stg` for staging, `khandaq` for production — the apps
   become `<app>-api`, `<app>-web`, … (deploy/caprover.md, "Per-environment values").
 

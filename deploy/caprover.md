@@ -53,17 +53,17 @@ with *"Invalid parameter: redirect_uri"*.
 | Value | Production | Staging |
 |---|---|---|
 | App names | `khandaq-db`, `-api`, `-worker`, `-web`, `-rustfs` | `khandaq-stg-db`, `-api`, `-worker`, `-web`, `-rustfs` |
-| **Public origin** — the domain on the **web** app, `KHANDAQ_PUBLIC_URL` on the api, and the `render.py` argument | `https://khandaq.siralabs.org` | `https://khandaq-stg.siralabs.org` |
-| Keycloak client redirect URI (set by `render.py`) | `https://khandaq.siralabs.org/api/auth/callback` | `https://khandaq-stg.siralabs.org/api/auth/callback` |
+| **Public origin** — the domain on the **web** app, `KHANDAQ_PUBLIC_URL` on the api, and the origin the realm file is rendered for | `https://khandaq.siralabs.org` | `https://khandaq-stg.siralabs.org` |
+| Keycloak client redirect URI (set in the ready-made realm file) | `https://khandaq.siralabs.org/api/auth/callback` | `https://khandaq-stg.siralabs.org/api/auth/callback` |
 | `KHANDAQ_API_UPSTREAM` on the web app | `srv-captain--khandaq-api:8000` | `srv-captain--khandaq-stg-api:8000` |
 | Database host in the DB URLs | `srv-captain--khandaq-db:5432` | `srv-captain--khandaq-stg-db:5432` |
 | `KHANDAQ_OBJECT_STORE_ENDPOINT` | `http://srv-captain--khandaq-rustfs:9000` | `http://srv-captain--khandaq-stg-rustfs:9000` |
-| `KHANDAQ_OIDC_ISSUER` | `https://<prod keycloak>/realms/khandaq` | `https://<staging keycloak>/realms/khandaq` |
+| `KHANDAQ_OIDC_ISSUER` | `https://<prod keycloak>/realms/khandaq` | `https://miftachun.apps.data-and-ai-dude.ch/realms/khandaq` (the shared Keycloak, next to `tabayyun` and `sahifa`) |
 | `KHANDAQ_OIDC_CLIENT_ID` | `khandaq-api` | `khandaq-api` — the **OIDC client** in the realm, not the CapRover app; never `khandaq-stg-api` |
 | `KHANDAQ_ENV` | `prod` | `prod` — staging is public too, so the dev login stub must stay off |
 
-If staging and production ever share one Keycloak, give staging its own realm (edit `"realm"` in the
-rendered file to `khandaq-stg`) and use `…/realms/khandaq-stg` as its issuer.
+Staging and production never share a Keycloak: production has its own (section 5), so both realms are
+called `khandaq`.
 
 ## 1. Database app: `khandaq-db` (staging: `khandaq-stg-db`)
 
@@ -181,30 +181,33 @@ Evidence lives on S3-compatible storage, append-only. Use RustFS (Apache-2.0).
 ## 5. Keycloak (each environment, before the first sign-in)
 
 Both environments run `KHANDAQ_ENV=prod`, so both need a realm — there is no password or dev login on
-a deployed server. Use the ready-made realm export [`keycloak/khandaq-realm.json`](keycloak/) — it
-defines the confidential `khandaq-api` client (Authorization Code + PKCE, back-channel logout), the
-Google/GitHub brokers and the passkey browser flow, with no secrets baked in. Render it with **that
-environment's public origin** (the web app's domain — see the table above) and import it:
+a deployed server. One realm per install, as for Tabayyun and Sahifa: **staging** uses realm
+`khandaq` on the shared Keycloak `miftachun.apps.data-and-ai-dude.ch`; **production** gets its own
+Keycloak. The realm defines the confidential `khandaq-api` client (Authorization Code + PKCE,
+back-channel logout), the Google/GitHub brokers and the passkey browser flow, with no secrets baked
+in.
 
-```bash
-# production
-python3 deploy/keycloak/render.py https://khandaq.siralabs.org > khandaq-realm.json
-# staging
-python3 deploy/keycloak/render.py https://khandaq-stg.siralabs.org > khandaq-realm.json
-# Admin console → realm drop-down → Create realm → Resource file: the rendered file → Create.
-# (Or, on a fresh Keycloak's first boot: kc.sh import --file khandaq-realm.json)
-```
+1. **Import the realm.** Download the ready-made file for the environment —
+   [`keycloak/khandaq-realm-staging.json`](keycloak/khandaq-realm-staging.json) or
+   [`keycloak/khandaq-realm-production.json`](keycloak/khandaq-realm-production.json) — then
+   Keycloak admin console → realm drop-down → **Create realm** → *Resource file*: that file →
+   **Create**. Not the `.template.json`: Keycloak refuses its placeholder with *"unknown_error"*.
+   Not *Partial import*: it skips the flows and leaves a broken realm.
+2. **Check** that `https://miftachun.apps.data-and-ai-dude.ch/realms/khandaq/.well-known/openid-configuration`
+   (staging) answers JSON, not 404.
+3. **Client secret.** Realm `khandaq` → Clients → `khandaq-api` → Credentials → Regenerate; copy it
+   into the api app's `KHANDAQ_OIDC_CLIENT_SECRET`.
+4. **Google and GitHub.** Create an OAuth client for each (Khandaq's own, not Tabayyun's) with the
+   redirect `https://<keycloak>/realms/khandaq/broker/google/endpoint` or
+   `…/broker/github/endpoint`, and paste the id and secret into Identity providers → `google` /
+   `github` → Save.
+5. **API settings.** `KHANDAQ_OIDC_ISSUER=https://miftachun.apps.data-and-ai-dude.ch/realms/khandaq`
+   on staging (the public URL; never a CapRover internal name), then Save & Update.
 
-**Use _Create realm_ (a full import), not _Partial import_.** This realm rebinds the browser flow to
-`khandaq browser` and defines custom passkey/broker flows; partial import does not create
-`authenticationFlows`, `authenticatorConfig` or the flow bindings, so it produces a broken realm.
-
-Then in the admin console set the `khandaq-api` client secret (→ `KHANDAQ_OIDC_CLIENT_SECRET`) and the
-Google/GitHub client id+secret, and confirm the client's redirect URI is exactly
-`KHANDAQ_PUBLIC_URL` + `/api/auth/callback`. `KHANDAQ_OIDC_ISSUER` is
-`https://<keycloak>/realms/khandaq`. If you move to a different domain later, re-render (or edit the
-client's redirect URI, web origin and post-logout URI) **and** update `KHANDAQ_PUBLIC_URL` together.
-Full steps: [`keycloak/README.md`](keycloak/README.md).
+The ready-made files are rendered for `https://khandaq-stg.siralabs.org` and
+`https://khandaq.siralabs.org`. For another domain, render the template with
+`python3 deploy/keycloak/render.py https://<origin> > khandaq-realm.json`, and update
+`KHANDAQ_PUBLIC_URL` together with it. Full steps: [`keycloak/README.md`](keycloak/README.md).
 
 ## 6. Web app: `khandaq-web` (staging: `khandaq-stg-web`)
 
