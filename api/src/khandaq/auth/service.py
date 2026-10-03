@@ -13,6 +13,7 @@ import secrets
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .. import audit
 from ..models import ApiToken, User, UserSession
 
 TOKEN_PREFIX = "kqt_"
@@ -83,18 +84,67 @@ def verify_api_token(session: Session, plaintext: str) -> tuple[User, str] | Non
 # --- user upsert from OIDC claims -------------------------------------------------------------
 
 
+class IdentityConflict(Exception):
+    """The sign-in names an email that belongs to a different identity-provider account."""
+
+
 def upsert_user_from_claims(session: Session, *, admin_email: str | None, claims: dict) -> User:
-    email = claims["email"]
+    """Find or create the user for verified OIDC claims, keyed by (``iss``, ``sub``).
+
+    - A known (iss, sub) is that user, whatever its email says now; a changed (verified) email is
+      followed, unless another user already has it.
+    - A user from before identity keying (no iss/sub yet) is linked by email on its next sign-in.
+    - An email already linked to a *different* (iss, sub) is refused, never merged: a second IdP
+      account that verified the same address must not inherit the first one's engagements.
+
+    Raises IdentityConflict for the refusals; the caller denies the sign-in and audits it.
+    """
+    issuer, subject, email = str(claims["iss"]), str(claims["sub"]), str(claims["email"])
+    name = claims.get("name") or claims.get("preferred_username")
+
+    user = session.scalar(
+        select(User).where(User.oidc_issuer == issuer, User.oidc_subject == subject)
+    )
+    if user is not None:
+        if user.email != email:
+            holder = session.scalar(select(User).where(User.email == email))
+            if holder is not None:
+                raise IdentityConflict("the new email belongs to another account")
+            audit.record(
+                session,
+                action="user.email_changed",
+                actor=user,
+                detail={"from": user.email, "to": email},
+            )
+            user.email = email
+        if user.display_name is None:
+            user.display_name = name
+        return user
+
     user = session.scalar(select(User).where(User.email == email))
-    if user is None:
-        is_admin = bool(admin_email) and email == admin_email
-        user = User(
-            email=email,
-            display_name=claims.get("name") or claims.get("preferred_username"),
-            org_role="admin" if is_admin else "member",
+    if user is not None:
+        if user.oidc_subject is not None:
+            raise IdentityConflict("email is linked to another identity-provider account")
+        user.oidc_issuer, user.oidc_subject = issuer, subject
+        audit.record(
+            session,
+            action="user.identity_linked",
+            actor=user,
+            detail={"oidc_issuer": issuer, "oidc_subject": subject},
         )
-        session.add(user)
+        if user.display_name is None:
+            user.display_name = name
         session.flush()
-    elif user.display_name is None:
-        user.display_name = claims.get("name") or claims.get("preferred_username")
+        return user
+
+    is_admin = bool(admin_email) and email == admin_email
+    user = User(
+        email=email,
+        oidc_issuer=issuer,
+        oidc_subject=subject,
+        display_name=name,
+        org_role="admin" if is_admin else "member",
+    )
+    session.add(user)
+    session.flush()
     return user

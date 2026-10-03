@@ -1,5 +1,6 @@
 """Smoke tests for the khandaq_core PyO3 wheel (spec 003)."""
 
+import hashlib
 import json
 
 import khandaq_core as kc
@@ -125,3 +126,37 @@ def test_severity_must_be_lowercase_and_extra_fields_survive():
     f["message"] = {"text": "synthetic"}
     out = json.loads(kc.dedup(json.dumps([f])))
     assert out["canonical"][0]["message"] == {"text": "synthetic"}
+
+
+def test_ledger_writes_format_2_and_binds_evidence_metadata():
+    record = {
+        "id": "ev_1",
+        "engagement_id": "eng_1",
+        "run_id": "run_1",
+        "kind": "transcript",
+        "object_key": "eng_1/run_1/e1.json",
+        "sha256": _h(1),
+        "bytes": 42,
+        "redacted": False,
+    }
+    bound = kc.evidence_record_hash(json.dumps(record))
+    # The recipe, as an external verifier would recompute it (ADR-0014).
+    canonical = json.dumps(
+        dict(record, schema="khandaq.evidence/2"), sort_keys=True, separators=(",", ":")
+    )
+    assert bound == "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()
+    moved = dict(record, object_key="eng_1/run_2/e1.json")
+    assert kc.evidence_record_hash(json.dumps(moved)) != bound
+    for bad in (dict(record, extra=1), {k: v for k, v in record.items() if k != "kind"}):
+        try:
+            kc.evidence_record_hash(json.dumps(bad))
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"expected ValueError for {bad}")
+
+    entry = json.loads(kc.ledger_append(None, bound))
+    assert entry["format"] == 2
+    assert json.loads(kc.ledger_verify(json.dumps([entry])))["ok"] is True
+    entry["format"] = 1  # a format-2 entry cannot be re-read as format 1
+    assert json.loads(kc.ledger_verify(json.dumps([entry])))["ok"] is False

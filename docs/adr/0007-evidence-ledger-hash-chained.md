@@ -38,5 +38,8 @@ without trusting the Khandaq instance that produced it.
 - The ledger API is deliberately missing mutate/delete; CodeRabbit path-instructions and CODEOWNERS
   guard it; property tests prove chain verification catches tampering.
 - Reports pin the ledger root, so a report is bound to the exact evidence it cites.
+- **Amended by ADR-0014 (2026-10-03):** entries from format 2 on seal the evidence row's metadata
+  (engagement, run, kind, object key, size, redaction) along with its content hash, and the format
+  is tagged into the entry hash. Existing entries stay format 1.
 - Retention/deletion for data-protection reasons is handled at the engagement level (closing/exporting
   then destroying an engagement's store), not by editing the ledger — documented in `deploy/`.
