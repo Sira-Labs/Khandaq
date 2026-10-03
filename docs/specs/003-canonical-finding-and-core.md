@@ -20,8 +20,13 @@ results from different tools add up to one defensible report.
 Rust library (`khandaq-core`) and Python (`khandaq_core`):
 
 - `validate(value) -> Result<Finding, SchemaError>` — against `schema/finding.schema.json` (ADR-0003).
-- `fingerprint(&Finding) -> String` — `sha256:…` over the normalised {rule family, target,
-  canonical location, salient request shape}; stable and order-insensitive.
+- `fingerprint(&Finding) -> String` — `sha256:…` over `{v: 2, weakness, target, location}`
+  (ADR-0013): `weakness` is the rule id unless the equivalence table names a shared weakness;
+  framework mappings are not identity. Stable and order-insensitive. (Recipe v1 hashed the mapping
+  ids instead; changed because mapping curation re-fingerprinted triaged findings.)
+- `fingerprint_with(&Finding, &Equivalence)` / `dedup_with(Vec<Finding>, &Equivalence)` — the same
+  under an explicit table; `Equivalence::builtin()` loads `mappings/equivalence.json` (exact rule
+  ids or `prefix.*` patterns).
 - `dedup(Vec<Finding>) -> DedupResult` — groups by fingerprint; one `canonical` per group with the rest
   linked `dedup_of`; merges `source` tools and `evidence` refs onto the canonical.
 - `severity_map(&Finding, &AdapterSeverityTable) -> Severity` — native → `info|low|medium|high|critical`;
