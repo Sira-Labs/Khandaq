@@ -41,8 +41,11 @@ was not altered, truncated or replaced since it was issued.
   `verify` for an empty pin.
   `appended_since` is `current.count - pinned.count` when `ok`, else `null`. `issued` says whether this
   instance's audit log holds a `report.exported` entry for this engagement with exactly this pin.
+- `GET /api/engagements/{id}/ledger` (spec 004) also returns `count`, the number of entries.
 - Audit action `report.exported`, detail `{format: "json" | "html", root, count}`, written by
   `GET /report` and `GET /report.html`. The Navigator layer pins nothing and is not audited.
+  Migration `0007_audit_log_engagement_action` indexes `audit_log (engagement_id, action)` for the
+  `issued` lookup; it changes no row.
 - CLI: `khandaq-core ledger-verify <file> [--root <hash> --count <n>]`. `<file>` is the JSON of
   `GET /ledger` (or just its `entries` array). It prints the `VerifyResult` and exits 0 when intact,
   1 when broken, 2 on unreadable input or `--root` without `--count` (and the reverse).
@@ -68,8 +71,8 @@ was not altered, truncated or replaced since it was issued.
    but this instance has no record of issuing this pin".
 6. Re-verification only reads; it writes no audit entry and changes no engagement state. It works in
    every engagement state, `closed` included (doc 04: reports remain verifiable).
-7. Authorisation follows the other report routes: an engagement member may verify; a non-member gets
-   404 (spec 002, no existence oracle); unauthenticated → 401.
+7. Authorisation follows the other report routes (`require_engagement_role()`): any engagement member
+   may verify; a non-member gets 403, an unknown engagement 404, an unauthenticated caller 401.
 8. The CLI runs the same core functions offline, without trusting the instance's verdict. It checks
    that the exported entries chain together and reach the pinned root; it cannot recompute the
    `evidence_hash` of each entry without the evidence rows (out of scope).
@@ -85,12 +88,12 @@ was not altered, truncated or replaced since it was issued.
       appended_since: 0`; after another run appends evidence, the same pin verifies with
       `appended_since > 0`.
 - [ ] A pin whose root is not the chain's entry at `count` → `ok: false` with
-      `broken_at = count - 1` and the core's reason; a pin longer than the chain → `ok: false`
+      `broken_at = count` (`seq` is 1-based, so that is the entry at the pin) and the core's reason; a pin longer than the chain → `ok: false`
       ("entries were removed"); a tampered stored entry → `ok: false` at its `seq`.
 - [ ] A well-formed pin this instance never exported (and that does not verify) → `issued: false`.
 - [ ] Malformed bodies (bad hash, negative count, `root` null with `count > 0`, `root` set with
       `count 0`, non-integer count) → 422.
-- [ ] A non-member → 404; a viewer may verify; a closed engagement can still be verified.
+- [ ] A non-member → 403; a viewer may verify; a closed engagement can still be verified.
 - [ ] `khandaq-core ledger-verify` exits 0 for an intact exported chain, 1 for a pin that no longer matches
       or for a tampered entry, and 2 for `--root` without `--count`.
 
@@ -102,13 +105,13 @@ Integration (`api/tests/test_report.py`):
 `test_report_verify_wrong_root`, `test_report_verify_pin_longer_than_chain`,
 `test_report_verify_detects_tampering` (rewrites a stored `entry_hash` with the append-only trigger
 disabled, as the spec 004 tamper test does), `test_report_verify_empty_pin`,
-`test_report_verify_rejects_malformed` (parametrised), `test_report_verify_authz` (non-member 404,
+`test_report_verify_rejects_malformed` (parametrised), `test_report_verify_authz` (non-member 403,
 viewer 200), `test_report_verify_closed_engagement`.
 Rust (`core/khandaq-cli/tests/`): `ledger_verify_intact`, `ledger_verify_pin_mismatch`,
 `ledger_verify_tampered`, `ledger_verify_requires_root_and_count_together`; fixtures built in the test
 with `khandaq_core::ledger::append` (synthetic hashes only).
 Security: the tampering and truncation cases above are the evidence-integrity negative tests; the
-non-member 404 keeps the per-engagement authz invariant.
+non-member 403 keeps the per-engagement authz invariant.
 
 ## Out of scope
 

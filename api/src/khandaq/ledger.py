@@ -163,8 +163,26 @@ def chain_status(session: Session, engagement_id: str) -> dict:
     core = _core_only(chain)
     return {
         "entries": chain,
+        "count": len(chain),
         "root": kc.ledger_root(core),
         "verify": json.loads(kc.ledger_verify(core)),
+    }
+
+
+def verify_pin(session: Session, engagement_id: str, root: str | None, count: int) -> dict:
+    """Verify the chain against a pin ``{root, count}`` a report took earlier (spec 013).
+
+    Plain verification cannot see entries removed from the end of a chain; the core's pinned
+    verification also checks that the entry at ``count`` still has the pinned root. The empty pin
+    (``count == 0``) is extended by every chain, so it only needs the chain itself to verify. The
+    caller validates the pin (format, ``root`` null exactly when ``count`` is 0). One read, so the
+    current state reported next to the verdict is the state that was verified."""
+    chain = load_chain(session, engagement_id)
+    core = _core_only(chain)
+    result = kc.ledger_verify(core, root, count) if count else kc.ledger_verify(core)
+    return {
+        "current": {"root": kc.ledger_root(core), "count": len(chain)},
+        "verify": json.loads(result),
     }
 
 

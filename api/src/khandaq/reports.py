@@ -1,8 +1,10 @@
-"""Engagement report builder (spec 011).
+"""Engagement report builder (specs 011 and 013).
 
 Assembles canonical findings into a management summary + technical report, pins the evidence-ledger
-root (ADR-0007), and produces a MITRE ATLAS Navigator layer via the Rust core. Offers JSON and a
-self-contained HTML rendering (finding text is untrusted, so it is escaped).
+root and the entry count it covers (ADR-0007), and produces a MITRE ATLAS Navigator layer via the
+Rust core. Offers JSON and a self-contained HTML rendering (finding text is untrusted, so it is
+escaped). Every export is audited with the pin it issued, and a pin taken from an exported report
+can be re-verified against the current chain.
 """
 
 from __future__ import annotations
@@ -16,8 +18,11 @@ import khandaq_core as kc
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from . import audit
 from . import ledger as ledger_svc
-from .models import Engagement, Finding
+from .models import AuditLog, Engagement, Finding, User
+
+EXPORT_ACTION = "report.exported"
 
 _SEV_ORDER = ["critical", "high", "medium", "low", "info"]
 
@@ -66,13 +71,59 @@ def build_report(session: Session, engagement: Engagement) -> dict:
             "authorisation_ref": engagement.authorisation_ref,
         },
         "generated_at": dt.datetime.now(dt.UTC).isoformat(),
-        "evidence": {"root": chain["root"], "verify": chain["verify"]},
+        # Root and count come from the same read, so the pin never mixes two chain states.
+        "evidence": {"root": chain["root"], "count": chain["count"], "verify": chain["verify"]},
         "summary": {
             "total": len(findings),
             "by_severity": {s: by_severity.get(s, 0) for s in _SEV_ORDER if by_severity.get(s)},
             "by_framework": dict(sorted(by_framework.items())),
         },
         "findings": finding_views,
+    }
+
+
+def record_export(session: Session, report: dict, *, fmt: str, actor: User) -> None:
+    """Audit an export with the pin it issued (doc 04 lists report export as audited). Caller
+    commits before responding, so every report this instance hands out is on record."""
+    ev = report["evidence"]
+    audit.record(
+        session,
+        action=EXPORT_ACTION,
+        actor=actor,
+        engagement_id=report["engagement"]["id"],
+        detail={"format": fmt, "root": ev["root"], "count": ev["count"]},
+    )
+
+
+def _was_issued(session: Session, engagement_id: str, root: str | None, count: int) -> bool:
+    match = {"root": root, "count": count}
+    found = session.scalar(
+        select(AuditLog.id)
+        .where(
+            AuditLog.engagement_id == engagement_id,
+            AuditLog.action == EXPORT_ACTION,
+            AuditLog.detail.contains(match),
+        )
+        .limit(1)
+    )
+    return found is not None
+
+
+def verify_pin(session: Session, engagement: Engagement, root: str | None, count: int) -> dict:
+    """Re-verify a report's pin against the current chain (spec 013). Read-only.
+
+    ``issued`` is information, not a condition of ``ok``: a report exported before exports were
+    audited verifies without one, and a client reads ``ok and not issued`` as "the evidence is
+    intact, but this instance has no record of issuing this pin"."""
+    state = ledger_svc.verify_pin(session, engagement.id, root, count)
+    ok = bool(state["verify"].get("ok"))
+    return {
+        "ok": ok,
+        "pinned": {"root": root, "count": count},
+        "current": state["current"],
+        "appended_since": state["current"]["count"] - count if ok else None,
+        "issued": _was_issued(session, engagement.id, root, count),
+        "verify": state["verify"],
     }
 
 
@@ -107,6 +158,7 @@ def render_html(report: dict) -> str:
     auth = html.escape(e["authorisation_ref"] or "—")
     gen = html.escape(report["generated_at"])
     root = html.escape(ev["root"] or "—")
+    count = int(ev["count"])
     css = (
         "body{font-family:system-ui,sans-serif;max-width:900px;margin:2rem auto;padding:0 1rem}"
         "table{border-collapse:collapse;width:100%;margin:1rem 0}"
@@ -120,7 +172,8 @@ def render_html(report: dict) -> str:
         f"<title>Khandaq report — {name}</title><style>{css}</style></head><body>",
         "<h1>Khandaq engagement report</h1>",
         f"<p><strong>{name}</strong> · state: {state} · authorisation: {auth}</p>",
-        f"<p>Generated {gen}. Evidence ledger root <code>{root}</code> — {verify}.</p>",
+        f"<p>Generated {gen}. Evidence ledger root <code>{root}</code> over {count} "
+        f"entr{'y' if count == 1 else 'ies'} — {verify}.</p>",
         "<h2>Summary by severity</h2><table><tr><th>severity</th><th>count</th></tr>",
         (sev_rows or none2) + "</table>",
         "<h2>Summary by framework</h2><table><tr><th>framework id</th><th>count</th></tr>",
