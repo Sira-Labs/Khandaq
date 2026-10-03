@@ -49,6 +49,17 @@ campaign gets worse, set `KHANDAQ_ALERT_WEBHOOK_URL` (https in prod) and
 `KHANDAQ_ALERT_WEBHOOK_SECRET` on the **worker**. Alerts carry rule ids and counts, not finding text,
 and are retried with backoff (`KHANDAQ_ALERT_MAX_ATTEMPTS`, default 5).
 
+To get the same alert by email as well (spec 022), set these on the worker:
+- `KHANDAQ_ALERT_EMAIL_TO`: comma-separated recipients.
+- `KHANDAQ_ALERT_EMAIL_FROM`: the From address.
+- `KHANDAQ_SMTP_URL`: your relay, as `smtps://user@mail.example` (port 465) or
+  `smtp+starttls://user@mail.example` (port 587).
+- `KHANDAQ_SMTP_PASSWORD`: the relay password.
+
+Plain `smtp://` is accepted only outside prod, for a local catcher. Each channel is retried
+separately, so a down relay never delays the webhook. A retry after a timeout can deliver an email
+twice; the `Message-ID` is stable, so mail filters can drop the duplicate.
+
 ## Your own framework mappings (spec 021)
 
 Findings carry ATLAS, OWASP LLM (2025 and 2026) and NIST AI RMF ids from the built-in table. To add

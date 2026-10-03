@@ -195,6 +195,15 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
       and reports list those recorded tables, so a later restart under another overlay never
       changes what a report says produced its ids (PR #38 review).
 
+- [x] S5-6 — spec 022 email alerts: `KHANDAQ_ALERT_EMAIL_TO`/`_FROM` + `KHANDAQ_SMTP_URL`/
+      `_PASSWORD` add a plain-text email channel; migration 0010 gives `alert_outbox` a `channel`
+      and makes `(diff_id, channel)` unique, so each channel is retried and audited on its own; the
+      console's alert list shows the channel. Decisions: recipients are deployment config, never
+      per campaign (same exfiltration argument as the webhook); each send runs under a hard 10 s
+      deadline in a daemon thread, which makes email at-least-once (stable `Message-ID`); prod
+      requires TLS (`smtps`/`smtp+starttls`) and refuses a password in the URL; CR/LF in names are
+      flattened before they reach the subject; the 0010 downgrade refuses while email rows exist.
+
 ## Owner / external dependencies (not software; do not block sprints on these)
 
 - [ ] Confirm the public name/domain: GitHub `Sira-Labs/Khandaq` is taken (good); check PyPI name and a
