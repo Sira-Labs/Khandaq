@@ -54,6 +54,7 @@ findings, and the egress negative test passes; out-of-scope runs are refused.
 | S4-6 Adapter execution: egress-contained containers on the worker (closes the R1 exit gap) | 012 | M |
 | S4-7 Report re-verification against the pinned ledger root (spec 004 follow-up) | 013 | S |
 | S4-8 Evidence encrypted at rest in the object store, downloadable by role (ADR-0006/0016) | 014 | M |
+| S4-9 Console: run states with polling, evidence download, report export + verify | 015 | S |
 
 Exit (**R1 done**): a full engagement — scope → run garak/PyRIT/promptfoo against the bundled target →
 deduped findings inbox → sealed evidence → exported report — works end to end, behind real OIDC, deployed

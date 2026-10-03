@@ -135,6 +135,13 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
       legacy plaintext files are served only if they match their seal. CI runs RustFS 1.0.0.
       **Owner:** ADR-0016 is Proposed — confirm the envelope format and the ≥ 32-character key rule.
 
+- [x] S4-9 — spec 015 console catch-up: runs panel with state badges, duration and escaped failure
+      reasons, polling every 5 s while a run is queued/running (and refreshing ledger + findings when
+      one finishes); evidence download buttons in the finding drawer (403/404/409 explained); report
+      JSON/HTML export as files and "verify a report" (drop an exported JSON). Decisions: downloads go
+      through fetch + a revoked object URL so the dev header and CSRF behave like every other call,
+      and nothing downloaded is rendered in the console's origin; the launcher stays `echo`.
+
 ## Owner / external dependencies (not software; do not block sprints on these)
 
 - [ ] Confirm the public name/domain: GitHub `Sira-Labs/Khandaq` is taken (good); check PyPI name and a

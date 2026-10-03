@@ -61,15 +61,15 @@ lead, I drop in a report someone sent me and see whether its evidence is still i
 
 ## Acceptance criteria
 
-- [ ] Runs panel shows badge, created time, duration and the failure/rejection reason; untrusted
+- [x] Runs panel shows badge, created time, duration and the failure/rejection reason; untrusted
       reason text is escaped.
-- [ ] The runs query polls while a run is queued or running and stops when none is.
-- [ ] Download buttons call the evidence endpoint and save a file; 403/404/409 show their messages.
-- [ ] Report JSON/HTML download as files.
-- [ ] Verify: intact verdict with appended count and issued flag; broken verdict with seq and reason;
+- [x] The runs query polls while a run is queued or running and stops when none is.
+- [x] Download buttons call the evidence endpoint and save a file; 403/404/409 show their messages.
+- [x] Report JSON/HTML download as files.
+- [x] Verify: intact verdict with appended count and issued flag; broken verdict with seq and reason;
       a pre-013 report shows the 422 message; a non-report file is refused before any request; an
       engagement mismatch is pointed out.
-- [ ] `pnpm lint`, `pnpm test`, `pnpm build` pass.
+- [x] `pnpm lint`, `pnpm test`, `pnpm build` pass.
 
 ## Test cases
 
