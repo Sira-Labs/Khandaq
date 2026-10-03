@@ -232,6 +232,14 @@ export interface CampaignCreate {
   params?: Record<string, unknown>;
 }
 
+export interface ApiToken {
+  id: string;
+  name: string;
+  created_at: string | null;
+  last_used_at: string | null;
+  revoked_at: string | null;
+}
+
 export const api = {
   /** Who is signed in; also loads the CSRF token every later mutation needs. */
   me: async () => {
@@ -248,6 +256,11 @@ export const api = {
     }
   },
   logout: () => request<{ status: string }>("POST", "/auth/logout"),
+  listTokens: () => request<ApiToken[]>("GET", "/auth/tokens"),
+  /** The plaintext token is in this response only; the server keeps its hash. */
+  createToken: (name: string) =>
+    request<{ id: string; name: string; token: string }>("POST", "/auth/tokens", { name }),
+  revokeToken: (id: string) => request<void>("DELETE", `/auth/tokens/${id}`),
   version: () => request<{ app: string; schema_revision: string }>("GET", "/version"),
   listEngagements: () => request<Engagement[]>("GET", "/engagements"),
   createEngagement: (name: string, client?: string) =>
