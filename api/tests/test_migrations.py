@@ -250,7 +250,7 @@ def test_0004_refingerprints_and_rebuilds_dedup_links():
             )
     before_c0 = rows[4][6]
 
-    migrate.upgrade(url=TEST_URL)
+    migrate.upgrade(url=TEST_URL, revision="0004_fingerprint_v2")
 
     with eng.connect() as conn:
         found = {
@@ -317,3 +317,79 @@ def test_0004_refingerprints_and_rebuilds_dedup_links():
         assert row.body["schema"] == "khandaq.finding/1"
     assert back["a1"].dedup_of == "a0" and back["c1"].dedup_of == "c0"
     assert back["b0"].canonical and back["b1"].canonical
+
+
+# --- 0005: ledger entry format (ADR-0014) ---------------------------------------------------------
+
+
+def _v1_entry_hash(seq: int, evidence_hash: str, prev_hash: str | None) -> str:
+    """The format-1 entry hash, as the pre-ADR-0014 core computed it."""
+    import hashlib
+
+    data = f"{seq}\0{evidence_hash}\0{prev_hash or ''}".encode()
+    return "sha256:" + hashlib.sha256(data).hexdigest()
+
+
+def test_0005_keeps_existing_chains_verifiable_and_refuses_downgrade_after_use():
+    from sqlalchemy.orm import Session
+
+    from khandaq import ledger as ledger_svc
+    from khandaq import migrate
+
+    eng = create_engine(TEST_URL, future=True)
+    with eng.begin() as conn:
+        conn.execute(text("DROP SCHEMA public CASCADE"))
+        conn.execute(text("CREATE SCHEMA public"))
+    migrate.upgrade(url=TEST_URL)
+    migrate.downgrade(url=TEST_URL, revision="0004_fingerprint_v2")  # a pre-ADR-0014 install
+
+    with eng.begin() as conn:
+        conn.execute(text("INSERT INTO users (id, email) VALUES ('u', 'u@test')"))
+        conn.execute(
+            text("INSERT INTO engagements (id, name, owner_user_id) VALUES ('e', 'x', 'u')")
+        )
+        conn.execute(
+            text("INSERT INTO runs (id, engagement_id, adapter) VALUES ('r', 'e', 'echo')")
+        )
+        prev = None
+        for seq in (1, 2):
+            sha = f"sha256:{seq:064x}"
+            entry = _v1_entry_hash(seq, sha, prev)
+            conn.execute(
+                text(
+                    "INSERT INTO evidence (id, engagement_id, run_id, kind, object_key, sha256) "
+                    "VALUES (:i, 'e', 'r', 'raw', :k, :s)"
+                ),
+                {"i": f"ev{seq}", "k": f"e/r/{seq}", "s": sha},
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO ledger_entries (id, engagement_id, seq, evidence_id, entry_hash, "
+                    "prev_hash) VALUES (:i, 'e', :q, :ev, :h, :p)"
+                ),
+                {"i": f"led{seq}", "q": seq, "ev": f"ev{seq}", "h": entry, "p": prev},
+            )
+            prev = entry
+
+    migrate.upgrade(url=TEST_URL)
+
+    with Session(eng) as s:
+        status = ledger_svc.chain_status(s, "e")
+        assert status["verify"]["ok"] is True, status["verify"]
+        assert [e["format"] for e in status["entries"]] == [1, 1]
+        ledger_svc.seal_evidence(
+            s,
+            engagement_id="e",
+            run_id="r",
+            kind="raw",
+            object_key="e/r/3",
+            sha256=f"sha256:{3:064x}",
+        )
+        s.commit()
+        status = ledger_svc.chain_status(s, "e")
+        assert status["verify"]["ok"] is True, status["verify"]
+        assert [e["format"] for e in status["entries"]] == [1, 1, 2]
+
+    with pytest.raises(RuntimeError, match="format 2"):
+        migrate.downgrade(url=TEST_URL, revision="0004_fingerprint_v2")
+    eng.dispose()

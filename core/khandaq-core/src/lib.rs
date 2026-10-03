@@ -17,8 +17,9 @@ pub use finding::{
 };
 pub use fingerprint::{fingerprint, fingerprint_with, Equivalence, FINGERPRINT_VERSION};
 pub use ledger::{
-    append as ledger_append, entry_hash, root as ledger_root, verify as ledger_verify,
-    verify_pinned as ledger_verify_pinned, LedgerEntry, LedgerError, VerifyResult,
+    append as ledger_append, entry_hash, entry_hash_for, evidence_record_hash, root as ledger_root,
+    verify as ledger_verify, verify_pinned as ledger_verify_pinned, EvidenceRecord, LedgerEntry,
+    LedgerError, VerifyResult, LEDGER_FORMAT,
 };
 pub use mapping::{map_frameworks, navigator_layer, Mappings};
 pub use severity::{AdapterSeverityTable, Severity};

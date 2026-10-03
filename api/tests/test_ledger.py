@@ -6,6 +6,7 @@ Evidence is sealed via the ledger service (the run path will call the same servi
 
 from __future__ import annotations
 
+import json
 import os
 
 import pytest
@@ -183,3 +184,102 @@ def test_evidence_ledger_and_audit_are_append_only(ctx, sql):
     with pytest.raises(DBAPIError, match="append-only"):
         with eng.begin() as conn:
             conn.execute(text(sql))
+
+
+# --- ADR-0014: format-2 entries seal the evidence row's metadata --------------------------------
+
+
+@pytest.mark.parametrize(
+    ("column", "value"),
+    [
+        ("object_key", "'someone-elses/evidence.json'"),
+        ("kind", "'artefact'"),
+        ("bytes", "999"),
+        ("redacted", "true"),
+        ("run_id", None),  # moved to another run of the same engagement
+    ],
+)
+def test_relabelling_sealed_evidence_breaks_the_chain(ctx, column, value):
+    """The ledger used to seal only the artefact's sha256, so an owner who disabled the trigger
+    could move or relabel evidence without the chain noticing."""
+    client, eng = ctx
+    from khandaq import ledger as ledger_svc
+    from khandaq import models as m
+
+    eng_id, run_id = _engagement_with_run(client, eng, f"ledger-relabel-{column}")
+    with Session(eng) as s:
+        evidence_ids = []
+        for i in range(3):
+            ev, row = ledger_svc.seal_evidence(
+                s,
+                engagement_id=eng_id,
+                run_id=run_id,
+                kind="raw",
+                object_key=f"{eng_id}/{run_id}/k{i}",
+                sha256=f"sha256:{i + 1:064x}",
+            )
+            assert row.format == 2
+            evidence_ids.append(ev.id)
+        other_run = m.Run(engagement_id=eng_id, adapter="echo", state="succeeded")
+        s.add(other_run)
+        s.commit()
+        new_value = value if value is not None else f"'{other_run.id}'"
+
+        assert ledger_svc.verify_chain(s, eng_id)["ok"] is True
+        s.execute(text("ALTER TABLE evidence DISABLE TRIGGER evidence_no_update_delete"))
+        s.execute(
+            text(f"UPDATE evidence SET {column} = {new_value} WHERE id = :i"),
+            {"i": evidence_ids[1]},
+        )
+        s.execute(text("ALTER TABLE evidence ENABLE TRIGGER evidence_no_update_delete"))
+        s.commit()
+
+    body = client.post(f"/api/engagements/{eng_id}/ledger/verify", headers=OWNER).json()
+    assert body["ok"] is False and body["broken_at"] == 2, body
+
+
+def test_ledger_entries_report_their_format(ctx):
+    client, eng = ctx
+    from khandaq import ledger as ledger_svc
+
+    eng_id, run_id = _engagement_with_run(client, eng, "ledger-format")
+    with Session(eng) as s:
+        ledger_svc.seal_evidence(
+            s,
+            engagement_id=eng_id,
+            run_id=run_id,
+            kind="raw",
+            object_key="k",
+            sha256=f"sha256:{5:064x}",
+        )
+        s.commit()
+    entries = client.get(f"/api/engagements/{eng_id}/ledger", headers=OWNER).json()["entries"]
+    assert [e["format"] for e in entries] == [2]
+    assert entries[0]["evidence_hash"] != f"sha256:{5:064x}"  # the record, not the bytes alone
+
+
+def test_a_format_mismatch_is_a_value_error_so_the_run_is_recorded_failed(ctx, monkeypatch):
+    """The run path records ValueError as a failed run; any other exception would leave the run
+    'running' forever."""
+    client, eng = ctx
+    import khandaq_core
+
+    from khandaq import ledger as ledger_svc
+
+    eng_id, run_id = _engagement_with_run(client, eng, "ledger-format-mismatch")
+    real_append = khandaq_core.ledger_append
+
+    def future_format(prev, evidence_hash):
+        entry = json.loads(real_append(prev, evidence_hash))
+        return json.dumps(dict(entry, format=3))
+
+    monkeypatch.setattr(ledger_svc.kc, "ledger_append", future_format)
+    with Session(eng) as s, pytest.raises(ValueError, match="format 3"):
+        ledger_svc.seal_evidence(
+            s,
+            engagement_id=eng_id,
+            run_id=run_id,
+            kind="raw",
+            object_key="k",
+            sha256=f"sha256:{9:064x}",
+        )

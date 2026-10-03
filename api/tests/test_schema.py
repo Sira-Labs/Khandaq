@@ -72,7 +72,7 @@ def test_version_reports_revision(engine) -> None:
     from khandaq.db import schema_revision
     from khandaq.settings import Settings
 
-    assert schema_revision(Settings(database_url=TEST_URL)) == "0004_fingerprint_v2"
+    assert schema_revision(Settings(database_url=TEST_URL)) == "0005_ledger_format"
 
 
 def test_audit_log_is_append_only(engine) -> None:
