@@ -154,7 +154,13 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
       (`KHANDAQ_CAMPAIGN_MIN_INTERVAL_MINUTES`); the template is scope-checked at creation (refusal
       audited as `campaign.rejected`). Also: the worker now retries stale-run recovery while the
       database starts (PR #31 review). **Owner:** ADR-0017 is Proposed. Next: spec 017 alerts.
-- [ ] S5-2 — spec 017 alerts on a worsened diff (email/webhook)
+- [x] S5-2 — spec 017 alerts on a worsened campaign diff: an `alert_outbox` row is queued in the
+      diff's transaction (migration 0009) when `KHANDAQ_ALERT_WEBHOOK_URL` is set; the worker POSTs
+      it signed (`X-Khandaq-Signature` HMAC-SHA256), no redirects, under a `SKIP LOCKED` row lock,
+      backing off 2^n minutes to `failed` after `KHANDAQ_ALERT_MAX_ATTEMPTS`; every outcome audited.
+      Decisions: the webhook URL is deployment config, never per campaign (no operator-chosen
+      exfiltration target); the payload carries rule ids, severities and counts only, never titles,
+      evidence or target details; prod requires https + a 32-character secret. Email is a follow-up.
 
 ## Owner / external dependencies (not software; do not block sprints on these)
 
