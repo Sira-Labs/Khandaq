@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 
 import { api, type RunParams } from "../api";
+import { CampaignsPanel } from "../components/CampaignsPanel";
 import { ReportPanel } from "../components/ReportPanel";
 import { RunsPanel } from "../components/RunsPanel";
 import { navigate } from "../router";
@@ -157,6 +158,8 @@ export function Engagement({ engagementId }: { engagementId: string }) {
           )}
         </div>
       </section>
+
+      <CampaignsPanel engagementId={engagementId} />
 
       <ReportPanel engagementId={engagementId} />
 

@@ -28,7 +28,7 @@ export function formatDuration(run: Run): string | null {
   return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
 }
 
-function formatTime(iso: string | undefined): string {
+export function formatTime(iso: string | undefined): string {
   if (!iso) return "";
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? "" : d.toLocaleString();
@@ -63,30 +63,37 @@ export function RunsPanel({ engagementId }: { engagementId: string }) {
           Could not load runs: {runs.error.message}
         </p>
       )}
-      <ul className="space-y-2 text-sm">
-        {runs.data?.map((r) => {
-          const duration = formatDuration(r);
-          return (
-            <li key={r.id} data-testid="run-row">
-              <div className="flex items-center gap-2">
-                <span
-                  className={`rounded px-2 py-0.5 text-xs font-semibold text-white ${STATE_CLASS[r.state] ?? "bg-slate-600"}`}
-                >
-                  {r.state}
-                </span>
-                <span className="flex-1">{r.adapter}</span>
-                {duration && <span className="text-xs text-[var(--muted)]">{duration}</span>}
-                <span className="text-xs text-[var(--muted)]">{formatTime(r.created_at)}</span>
-              </div>
-              {/* The reason can quote tool or target output: untrusted, rendered as text. */}
-              {(r.state === "failed" || r.state === "rejected") && r.reject_reason && (
-                <p className="mt-1 break-words text-xs text-red-300">{r.reject_reason}</p>
-              )}
-            </li>
-          );
-        })}
-        {runs.data?.length === 0 && <li className="text-[var(--muted)]">No runs yet.</li>}
-      </ul>
+      {runs.data && <RunList runs={runs.data} />}
     </div>
+  );
+}
+
+/** Runs with a state badge, duration, created time and, for failed/rejected runs, the reason. */
+export function RunList({ runs }: { runs: Run[] }) {
+  return (
+    <ul className="space-y-2 text-sm">
+      {runs.map((r) => {
+        const duration = formatDuration(r);
+        return (
+          <li key={r.id} data-testid="run-row">
+            <div className="flex items-center gap-2">
+              <span
+                className={`rounded px-2 py-0.5 text-xs font-semibold text-white ${STATE_CLASS[r.state] ?? "bg-slate-600"}`}
+              >
+                {r.state}
+              </span>
+              <span className="flex-1">{r.adapter}</span>
+              {duration && <span className="text-xs text-[var(--muted)]">{duration}</span>}
+              <span className="text-xs text-[var(--muted)]">{formatTime(r.created_at)}</span>
+            </div>
+            {/* The reason can quote tool or target output: untrusted, rendered as text. */}
+            {(r.state === "failed" || r.state === "rejected") && r.reject_reason && (
+              <p className="mt-1 break-words text-xs text-red-300">{r.reject_reason}</p>
+            )}
+          </li>
+        );
+      })}
+      {runs.length === 0 && <li className="text-[var(--muted)]">No runs yet.</li>}
+    </ul>
   );
 }

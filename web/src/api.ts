@@ -177,6 +177,61 @@ export interface ReportVerify {
 
 export type RunParams = Record<string, unknown>;
 
+export interface Campaign {
+  id: string;
+  engagement_id: string;
+  name: string;
+  adapter: string;
+  target_id: string;
+  params: Record<string, unknown>;
+  interval_minutes: number;
+  enabled: boolean;
+  next_run_at: string;
+  created_at: string;
+}
+
+export interface DiffEntry {
+  fingerprint: string;
+  finding_id: string;
+  rule_id: string;
+  severity: string;
+  title: string | null;
+}
+
+export interface CampaignDiff {
+  id: string;
+  campaign_id: string;
+  run_id: string;
+  previous_run_id: string | null;
+  baseline: boolean;
+  new: DiffEntry[];
+  regressed: DiffEntry[];
+  resolved: DiffEntry[];
+  unchanged_count: number;
+  findings_count: number;
+  worsened: boolean;
+  created_at: string;
+}
+
+export interface Alert {
+  id: string;
+  campaign_id: string;
+  diff_id: string;
+  state: string;
+  attempts: number;
+  last_error: string | null;
+  created_at: string;
+  sent_at: string | null;
+}
+
+export interface CampaignCreate {
+  name: string;
+  adapter: string;
+  target_id: string;
+  interval_minutes: number;
+  params?: Record<string, unknown>;
+}
+
 export const api = {
   /** Who is signed in; also loads the CSRF token every later mutation needs. */
   me: async () => {
@@ -219,6 +274,18 @@ export const api = {
     ).then((d) => ({ ...d, filename: `khandaq-report-${id}.${format}` })),
   verifyReport: (id: string, pin: ReportPin) =>
     request<ReportVerify>("POST", `/engagements/${id}/report/verify`, pin),
+  listCampaigns: (id: string) => request<Campaign[]>("GET", `/engagements/${id}/campaigns`),
+  getCampaign: (id: string, cid: string) =>
+    request<Campaign>("GET", `/engagements/${id}/campaigns/${cid}`),
+  createCampaign: (id: string, body: CampaignCreate) =>
+    request<Campaign>("POST", `/engagements/${id}/campaigns`, body),
+  updateCampaign: (id: string, cid: string, body: { enabled?: boolean; interval_minutes?: number }) =>
+    request<Campaign>("PATCH", `/engagements/${id}/campaigns/${cid}`, body),
+  listCampaignRuns: (id: string, cid: string) =>
+    request<Run[]>("GET", `/engagements/${id}/campaigns/${cid}/runs`),
+  listCampaignDiffs: (id: string, cid: string) =>
+    request<CampaignDiff[]>("GET", `/engagements/${id}/campaigns/${cid}/diffs`),
+  listAlerts: (id: string) => request<Alert[]>("GET", `/engagements/${id}/alerts`),
   ledger: (id: string) =>
     request<{ root: string | null; verify: { ok: boolean; broken_at?: number } }>(
       "GET",
