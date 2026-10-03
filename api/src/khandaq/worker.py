@@ -76,6 +76,13 @@ def drain(engine: Engine, runner=None) -> int:
     return count
 
 
+def _recover_lost_runs(engine: Engine, settings: Settings) -> None:
+    with Session(engine) as session:
+        older = dt.timedelta(seconds=settings.adapter_timeout_seconds) + STALE_MARGIN
+        if lost := recover_stale_runs(session, older_than=older):
+            log.warning("failed %d run(s) a previous worker lost", lost)
+
+
 def run_forever(
     settings: Settings,
     stop: threading.Event,
@@ -84,14 +91,16 @@ def run_forever(
     make_engine = engine_factory or (lambda url: create_engine(url, pool_pre_ping=True))
     engine = make_engine(settings.database_url)
     listen_engine = create_engine(settings.database_url, poolclass=NullPool)
-    with Session(engine) as session:
-        older = dt.timedelta(seconds=settings.adapter_timeout_seconds) + STALE_MARGIN
-        if lost := recover_stale_runs(session, older_than=older):
-            log.warning("failed %d run(s) a previous worker lost", lost)
     notifications: Notifications | None = None
+    recovered = False
     try:
         while not stop.is_set():
             try:
+                # Inside the retry loop: a database still starting when the worker starts is
+                # retried like any later outage instead of killing the process (PR #31 review).
+                if not recovered:
+                    _recover_lost_runs(engine, settings)
+                    recovered = True
                 if notifications is None:
                     notifications = Notifications(listen_engine)
                 if work_once(engine):
