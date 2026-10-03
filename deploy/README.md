@@ -86,6 +86,18 @@ cannot change a built-in framework's version or source. A file that is missing, 
 or invalid stops the app at startup. Every report names the overlay and its sha256. Changes take a
 restart, and stored findings are not re-mapped.
 
+## Deployment status (spec 023)
+
+`GET /api/deployment` (organisation admins only) shows what the API and each worker are configured
+with:
+- whether the evidence key, object store, webhook and email alerts are set;
+- the campaign interval floor;
+- the mapping table versions and overlay.
+
+No secret, URL or address is shown, only whether each is set. Each worker reports a heartbeat
+every 30 s, and `alive` means it reported in the last 2 minutes. After a redeploy, check that at
+least one worker is alive and has the alert settings you expect: alerts are worker settings.
+
 ## Smoke test after a deploy (spec 019)
 
 Sign in, open **API tokens** in the console header, create a token, then run:
@@ -97,7 +109,8 @@ KHANDAQ_TOKEN=khq_... python3 deploy/smoke.py --url https://khandaq-stg.example.
 The script needs only the Python 3.10+ standard library. It prints one line per check (health and
 schema, token sign-in, engagement + scope lock, an echo run whose findings carry the core mapping
 table's ids, the ledger, report export and re-verification with the mapping table it names, the
-evidence route, a paused campaign, alerts, close) and exits 0 when all pass.
+evidence route, a paused campaign, alerts, close) and exits 0 when all pass. With an admin's token
+it also checks that a worker is alive; with any other token that check is reported as skipped.
 It uses the in-process `echo` adapter against `smoke.khandaq.invalid`, so nothing leaves the API.
 It closes the engagement it creates. Revoke the token afterwards if you do not need it.
 

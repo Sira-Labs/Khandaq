@@ -64,18 +64,18 @@ to CapRover staging.
 
 | Sprint | Focus | Specs (to write) |
 |---|---|---|
-| 5 | Campaigns: scheduler, baseline, diff (new/resolved/regressed), alerts (webhook + email); console, tokens + smoke test, mapping tables + overlay | 016–022 (written) |
-| 6 | Cisco mcp-scanner adapter (phase 07) + agent target type | 023 |
-| 7 | ART adapter (phase 05) + model_artifact/dataset target types | 024–025 |
-| 8 | Supply chain: ModelAudit/ModelScan consensus + AI-BOM (phase 08) | 026–027 |
-| 9 | Guardrail-regression harness (phase 09) | 028 |
+| 5 | Campaigns: scheduler, baseline, diff (new/resolved/regressed), alerts (webhook + email); console, tokens + smoke test, mapping tables + overlay, deployment status | 016–023 (written) |
+| 6 | Cisco mcp-scanner adapter (phase 07) + agent target type | 024 |
+| 7 | ART adapter (phase 05) + model_artifact/dataset target types | 025–026 |
+| 8 | Supply chain: ModelAudit/ModelScan consensus + AI-BOM (phase 08) | 027–028 |
+| 9 | Guardrail-regression harness (phase 09) | 029 |
 
 (Forecast numbers shifted by one on 2026-10-03: spec 012 closes R1's execution gap; and by one
 again the same day: spec 013 wires the pinned ledger root into report re-verification, spec 014
 stores evidence encrypted in the object store, and spec 015 is the console catch-up. Sprint 5 then
-took 016–022: campaigns, alerts, the campaigns console, the tokens page and smoke test, S2-3's
-mapping tables (020), their deployment overlay (021) and email alerts (022); later sprints shift
-accordingly.)
+took 016–023: campaigns, alerts, the campaigns console, the tokens page and smoke test, S2-3's
+mapping tables (020), their deployment overlay (021), email alerts (022) and deployment status
+(023); later sprints shift accordingly.)
 
 Exit (**R2 done**): continuous monitoring with regression alerts; coverage across phases 03–09.
 

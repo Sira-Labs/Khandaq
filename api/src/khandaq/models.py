@@ -351,3 +351,16 @@ class AlertOutbox(Base):
         UniqueConstraint("diff_id", "channel", name="uq_alert_outbox_diff_channel"),
         Index("ix_alert_outbox_due", "state", "next_attempt_at"),
     )
+
+
+class WorkerHeartbeat(Base):
+    """A worker's last sign of life and its settings summary (spec 023). Operational telemetry:
+    no engagement state, so not audited; rows not seen for a week are pruned."""
+
+    __tablename__ = "worker_heartbeats"
+    id: Mapped[str] = mapped_column(Text, primary_key=True)  # <hostname>:<pid>
+    started_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    seen_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    app_version: Mapped[str] = mapped_column(Text, nullable=False)
+    summary: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    __table_args__ = (Index("ix_worker_heartbeats_seen", "seen_at"),)

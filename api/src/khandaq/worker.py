@@ -20,13 +20,15 @@ import datetime as dt
 import logging
 import signal
 import threading
+import time
 from collections.abc import Callable
 
 from sqlalchemy import Engine, create_engine
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import OperationalError, SQLAlchemyError
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import NullPool
 
+from . import deployment
 from .alerts import deliver_due
 from .campaigns import schedule_due
 from .runs import NOTIFY_CHANNEL, claim_next_run, execute_run, recover_stale_runs
@@ -37,6 +39,7 @@ log = logging.getLogger("khandaq.worker")
 # Past the adapter timeout, a run can only still be "running" if its worker died: the runner
 # kills the container at the timeout and recording results takes seconds.
 STALE_MARGIN = dt.timedelta(minutes=10)
+HEARTBEAT_SECONDS = 30.0
 
 
 class Notifications:
@@ -99,6 +102,35 @@ def _recover_lost_runs(engine: Engine, settings: Settings) -> None:
             log.warning("failed %d run(s) a previous worker lost", lost)
 
 
+class Heartbeat:
+    """Writes this worker's heartbeat at start and then at most every ``every`` seconds (spec
+    023), and prunes week-old rows once."""
+
+    def __init__(self, settings: Settings, every: float = HEARTBEAT_SECONDS) -> None:
+        self.settings = settings
+        self.every = every
+        self.wid = deployment.worker_id()
+        self.started_at = dt.datetime.now(dt.UTC)
+        self._last: float | None = None
+        self._pruned = False
+
+    def maybe_beat(self, engine: Engine) -> bool:
+        now = time.monotonic()
+        if self._last is not None and now - self._last < self.every:
+            return False
+        self._last = now  # a failed beat is retried after the interval, not on every iteration
+        try:
+            with Session(engine) as session:
+                if not self._pruned:
+                    deployment.prune(session)
+                    self._pruned = True
+                deployment.beat(session, self.settings, wid=self.wid, started_at=self.started_at)
+        except SQLAlchemyError as exc:  # telemetry must never stop the worker from running work
+            log.warning("worker heartbeat not recorded: %s", type(exc).__name__)
+            return False
+        return True
+
+
 def run_forever(
     settings: Settings,
     stop: threading.Event,
@@ -109,6 +141,7 @@ def run_forever(
     listen_engine = create_engine(settings.database_url, poolclass=NullPool)
     notifications: Notifications | None = None
     recovered = False
+    heartbeat = Heartbeat(settings)
     try:
         while not stop.is_set():
             try:
@@ -119,6 +152,7 @@ def run_forever(
                     recovered = True
                 if notifications is None:
                     notifications = Notifications(listen_engine)
+                heartbeat.maybe_beat(engine)
                 schedule_campaigns(engine)
                 deliver_alerts(engine)
                 if work_once(engine):

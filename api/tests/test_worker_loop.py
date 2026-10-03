@@ -76,3 +76,23 @@ def test_recovery_runs_once(monkeypatch):
     worker.run_forever(Settings(database_url="sqlite://", worker_poll_seconds=0.01), stop)
     assert attempts == [1] and len(loops) == 3
     assert len(scheduled) == 3  # campaigns are scheduled on every iteration
+
+
+def test_a_failing_heartbeat_never_stops_the_work(monkeypatch):
+    # sqlite:// has no worker_heartbeats table, so every beat fails (spec 023): runs still happen.
+    stop = threading.Event()
+    loops: list[int] = []
+    monkeypatch.setattr(worker, "recover_stale_runs", lambda s, older_than: 0)
+    monkeypatch.setattr(worker, "Notifications", _Quiet)
+    monkeypatch.setattr(worker, "schedule_campaigns", lambda engine: 0)
+    monkeypatch.setattr(worker, "deliver_alerts", lambda engine: 0)
+
+    def work_once(engine, runner=None):
+        loops.append(1)
+        if len(loops) == 2:
+            stop.set()
+        return False
+
+    monkeypatch.setattr(worker, "work_once", work_once)
+    worker.run_forever(Settings(database_url="sqlite://", worker_poll_seconds=0.01), stop)
+    assert len(loops) == 2

@@ -3,9 +3,9 @@
 
 Walks a deployment through the R1/R2 spine with an API token and prints one line per check:
 
-    health → identity → engagement → scope lock (allowed and refused) → echo run → findings →
-    ledger → report export + re-verify → evidence route → campaign create + pause → alerts →
-    close → report still verifiable
+    health → identity → worker alive (admin tokens) → engagement → scope lock (allowed and
+    refused) → echo run → findings → ledger → report export + re-verify → evidence route →
+    campaign create + pause → alerts → close → report still verifiable
 
 It uses the built-in ``echo`` adapter only. That runs inside the API process and **never contacts
 the target**: the target it registers is ``smoke.khandaq.invalid`` (a reserved name that cannot
@@ -40,11 +40,15 @@ UTC = dt.timezone.utc  # noqa: UP017
 TARGET_HOST = "smoke.khandaq.invalid"
 LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1")
 TARGET_MODEL = "smoke-model"
-MIN_SCHEMA = "0010"
+MIN_SCHEMA = "0011"
 
 
 class SmokeFailure(Exception):
     """A check did not hold."""
+
+
+class SmokeSkip(Exception):
+    """A check that cannot run with this token; reported as skipped, never as passed."""
 
 
 # (method, path, json body or None) -> (status, parsed body or raw bytes)
@@ -98,6 +102,7 @@ class Smoke:
     call: Transport
     out: Callable[[str], None] = print
     results: list[tuple[str, bool]] = field(default_factory=list)
+    skipped: list[str] = field(default_factory=list)
 
     def expect(self, method: str, path: str, status: int, body: Any = None) -> Any:
         got, payload = self.call(method, path, body)
@@ -109,6 +114,10 @@ class Smoke:
     def check(self, name: str, fn: Callable[[], str | None]) -> Any:
         try:
             note = fn()
+        except SmokeSkip as skip:
+            self.skipped.append(name)
+            self.out(f"– {name}: skipped ({skip})")
+            return None
         except Exception as exc:  # a smoke test reports every failure, transport errors included
             self.results.append((name, False))
             self.out(f"✗ {name}: {type(exc).__name__}: {exc}")
@@ -150,6 +159,20 @@ class Smoke:
             return me["email"]
 
         self.check("token authenticates", identity)
+
+        def worker_alive() -> str:
+            got, status = self.call("GET", "/api/deployment", None)
+            if got == 403:
+                raise SmokeSkip("the token's user is not an organisation admin")
+            if got != 200:
+                raise SmokeFailure(f"GET /api/deployment: expected 200, got {got}")
+            alive = [w for w in status["workers"] if w["alive"]]
+            assert alive, "no worker has reported in the last 2 minutes: queued runs will wait"
+            alerts = alive[0]["summary"]["alerts"]
+            on = [name for name, enabled in alerts.items() if enabled] or ["none"]
+            return f"{len(alive)} alive; worker alerts: {', '.join(on)}"
+
+        self.check("a worker is alive (spec 023)", worker_alive)
 
         def engagement() -> str:
             eng = self.expect(
@@ -310,7 +333,8 @@ def main(argv: list[str] | None = None) -> int:
     smoke = Smoke(transport)
     ok = smoke.run()
     passed = sum(1 for _, good in smoke.results if good)
-    print(f"\n{passed}/{len(smoke.results)} checks passed" + ("" if ok else " — FAILED"))
+    skipped = f", {len(smoke.skipped)} skipped" if smoke.skipped else ""
+    print(f"\n{passed}/{len(smoke.results)} checks passed{skipped}" + ("" if ok else " — FAILED"))
     return 0 if ok else 1
 
 
