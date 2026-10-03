@@ -111,9 +111,12 @@ def callback(
         raise HTTPException(400, "no id_token in token response")
     claims = client.claims(id_token=id_token, nonce=payload["nonce"])
 
-    # Users are keyed by email, so the email must be one the IdP verified — otherwise anyone could
-    # claim an existing account (or admin_email) by typing its address into an unverified profile.
-    # Then only allow-listed addresses get in: the realm brokers ANY Google/GitHub account.
+    # Users are keyed by the IdP account (iss, sub). The email still decides the allow-list, links
+    # pre-0006 users and bootstraps admin_email, so it must be one the IdP verified — otherwise
+    # anyone could claim an address by typing it into an unverified profile. Then only allow-listed
+    # addresses get in: the realm brokers ANY Google/GitHub account.
+    if not claims.get("iss") or not claims.get("sub"):
+        raise HTTPException(400, "id_token has no iss/sub")
     email = str(claims.get("email", ""))
     reason = None
     if claims.get("email_verified") is not True:
@@ -123,9 +126,12 @@ def callback(
     if reason is not None:
         return _deny_sign_in(session, email=email, reason=reason)
 
-    user = auth_service.upsert_user_from_claims(
-        session, admin_email=settings.admin_email or None, claims=claims
-    )
+    try:
+        user = auth_service.upsert_user_from_claims(
+            session, admin_email=settings.admin_email or None, claims=claims
+        )
+    except auth_service.IdentityConflict as exc:
+        return _deny_sign_in(session, email=email, reason=str(exc))
     if user.disabled:
         return _deny_sign_in(session, email=email, reason="account disabled")
     row = auth_service.create_session(session, user, ttl_hours=settings.session_ttl_hours)

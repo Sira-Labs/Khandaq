@@ -35,3 +35,6 @@ and Arqam, so reusing it keeps one identity story across projects.
 - Reuses family Keycloak operational knowledge and realm patterns (see Tabayyun/Arqam).
 - Production refuses to start without the OIDC settings (fail closed).
 - API tokens are first-class in the audit log (actions record the token id).
+- Users are keyed by the IdP account (`iss`, `sub`), not by email (2026-10-03, spec 008 behaviour
+  9): email is display and allow-list only, and an email linked to one IdP account is refused for
+  any other.
