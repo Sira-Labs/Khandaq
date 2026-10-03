@@ -471,3 +471,188 @@ def test_campaign_authz(env):
         client.get(f"/api/engagements/{other_eng}/campaigns/{cid}/diffs", headers=OWNER).status_code
         == 404
     )
+
+
+# --- spec 017: alerts on a worsened diff -------------------------------------------------------
+
+SECRET = "synthetic-alert-secret-0123456789abcdef"
+
+
+class RecordingSender:
+    """Stands in for the webhook receiver: records each POST and answers with a chosen status."""
+
+    def __init__(self, statuses: list[int | Exception]) -> None:
+        self.statuses = statuses
+        self.calls: list[tuple[str, bytes, dict]] = []
+
+    def post(self, url: str, body: bytes, headers: dict[str, str]) -> int:
+        self.calls.append((url, body, headers))
+        outcome = self.statuses.pop(0) if self.statuses else 200
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
+@pytest.fixture
+def alerts_on():
+    from khandaq.settings import get_settings
+
+    settings = get_settings()
+    previous = (settings.alert_webhook_url, settings.alert_webhook_secret, settings.public_url)
+    settings.alert_webhook_url = "https://hooks.example.invalid/khandaq"
+    settings.alert_webhook_secret = SECRET
+    settings.public_url = "https://khandaq.example.invalid"
+    yield settings
+    settings.alert_webhook_url, settings.alert_webhook_secret, settings.public_url = previous
+
+
+def _alerts(db, eng_id: str) -> list[dict]:
+    with db.connect() as conn:
+        return [
+            dict(row._mapping)
+            for row in conn.execute(
+                text("SELECT * FROM alert_outbox WHERE engagement_id = :e ORDER BY created_at"),
+                {"e": eng_id},
+            )
+        ]
+
+
+def _deliver(db, sender) -> int:
+    from khandaq.alerts import deliver_due
+
+    with Session(db) as s:
+        return deliver_due(s, sender=sender)
+
+
+def test_a_worsened_diff_queues_one_alert_without_finding_text(env, alerts_on):
+    client, db = env
+    eng_id, tid = _engagement(client, "alert-queue")
+    cid = _create(client, eng_id, tid).json()["id"]
+    _cycle(db, cid, ["a"])  # baseline: no alert
+    assert _alerts(db, eng_id) == []
+    _cycle(db, cid, ["a"])  # unchanged: no alert
+    assert _alerts(db, eng_id) == []
+    _cycle(db, cid, ["a", "b"])  # new finding: worsened
+
+    [alert] = _alerts(db, eng_id)
+    assert alert["state"] == "pending" and alert["attempts"] == 0
+    payload = alert["payload"]
+    assert payload["schema"] == "khandaq.alert/1" and payload["kind"] == "campaign.worsened"
+    assert payload["counts"] == {"new": 1, "regressed": 0, "resolved": 0, "unchanged": 1}
+    assert payload["new"] == [{"rule_id": "garak.b", "severity": "high"}]
+    assert payload["url"] == f"https://khandaq.example.invalid/eng/{eng_id}"
+    assert "probe b" not in str(payload)  # finding titles never leave in an alert
+    assert _audit(db, eng_id, "alert.queued")[0]["alert_id"] == alert["id"]
+
+
+def test_alerts_off_queue_nothing(env):
+    client, db = env
+    eng_id, tid = _engagement(client, "alert-off")
+    cid = _create(client, eng_id, tid).json()["id"]
+    _cycle(db, cid, ["a"])
+    _cycle(db, cid, ["a", "b"])
+    assert _alerts(db, eng_id) == []
+
+
+def test_delivery_is_signed_and_audited(env, alerts_on):
+    import hashlib
+    import hmac
+    import json
+
+    client, db = env
+    eng_id, tid = _engagement(client, "alert-deliver")
+    cid = _create(client, eng_id, tid).json()["id"]
+    _cycle(db, cid, ["a"])
+    _cycle(db, cid, ["a", "b"])
+    sender = RecordingSender([204] * 10)  # earlier tests may leave alerts pending too
+    assert _deliver(db, sender) >= 1
+
+    [alert] = _alerts(db, eng_id)
+    [(url, body, headers)] = [
+        c for c in sender.calls if json.loads(c[1])["diff_id"] == alert["diff_id"]
+    ]
+    assert url == "https://hooks.example.invalid/khandaq"
+    assert headers["X-Khandaq-Event"] == "campaign.worsened"
+    assert headers["X-Khandaq-Delivery"] == alert["id"]
+    expected = "sha256=" + hmac.new(SECRET.encode(), body, hashlib.sha256).hexdigest()
+    assert headers["X-Khandaq-Signature"] == expected
+    assert alert["state"] == "sent" and alert["sent_at"] is not None
+    assert _audit(db, eng_id, "alert.sent") == [{"alert_id": alert["id"], "status": 204}]
+
+
+def test_failed_deliveries_back_off_then_give_up(env, alerts_on):
+    import httpx
+
+    client, db = env
+    alerts_on.alert_max_attempts = 3
+    try:
+        eng_id, tid = _engagement(client, "alert-retry")
+        cid = _create(client, eng_id, tid).json()["id"]
+        _cycle(db, cid, ["a"])
+        _cycle(db, cid, ["a", "b"])
+        [alert] = _alerts(db, eng_id)
+
+        def due_now():
+            with db.begin() as conn:
+                conn.execute(
+                    text("UPDATE alert_outbox SET next_attempt_at = now() WHERE id = :a"),
+                    {"a": alert["id"]},
+                )
+
+        _deliver(db, RecordingSender([500]))
+        first = _alerts(db, eng_id)[0]
+        assert (
+            first["state"] == "pending"
+            and first["attempts"] == 1
+            and first["last_error"] == "HTTP 500"
+        )
+        assert first["next_attempt_at"] > first["created_at"]
+        assert (
+            _deliver(db, RecordingSender([])) == 0 or _alerts(db, eng_id)[0]["attempts"] == 1
+        )  # not due yet
+
+        due_now()
+        _deliver(db, RecordingSender([httpx.ConnectTimeout("synthetic")]))
+        second = _alerts(db, eng_id)[0]
+        assert second["attempts"] == 2 and second["last_error"] == "ConnectTimeout"
+        assert second["next_attempt_at"] - first["next_attempt_at"] > dt.timedelta(minutes=1)
+
+        due_now()
+        _deliver(db, RecordingSender([302]))  # redirects are not followed: a failure
+        final = _alerts(db, eng_id)[0]
+        assert final["state"] == "failed" and final["attempts"] == 3
+        [failed] = _audit(db, eng_id, "alert.failed")
+        assert failed == {"alert_id": alert["id"], "attempts": 3, "error": "HTTP 302"}
+    finally:
+        alerts_on.alert_max_attempts = 5
+
+
+def test_a_locked_alert_is_not_delivered_twice(env, alerts_on):
+    from khandaq.models import AlertOutbox
+
+    client, db = env
+    eng_id, tid = _engagement(client, "alert-locked")
+    cid = _create(client, eng_id, tid).json()["id"]
+    _cycle(db, cid, ["a"])
+    _cycle(db, cid, ["a", "b"])
+    [alert] = _alerts(db, eng_id)
+    with Session(db) as holder:
+        holder.query(AlertOutbox).filter_by(id=alert["id"]).with_for_update().one()
+        sender = RecordingSender([200])
+        _deliver(db, sender)
+        assert all(alert["id"] != c[2]["X-Khandaq-Delivery"] for c in sender.calls)
+        holder.rollback()
+    assert _alerts(db, eng_id)[0]["state"] == "pending"
+
+
+def test_alert_list_authz(env, alerts_on):
+    client, db = env
+    eng_id, tid = _engagement(client, "alert-list")
+    cid = _create(client, eng_id, tid).json()["id"]
+    _cycle(db, cid, ["a"])
+    _cycle(db, cid, ["a", "b"])
+    viewer = _add_member(db, eng_id, "alert-viewer@test", "viewer")
+    analyst = _add_member(db, eng_id, "alert-analyst@test", "analyst")
+    r = client.get(f"/api/engagements/{eng_id}/alerts", headers=analyst)
+    assert r.status_code == 200 and len(r.json()) == 1 and r.json()[0]["state"] == "pending"
+    assert client.get(f"/api/engagements/{eng_id}/alerts", headers=viewer).status_code == 403

@@ -325,3 +325,27 @@ class AuditLog(Base):
         # 013). Migration 0007.
         Index("ix_audit_log_engagement_action", "engagement_id", "action"),
     )
+
+
+class AlertOutbox(Base):
+    """An alert waiting for (or done with) delivery (spec 017). Queued in the transaction that
+    records its worsened diff, so a worker crash cannot lose it."""
+
+    __tablename__ = "alert_outbox"
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=lambda: new_id("alr"))
+    engagement_id: Mapped[str] = mapped_column(ForeignKey("engagements.id"), nullable=False)
+    campaign_id: Mapped[str] = mapped_column(ForeignKey("campaigns.id"), nullable=False)
+    diff_id: Mapped[str] = mapped_column(
+        ForeignKey("campaign_diffs.id"), nullable=False, unique=True
+    )
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    state: Mapped[str] = mapped_column(Text, nullable=False, server_default="pending")
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    next_attempt_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[dt.datetime] = _created_at()
+    sent_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    __table_args__ = (
+        CheckConstraint("state in ('pending','sent','failed')", name="ck_alert_outbox_state"),
+        Index("ix_alert_outbox_due", "state", "next_attempt_at"),
+    )

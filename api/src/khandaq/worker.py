@@ -3,7 +3,8 @@
 The API commits container runs as ``queued`` and sends ``NOTIFY khandaq_runs``. The worker:
 
 1. at start, fails runs left ``running`` past the adapter timeout (a previous worker was lost);
-1a. on every iteration, queues runs for due campaigns (spec 016, ADR-0017);
+1a. on every iteration, queues runs for due campaigns (spec 016, ADR-0017) and delivers due
+    alerts on worsened campaign diffs (spec 017);
 2. claims the oldest queued run (``FOR UPDATE SKIP LOCKED``), re-checks its scope, marks it
    ``running`` and commits — or records it ``rejected``;
 3. executes it in a sandboxed container (``DockerRunner``) and records the outcome;
@@ -26,6 +27,7 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import NullPool
 
+from .alerts import deliver_due
 from .campaigns import schedule_due
 from .runs import NOTIFY_CHANNEL, claim_next_run, execute_run, recover_stale_runs
 from .settings import Settings, get_settings
@@ -76,6 +78,12 @@ def schedule_campaigns(engine: Engine) -> int:
         return schedule_due(session)
 
 
+def deliver_alerts(engine: Engine) -> int:
+    """Send due alerts on worsened campaign diffs (spec 017); returns how many were attempted."""
+    with Session(engine) as session:
+        return deliver_due(session)
+
+
 def drain(engine: Engine, runner=None) -> int:
     """Execute queued runs until none is left; returns how many were looked at."""
     count = 0
@@ -112,6 +120,7 @@ def run_forever(
                 if notifications is None:
                     notifications = Notifications(listen_engine)
                 schedule_campaigns(engine)
+                deliver_alerts(engine)
                 if work_once(engine):
                     continue
                 notifications.wait(settings.worker_poll_seconds)

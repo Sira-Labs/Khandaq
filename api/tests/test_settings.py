@@ -78,6 +78,11 @@ _PROD_FULL = {
         ({"evidence_previous_keys": "a" * 40 + ",short"}, "PREVIOUS_KEYS"),
         ({"object_store_url": "https://bucket.example"}, "s3://"),
         ({"object_store_url": "s3://"}, "s3://"),
+        (
+            {"alert_webhook_url": "http://hooks.example", "alert_webhook_secret": "s" * 40},
+            "https://",
+        ),
+        ({"alert_webhook_url": "https://hooks.example", "alert_webhook_secret": "short"}, "SECRET"),
     ],
 )
 def test_prod_refuses_bad_evidence_settings(override, message):
@@ -92,5 +97,7 @@ def test_prod_accepts_s3_store_and_retired_keys():
         **_PROD_FULL,
         object_store_url="s3://khandaq-evidence/prod",
         evidence_previous_keys="b" * 32 + ", " + "c" * 44,
+        alert_webhook_url="https://hooks.example/khandaq",
+        alert_webhook_secret="d" * 40,
     )
     s.validate_runtime()  # must not raise

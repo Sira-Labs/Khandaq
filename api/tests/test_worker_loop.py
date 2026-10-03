@@ -38,6 +38,7 @@ def test_recovery_is_retried_when_the_database_is_down_at_start(monkeypatch):
     monkeypatch.setattr(worker, "Notifications", _Quiet)
     monkeypatch.setattr(worker, "work_once", lambda engine, runner=None: False)
     monkeypatch.setattr(worker, "schedule_campaigns", lambda engine: 0)
+    monkeypatch.setattr(worker, "deliver_alerts", lambda engine: 0)
 
     from sqlalchemy import create_engine
 
@@ -63,6 +64,7 @@ def test_recovery_runs_once(monkeypatch):
     monkeypatch.setattr(worker, "Notifications", _Quiet)
     scheduled: list[int] = []
     monkeypatch.setattr(worker, "schedule_campaigns", lambda engine: scheduled.append(1) or 0)
+    monkeypatch.setattr(worker, "deliver_alerts", lambda engine: 0)
 
     def work_once(engine, runner=None):
         loops.append(1)

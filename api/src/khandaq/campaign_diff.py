@@ -17,7 +17,7 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from . import audit
+from . import alerts, audit
 from .models import CampaignDiff, Finding, Run
 
 
@@ -117,4 +117,5 @@ def record_diff(session: Session, run: Run) -> CampaignDiff:
             "worsened": diff.worsened,
         },
     )
+    alerts.queue_for_diff(session, diff, run)  # spec 017: same transaction as the diff
     return diff
