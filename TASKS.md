@@ -187,3 +187,12 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
 - 2026-10-02 — Rust core (PyO3) owns the integrity-critical logic incl. the ledger (ADR-0011/0007);
   Python FastAPI control plane; Procrastinate on Postgres (ADR-0008); adapters isolated per container with
   egress limited to the in-scope target (ADR-0009).
+- 2026-10-03 — Fingerprint v2 (ADR-0013 accepted by the owner): framework mappings are no longer
+  identity. The fingerprint is `{v: 2, weakness, target, location}`, where `weakness` is the rule id
+  unless a versioned equivalence table (`core/khandaq-core/mappings/equivalence.json`, shipped
+  empty because no two R1 adapters share a location vocabulary) names a shared one. Schema id
+  `khandaq.finding/2`; `/1` still validates. Migration `0004_fingerprint_v2` re-fingerprints stored
+  findings, rebuilds `dedup_of`, recomputes a changed group's evidence from each member's own run
+  (evidence rows carry `run_id`) and its tools from `source`/`sources`, carries triage over a merge,
+  and audits `findings.refingerprinted` per engagement. Downgrade uses a Python copy of the v1
+  recipe pinned against the old core's output. The echo adapter's duplicate pair now shares a rule.

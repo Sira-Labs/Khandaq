@@ -42,3 +42,6 @@ tell when two findings are "the same issue".
   mapping and a contract test.
 - Fingerprint design must be versioned (`schema: khandaq.finding/1`); a change to the fingerprint
   recipe is a schema version bump with a migration note.
+- **Amended by ADR-0013 (2026-10-03):** the identity is {rule id, or a shared weakness from an
+  explicit equivalence table; target; canonical location}. Framework mappings are no longer part of
+  it. Schema id `khandaq.finding/2`, migration `0004_fingerprint_v2`.

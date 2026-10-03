@@ -1,7 +1,7 @@
 # ADR-0013: Fingerprint identity independent of framework mappings
 
-- **Status:** Proposed
-- **Date:** 2026-10-02
+- **Status:** Accepted (2026-10-03)
+- **Date:** 2026-10-02 (proposed), 2026-10-03 (accepted)
 - **Deciders:** project owner (open decision raised by the 2026-10-02 code review)
 
 ## Context
@@ -31,7 +31,7 @@ The code review found that the mapping-based identity works against what ADR-000
    from two tools therefore almost never share a location. In practice the identity is per tool
    anyway, while still paying the drift cost in (1).
 
-## Decision (proposed)
+## Decision
 
 Introduce **fingerprint v2**, which drops framework mappings from the identity entirely:
 
@@ -47,8 +47,21 @@ Introduce **fingerprint v2**, which drops framework mappings from the identity e
   recomputes stored fingerprints from each finding's `body` and re-links `dedup_of` under the new
   recipe. That migration re-runs the duplicate merge that `0003_append_only` already performs.
 
-Until this ADR is accepted, the v1 recipe stays unchanged. The 2026-10-02 core fixes deliberately
-leave `fingerprint.rs` alone.
+### Implementation (2026-10-03)
+
+- `khandaq-core`: `fingerprint` hashes `{v: 2, weakness, target, location}`. `weakness` is
+  `rule:<rule_id>`, or `weakness:<key>` when `mappings/equivalence.json` names the rule; the two
+  prefixes keep a weakness key from ever equalling a rule identity. Table keys are exact rule ids or
+  a `prefix.*` pattern; an exact id beats a prefix and the longest prefix wins. The table ships
+  **empty**: no two R1 adapters share a location vocabulary, so a cross-tool entry would not merge
+  anything yet. The recipe is pinned by a golden test.
+- Schema id `khandaq.finding/2`. Only the fingerprint changed, so `validate` still accepts `/1`
+  records, and `dedup` emits every canonical finding as `/2`. Adapters emit `/2`.
+- Alembic `0004_fingerprint_v2` re-fingerprints every stored finding from its `body`, rebuilds
+  `dedup_of` per engagement (earliest row canonical), recomputes a changed group's evidence and tool
+  attribution from each member's own contribution, carries triage over a merge, and writes one
+  `findings.refingerprinted` audit entry per engagement. Downgrade restores v1 with a Python copy of
+  the v1 recipe, pinned in tests against values the old core produced.
 
 ## Alternatives considered
 

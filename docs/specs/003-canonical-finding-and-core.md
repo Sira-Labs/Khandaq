@@ -72,6 +72,13 @@ CLI: `khandaq-core validate <file>`, `… normalize <raw> --adapter garak`, `…
 > Navigator counts a technique once per finding, with ids upper-cased. The fingerprint recipe is
 > unchanged; making it independent of mappings is proposed in ADR-0013.
 
+> Fingerprint v2 (ADR-0013, accepted 2026-10-03): the identity above (mapping ids) is replaced by
+> `{v: 2, weakness, target, location}`, where `weakness` is the rule id unless the versioned
+> equivalence table (`mappings/equivalence.json`, shipped empty) names a shared weakness. Schema id
+> `khandaq.finding/2`; `/1` records still validate and come out of `dedup` as `/2`. Reason: mapping
+> curation (ADR-0012) re-fingerprinted already-triaged findings, and distinct rules sharing a
+> mapping set collided. `fingerprint_with`/`dedup_with` take an explicit table for tests.
+
 
 ## Test cases
 
