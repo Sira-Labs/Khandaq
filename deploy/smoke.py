@@ -213,7 +213,10 @@ class Smoke:
             findings = self.expect("GET", f"/api/engagements/{s['eng']}/findings", 200)
             assert len(findings) == 2, f"expected 2 canonical findings, got {len(findings)}"
             s["evidence"] = findings[0]["evidence"][0]
-            return "2 deduplicated findings"
+            # Spec 020: the core table adds the frameworks the adapter does not name.
+            frameworks = {m["framework"] for f in findings for m in f["mappings"]}
+            assert "nist-ai-rmf" in frameworks, f"mapping table not applied: {sorted(frameworks)}"
+            return "2 deduplicated findings, mapped by the core table"
 
         self.check("echo run succeeds with deduplicated findings", echo_run)
 
@@ -233,7 +236,12 @@ class Smoke:
             assert verdict["ok"] is True and verdict["issued"] is True, f"verify: {verdict}"
             html = self.expect("GET", f"/api/engagements/{s['eng']}/report.html", 200)
             assert b"Khandaq engagement report" in html, "HTML report missing its heading"
-            return f"pinned {s['pin']['count']} entries; re-verified, issued"
+            # Specs 020/021: the report names the mapping table each finding was mapped with.
+            recorded = rep.get("mapping_tables", {}).get("recorded", [])
+            assert recorded and recorded[0].get("versions"), "report names no mapping table"
+            overlay = recorded[0].get("overlay")
+            mapped = f"overlay {overlay['name']}" if overlay else "built-in mapping table"
+            return f"pinned {s['pin']['count']} entries; re-verified, issued; {mapped}"
 
         self.check("report exports and re-verifies against its pin", report)
 
