@@ -1,4 +1,4 @@
-"""Run creation and execution (spec 005, spec 012).
+"""Run creation and execution (spec 005, spec 012, spec 014).
 
 Creating a run applies the **same scope lock** as spec 002 on the run path: an out-of-scope call is
 recorded as a `rejected` run and audited, and nothing is launched. An authorised run executes its
@@ -16,15 +16,14 @@ Two paths (spec 012, ADR-0015):
 Record durability (code review, 2026-10-02): the run row and ``run.started`` are **committed
 before** the adapter touches the target, and any later failure is recorded in a fresh transaction.
 Results are persisted under a per-engagement lock, which serialises ledger appends and cross-run
-deduplication between concurrent runs.
+deduplication between concurrent runs. Evidence bytes are stored encrypted and write-once before
+their hash is sealed (spec 014, ADR-0016).
 """
 
 from __future__ import annotations
 
 import datetime as dt
 import json
-import os
-from pathlib import Path
 
 import khandaq_core as kc
 from sqlalchemy import select, text
@@ -35,6 +34,8 @@ from sqlalchemy.orm.attributes import flag_modified
 from . import audit
 from .adapters import build_run_request, get_manifest, get_runner
 from .deps import EngagementAccess
+from .evidence_crypto import Keyring
+from .evidence_store import EvidenceStore, retain, store_from_settings
 from .ledger import lock_engagement, seal_evidence
 from .models import Engagement, Finding, Run, Scope, Target, User
 from .scope import evaluate
@@ -229,8 +230,9 @@ def execute_run(session: Session, run_id: str, *, actor: User | None = None, run
             detail={"run_id": run_id, **result},
         )
         session.commit()  # also releases the engagement lock
-    except (SQLAlchemyError, ValueError, KeyError, TypeError, OSError) as exc:
-        # Bad adapter output (schema/validation), evidence storage, or a database error.
+    except (SQLAlchemyError, ValueError, LookupError, TypeError, OSError) as exc:
+        # Bad adapter output (schema/validation), evidence storage (spec 014: no key, a conflicting
+        # object, an object-store error), or a database error.
         return _fail(session, eng_id, run_id, f"recording results failed: {exc}", actor)
 
     session.refresh(run)
@@ -280,28 +282,6 @@ def _fail(session: Session, engagement_id: str, run_id: str, error: str, actor: 
     return run
 
 
-def store_evidence(root: Path, object_key: str, content: bytes) -> None:
-    """Retain evidence bytes write-once at ``root/object_key`` (spec 012).
-
-    The file is written to a temporary name and hard-linked into place, which fails if the key
-    already exists: sealed evidence is never overwritten (ADR-0007). An identical retry is fine.
-    """
-    path = (root / object_key).resolve()
-    if not path.is_relative_to(root.resolve()):
-        raise ValueError(f"evidence key {object_key!r} escapes the evidence directory")
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    tmp.write_bytes(content)
-    try:
-        os.chmod(tmp, 0o440)
-        os.link(tmp, path)
-    except FileExistsError:
-        if path.read_bytes() != content:
-            raise ValueError(f"evidence {object_key!r} already exists with other content") from None
-    finally:
-        tmp.unlink(missing_ok=True)
-
-
 def _persist_results(
     session: Session, engagement_id: str, run_id: str, target_id: str, artifacts: dict
 ) -> dict:
@@ -310,10 +290,15 @@ def _persist_results(
 
     # Seal each evidence artefact; map the adapter's local ids to persisted evidence ids.
     local_to_id: dict[str, str] = {}
-    evidence_root = Path(get_settings().evidence_dir)
+    store: EvidenceStore | None = None
+    keyring: Keyring | None = None
     for ev in artifacts["evidence"]:
-        if "content" in ev:  # container runs return the bytes; keep them before sealing the hash
-            store_evidence(evidence_root, ev["object_key"], ev["content"])
+        if "content" in ev:  # container runs return the bytes: store them encrypted, then seal
+            if keyring is None or store is None:
+                settings = get_settings()
+                keyring = Keyring.from_settings(settings)  # no key → the run fails before sealing
+                store = store_from_settings(settings)
+            retain(store, keyring, ev["object_key"], ev["content"], ev["sha256"])
         evidence, _ = seal_evidence(
             session,
             engagement_id=engagement_id,

@@ -12,6 +12,9 @@ from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from .evidence_crypto import MIN_KEY_CHARS
+from .evidence_store import parse_store_url
+
 # Values that must never reach production: the examples shipped in deploy/.env.example.
 _PLACEHOLDERS = {
     "",
@@ -34,11 +37,17 @@ class Settings(BaseSettings):
     session_secret: str = ""
     database_url: str = ""
     migration_database_url: str = ""  # owner login for migrations; falls back to database_url
+    # Evidence envelope key (ADR-0016): any string of at least 32 characters; the KEK is derived
+    # from it. Retired keys (comma-separated) still decrypt the objects written under them.
     evidence_key: str = ""
+    evidence_previous_keys: str = ""
 
-    # Object store (evidence). Optional until the evidence path lands (spec 004).
+    # Object store for evidence (spec 014): s3://<bucket>[/<prefix>]; empty = evidence_dir.
     object_store_url: str = ""
     object_store_endpoint: str = ""
+    object_store_region: str = "us-east-1"
+    object_store_access_key_id: str = ""
+    object_store_secret_access_key: str = ""
 
     # Identity (OIDC BFF; spec 008 / ADR-0005). Required in prod (see validate_runtime).
     oidc_issuer: str = ""
@@ -71,8 +80,8 @@ class Settings(BaseSettings):
     adapter_egress_network: str = "bridge"  # the Docker network targets are reachable from
     adapter_timeout_seconds: int = 3600
     adapter_output_limit_mb: int = 256
-    # Where container runs' evidence bytes are retained, write-once (spec 012; the object-store
-    # upload of ADR-0006 replaces this later). The worker needs this volume.
+    # Where container runs' evidence bytes are retained, encrypted and write-once, when no object
+    # store is configured (specs 012, 014). The worker needs this volume.
     evidence_dir: str = "/var/lib/khandaq/evidence"
     worker_poll_seconds: float = 5.0
 
@@ -96,6 +105,18 @@ class Settings(BaseSettings):
             problems.append("KHANDAQ_DATABASE_URL must be set")
         if self.evidence_key in _PLACEHOLDERS:
             problems.append("KHANDAQ_EVIDENCE_KEY must be set to a real value")
+        elif len(self.evidence_key) < MIN_KEY_CHARS:
+            problems.append(f"KHANDAQ_EVIDENCE_KEY must be at least {MIN_KEY_CHARS} characters")
+        retired = [k.strip() for k in self.evidence_previous_keys.split(",") if k.strip()]
+        if any(len(k) < MIN_KEY_CHARS for k in retired):
+            problems.append(
+                "KHANDAQ_EVIDENCE_PREVIOUS_KEYS entries must be at least "
+                f"{MIN_KEY_CHARS} characters"
+            )
+        try:
+            parse_store_url(self.object_store_url)
+        except ValueError as exc:
+            problems.append(str(exc))
         # OIDC BFF is the only authentication path in prod (the dev stub refuses there); without it
         # no one could log in, so the API fails closed (spec 008 / ADR-0005). Only the api role
         # serves logins: the worker never sees a browser, so it is not given (and must not need)
