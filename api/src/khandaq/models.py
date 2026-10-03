@@ -26,6 +26,7 @@ from sqlalchemy import (
     ForeignKeyConstraint,
     Index,
     Integer,
+    SmallInteger,
     Text,
     UniqueConstraint,
     func,
@@ -247,6 +248,9 @@ class LedgerEntry(Base):
     evidence_id: Mapped[str] = mapped_column(ForeignKey("evidence.id"), nullable=False)
     entry_hash: Mapped[str] = mapped_column(Text, nullable=False)
     prev_hash: Mapped[str | None] = mapped_column(Text)
+    # Entry format (ADR-0014): 1 seals the artefact's sha256 alone; 2 seals the evidence row's
+    # metadata too. Rows written before migration 0005 are 1; new rows take the core's format.
+    format: Mapped[int] = mapped_column(SmallInteger, nullable=False, server_default="2")
     created_at: Mapped[dt.datetime] = _created_at()
     __table_args__ = (UniqueConstraint("engagement_id", "seq", name="uq_ledger_engagement_seq"),)
 

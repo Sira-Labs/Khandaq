@@ -1,9 +1,13 @@
 """Evidence ledger service (spec 004).
 
 Seals evidence into the append-only, hash-chained ledger and verifies the chain, delegating the
-hashing to the Rust core via the `khandaq_core` wheel (ADR-0007/0011). The core LedgerEntry model is
-{seq, evidence_hash, prev_hash, entry_hash}; in the database the entry references an Evidence row,
-and `evidence_hash` is that row's sha256.
+hashing to the Rust core via the `khandaq_core` wheel (ADR-0007/0011). The core LedgerEntry model
+is {seq, evidence_hash, prev_hash, entry_hash, format}; in the database the entry references an
+Evidence row, and `evidence_hash` is derived from that row by the entry's format (ADR-0014):
+
+- format 1 (entries sealed before migration 0005): the artefact's sha256 alone;
+- format 2: the core's ``evidence_record_hash`` over the row's id, engagement, run, kind, object
+  key, sha256, size and redaction flag — so relabelling or moving sealed evidence breaks the chain.
 """
 
 from __future__ import annotations
@@ -29,12 +33,43 @@ def lock_engagement(session: Session, engagement_id: str) -> None:
     )
 
 
-def _core_entry(row: LedgerEntry, sha256: str) -> dict:
+def _record(evidence: Evidence) -> dict:
+    """The evidence fields a format-2 entry seals (the core refuses any other field)."""
+    return {
+        "id": evidence.id,
+        "engagement_id": evidence.engagement_id,
+        "run_id": evidence.run_id,
+        "kind": evidence.kind,
+        "object_key": evidence.object_key,
+        "sha256": evidence.sha256,
+        "bytes": evidence.bytes,
+        "redacted": evidence.redacted,
+    }
+
+
+def _evidence_hash(evidence: Evidence | None, format_: int) -> str:
+    """What the entry seals for this evidence row under its format. A missing row, an unknown
+    format or a record the core refuses yields "" — a malformed hash, so verification reports the
+    chain broken at that entry instead of the request failing."""
+    if evidence is None:
+        return ""
+    if format_ == 1:
+        return evidence.sha256
+    if format_ == 2:
+        try:
+            return kc.evidence_record_hash(json.dumps(_record(evidence)))
+        except ValueError:
+            return ""
+    return ""
+
+
+def _core_entry(row: LedgerEntry, evidence: Evidence | None) -> dict:
     return {
         "seq": row.seq,
-        "evidence_hash": sha256,
+        "evidence_hash": _evidence_hash(evidence, row.format),
         "prev_hash": row.prev_hash,
         "entry_hash": row.entry_hash,
+        "format": row.format,
     }
 
 
@@ -75,10 +110,12 @@ def seal_evidence(
     last = _last_entry(session, engagement_id)
     prev_json = None
     if last is not None:
-        prev_ev = session.get(Evidence, last.evidence_id)
-        prev_sha = prev_ev.sha256 if prev_ev else ""
-        prev_json = json.dumps(_core_entry(last, prev_sha))
-    entry = json.loads(kc.ledger_append(prev_json, sha256))
+        prev_json = json.dumps(_core_entry(last, session.get(Evidence, last.evidence_id)))
+    # The core refuses a malformed sha256 or record (ValueError) before anything is chained.
+    sealed = kc.evidence_record_hash(json.dumps(_record(evidence)))
+    entry = json.loads(kc.ledger_append(prev_json, sealed))
+    if entry["format"] != 2:  # this service derives evidence_hash for formats 1 and 2 only
+        raise RuntimeError(f"khandaq_core writes ledger format {entry['format']}, expected 2")
 
     row = LedgerEntry(
         engagement_id=engagement_id,
@@ -86,13 +123,14 @@ def seal_evidence(
         evidence_id=evidence.id,
         entry_hash=entry["entry_hash"],
         prev_hash=entry["prev_hash"],
+        format=entry["format"],
     )
     session.add(row)
     session.flush()
     return evidence, row
 
 
-_CORE_KEYS = ("seq", "evidence_hash", "prev_hash", "entry_hash")
+_CORE_KEYS = ("seq", "evidence_hash", "prev_hash", "entry_hash", "format")
 
 
 def load_chain(session: Session, engagement_id: str) -> list[dict]:
@@ -100,14 +138,14 @@ def load_chain(session: Session, engagement_id: str) -> list[dict]:
 
     One joined query (it used to issue one evidence lookup per entry)."""
     rows = session.execute(
-        select(LedgerEntry, Evidence.sha256)
+        select(LedgerEntry, Evidence)
         .outerjoin(Evidence, Evidence.id == LedgerEntry.evidence_id)
         .where(LedgerEntry.engagement_id == engagement_id)
         .order_by(LedgerEntry.seq.asc())
     ).all()
     chain = []
-    for row, sha256 in rows:
-        entry = _core_entry(row, sha256 or "")
+    for row, evidence in rows:
+        entry = _core_entry(row, evidence)
         entry["evidence_id"] = row.evidence_id
         chain.append(entry)
     return chain
