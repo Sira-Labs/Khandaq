@@ -22,6 +22,8 @@ EXPECTED_TABLES = {
     "api_tokens",
     "engagements",
     "engagement_members",
+    "campaigns",
+    "campaign_diffs",
     "targets",
     "scopes",
     "suites",
@@ -72,7 +74,7 @@ def test_version_reports_revision(engine) -> None:
     from khandaq.db import schema_revision
     from khandaq.settings import Settings
 
-    assert schema_revision(Settings(database_url=TEST_URL)) == "0007_audit_log_engagement_action"
+    assert schema_revision(Settings(database_url=TEST_URL)) == "0008_campaigns"
 
 
 def test_audit_log_is_append_only(engine) -> None:

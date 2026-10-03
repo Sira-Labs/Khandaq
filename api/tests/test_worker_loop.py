@@ -37,6 +37,7 @@ def test_recovery_is_retried_when_the_database_is_down_at_start(monkeypatch):
     monkeypatch.setattr(worker, "recover_stale_runs", recover)
     monkeypatch.setattr(worker, "Notifications", _Quiet)
     monkeypatch.setattr(worker, "work_once", lambda engine, runner=None: False)
+    monkeypatch.setattr(worker, "schedule_campaigns", lambda engine: 0)
 
     from sqlalchemy import create_engine
 
@@ -60,6 +61,8 @@ def test_recovery_runs_once(monkeypatch):
 
     monkeypatch.setattr(worker, "recover_stale_runs", lambda s, older_than: attempts.append(1) or 0)
     monkeypatch.setattr(worker, "Notifications", _Quiet)
+    scheduled: list[int] = []
+    monkeypatch.setattr(worker, "schedule_campaigns", lambda engine: scheduled.append(1) or 0)
 
     def work_once(engine, runner=None):
         loops.append(1)
@@ -70,3 +73,4 @@ def test_recovery_runs_once(monkeypatch):
     monkeypatch.setattr(worker, "work_once", work_once)
     worker.run_forever(Settings(database_url="sqlite://", worker_poll_seconds=0.01), stop)
     assert attempts == [1] and len(loops) == 3
+    assert len(scheduled) == 3  # campaigns are scheduled on every iteration

@@ -84,6 +84,9 @@ class Settings(BaseSettings):
     # store is configured (specs 012, 014). The worker needs this volume.
     evidence_dir: str = "/var/lib/khandaq/evidence"
     worker_poll_seconds: float = 5.0
+    # Campaigns (spec 016, ADR-0017): the shortest interval a campaign may re-run at, so a
+    # schedule cannot hammer a client system. Rules of engagement still apply per run.
+    campaign_min_interval_minutes: int = 60
 
     @property
     def is_prod(self) -> bool:

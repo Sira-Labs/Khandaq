@@ -33,6 +33,7 @@ from sqlalchemy.orm.attributes import flag_modified
 
 from . import audit
 from .adapters import build_run_request, get_manifest, get_runner
+from .campaign_diff import record_diff
 from .deps import EngagementAccess
 from .evidence_crypto import Keyring
 from .evidence_store import EvidenceStore, retain, store_from_settings
@@ -118,6 +119,68 @@ def _start(session: Session, run: Run, actor: User | None, **detail) -> None:
     )
 
 
+def _new_run(
+    session: Session,
+    engagement: Engagement,
+    target: Target,
+    adapter_name: str,
+    adapter_version: str | None,
+    params: dict,
+    campaign_id: str | None = None,
+) -> Run:
+    run = Run(
+        engagement_id=engagement.id,
+        adapter=adapter_name,
+        adapter_version=adapter_version,
+        target_id=target.id,
+        params=params,
+        state="queued",
+        campaign_id=campaign_id,
+    )
+    session.add(run)
+    session.flush()
+    return run
+
+
+def _queue(session: Session, run: Run, actor: User | None, **detail) -> None:
+    audit.record(
+        session,
+        action="run.queued",
+        actor=actor,
+        engagement_id=run.engagement_id,
+        detail={"run_id": run.id, "adapter": run.adapter, **detail},
+    )
+    session.execute(text(f"NOTIFY {NOTIFY_CHANNEL}"))  # delivered on commit
+
+
+def queue_run(
+    session: Session,
+    engagement: Engagement,
+    target: Target,
+    adapter_name: str,
+    params: dict,
+    *,
+    actor: User | None,
+    campaign_id: str | None = None,
+) -> Run:
+    """Create a run for the worker: ``rejected`` by the scope lock (audited) or ``queued``
+    (audited). Builtin adapters are queued too; the worker executes them. Caller commits.
+
+    The campaign scheduler's entry point (spec 016): a scheduled run passes the same scope lock and
+    leaves the same trail as one a person starts."""
+    manifest = get_manifest(adapter_name)
+    if manifest is None:
+        raise ValueError(f"unknown adapter '{adapter_name}'")
+    run = _new_run(session, engagement, target, adapter_name, manifest.version, params, campaign_id)
+    context = {"campaign_id": campaign_id} if campaign_id else {}
+    reason = scope_refusal(session, engagement, target, params)
+    if reason is not None:
+        _reject(session, run, reason, actor, **context)
+    else:
+        _queue(session, run, actor, **context)
+    return run
+
+
 def create_run(access: EngagementAccess, *, adapter_name: str, target_id: str, params: dict) -> Run:
     """Create a run: rejected (scope), executed now (builtin), or queued for the worker."""
     session: Session = access.session
@@ -130,17 +193,7 @@ def create_run(access: EngagementAccess, *, adapter_name: str, target_id: str, p
     if target is None or target.engagement_id != eng.id:
         raise _refuse(access, 404, "target not found in this engagement", target_id=target_id)
 
-    run = Run(
-        engagement_id=eng.id,
-        adapter=adapter_name,
-        adapter_version=manifest.version,
-        target_id=target_id,
-        params=params,
-        state="queued",
-    )
-    session.add(run)
-    session.flush()
-
+    run = _new_run(session, eng, target, adapter_name, manifest.version, params)
     reason = scope_refusal(session, eng, target, params)
     if reason is not None:
         _reject(session, run, reason, access.user)
@@ -149,14 +202,7 @@ def create_run(access: EngagementAccess, *, adapter_name: str, target_id: str, p
         return run
 
     if not manifest.builtin:
-        audit.record(
-            session,
-            action="run.queued",
-            actor=access.user,
-            engagement_id=eng.id,
-            detail={"run_id": run.id, "adapter": adapter_name},
-        )
-        session.execute(text(f"NOTIFY {NOTIFY_CHANNEL}"))  # delivered on commit
+        _queue(session, run, access.user)
         session.commit()
         session.refresh(run)
         return run
@@ -222,6 +268,8 @@ def execute_run(session: Session, run_id: str, *, actor: User | None = None, run
         result = _persist_results(session, eng_id, run_id, target_id, artifacts)
         run.state = "succeeded"
         run.ended_at = _now()
+        if run.campaign_id is not None:  # spec 016: the diff exists exactly when the run succeeded
+            record_diff(session, run)
         audit.record(
             session,
             action="run.succeeded",

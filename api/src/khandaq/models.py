@@ -182,12 +182,57 @@ class Run(Base):
     started_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
     ended_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[dt.datetime] = _created_at()
+    # The campaign that scheduled this run, if any (spec 016). Migration 0008.
+    campaign_id: Mapped[str | None] = mapped_column(ForeignKey("campaigns.id"))
     __table_args__ = (
         CheckConstraint(
             "state in ('queued','running','succeeded','failed','rejected')",
             name="ck_runs_state",
         ),
+        Index("ix_runs_campaign_created", "campaign_id", "created_at"),
     )
+
+
+class Campaign(Base):
+    """A run template re-run every ``interval_minutes`` by the worker (spec 016, ADR-0017)."""
+
+    __tablename__ = "campaigns"
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=lambda: new_id("cmp"))
+    engagement_id: Mapped[str] = mapped_column(ForeignKey("engagements.id"), nullable=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    adapter: Mapped[str] = mapped_column(Text, nullable=False)
+    target_id: Mapped[str] = mapped_column(ForeignKey("targets.id"), nullable=False)
+    params: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default="{}")
+    interval_minutes: Mapped[int] = mapped_column(Integer, nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true")
+    next_run_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[dt.datetime] = _created_at()
+    updated_at: Mapped[dt.datetime] = _created_at()
+    __table_args__ = (
+        CheckConstraint("interval_minutes > 0", name="ck_campaigns_interval"),
+        Index("ix_campaigns_due", "enabled", "next_run_at"),
+    )
+
+
+class CampaignDiff(Base):
+    """What a successful campaign run changed against the campaign's earlier runs (spec 016).
+    Append-only (trigger, migration 0008)."""
+
+    __tablename__ = "campaign_diffs"
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=lambda: new_id("dif"))
+    campaign_id: Mapped[str] = mapped_column(ForeignKey("campaigns.id"), nullable=False)
+    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id"), nullable=False, unique=True)
+    previous_run_id: Mapped[str | None] = mapped_column(ForeignKey("runs.id"))
+    baseline: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    new: Mapped[list] = mapped_column(JSONB, nullable=False, server_default="[]")
+    regressed: Mapped[list] = mapped_column(JSONB, nullable=False, server_default="[]")
+    resolved: Mapped[list] = mapped_column(JSONB, nullable=False, server_default="[]")
+    unchanged_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    findings_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    worsened: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
+    created_at: Mapped[dt.datetime] = _created_at()
+    __table_args__ = (Index("ix_campaign_diffs_campaign_created", "campaign_id", "created_at"),)
 
 
 class Finding(Base):
