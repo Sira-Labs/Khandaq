@@ -393,3 +393,101 @@ def test_0005_keeps_existing_chains_verifiable_and_refuses_downgrade_after_use()
     with pytest.raises(RuntimeError, match="format 2"):
         migrate.downgrade(url=TEST_URL, revision="0004_fingerprint_v2")
     eng.dispose()
+
+
+# --- 0010: alert channels (spec 022) -------------------------------------------------------------
+
+
+def _alert_row(s, channel: str = "webhook"):
+    import datetime as dt
+
+    from khandaq import models as m
+
+    user = m.User(email=f"mig-{channel}@test")
+    s.add(user)
+    s.flush()
+    eng = m.Engagement(name="mig", owner_user_id=user.id)
+    s.add(eng)
+    s.flush()
+    tgt = m.Target(engagement_id=eng.id, type="llm_endpoint", spec={"host": "gw.acme.test"})
+    s.add(tgt)
+    s.flush()
+    now = dt.datetime.now(dt.UTC)
+    cmp = m.Campaign(
+        engagement_id=eng.id,
+        name="weekly",
+        adapter="echo",
+        target_id=tgt.id,
+        interval_minutes=60,
+        next_run_at=now,
+    )
+    run = m.Run(engagement_id=eng.id, adapter="echo")
+    s.add_all([cmp, run])
+    s.flush()
+    diff = m.CampaignDiff(campaign_id=cmp.id, run_id=run.id, baseline=False)
+    s.add(diff)
+    s.flush()
+    return dict(
+        engagement_id=eng.id,
+        campaign_id=cmp.id,
+        diff_id=diff.id,
+        payload={},
+        next_attempt_at=now,
+    )
+
+
+def test_0010_keeps_alerts_as_webhook_rows_and_allows_one_row_per_channel():
+    from sqlalchemy.exc import IntegrityError
+    from sqlalchemy.orm import Session
+
+    from khandaq import migrate
+
+    eng = create_engine(TEST_URL, future=True)
+    with eng.begin() as conn:
+        conn.execute(text("DROP SCHEMA public CASCADE"))
+        conn.execute(text("CREATE SCHEMA public"))
+    migrate.upgrade(url=TEST_URL)
+    migrate.downgrade(url=TEST_URL, revision="0009_alert_outbox")  # a spec 017 install
+    with eng.begin() as conn:
+        cols = [
+            r[0]
+            for r in conn.execute(
+                text(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_name = 'alert_outbox'"
+                )
+            )
+        ]
+        assert "channel" not in cols
+    with Session(eng) as s:
+        row = _alert_row(s)
+        s.commit()
+    with eng.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO alert_outbox (id, engagement_id, campaign_id, diff_id, payload, "
+                "next_attempt_at) VALUES ('alr_old', :e, :c, :d, '{}', now())"
+            ),
+            {"e": row["engagement_id"], "c": row["campaign_id"], "d": row["diff_id"]},
+        )
+
+    migrate.upgrade(url=TEST_URL)
+    with eng.begin() as conn:
+        channel = conn.execute(text("SELECT channel FROM alert_outbox WHERE id = 'alr_old'"))
+        assert channel.scalar() == "webhook"
+    insert = text(
+        "INSERT INTO alert_outbox (id, engagement_id, campaign_id, diff_id, channel, payload, "
+        "next_attempt_at) VALUES (:id, :e, :c, :d, :ch, '{}', now())"
+    )
+    args = {"e": row["engagement_id"], "c": row["campaign_id"], "d": row["diff_id"]}
+    with eng.begin() as conn:  # the same diff may now have an email row...
+        conn.execute(insert, {**args, "id": "alr_mail", "ch": "email"})
+    with pytest.raises(IntegrityError), eng.begin() as conn:  # ...but not a second webhook row
+        conn.execute(insert, {**args, "id": "alr_dup", "ch": "webhook"})
+    with pytest.raises(IntegrityError), eng.begin() as conn:  # and no unknown channel
+        conn.execute(insert, {**args, "id": "alr_sms", "ch": "sms"})
+
+    # Email history cannot be dropped by a downgrade.
+    with pytest.raises(RuntimeError, match="email alerts"):
+        migrate.downgrade(url=TEST_URL, revision="0009_alert_outbox")
+    eng.dispose()

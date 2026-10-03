@@ -153,6 +153,7 @@ describe("Campaign page (spec 018)", () => {
         id: "alr_1",
         campaign_id: "cmp_1",
         diff_id: "dif_2",
+        channel: "webhook",
         state: "sent",
         attempts: 1,
         last_error: null,
@@ -160,9 +161,21 @@ describe("Campaign page (spec 018)", () => {
         sent_at: "2026-10-03T11:30:02Z",
       },
       {
+        id: "alr_1_mail",
+        campaign_id: "cmp_1",
+        diff_id: "dif_2",
+        channel: "email",
+        state: "pending",
+        attempts: 1,
+        last_error: "TimeoutError",
+        created_at: "2026-10-03T11:30:01Z",
+        sent_at: null,
+      },
+      {
         id: "alr_other",
         campaign_id: "cmp_other",
         diff_id: "dif_9",
+        channel: "webhook",
         state: "failed",
         attempts: 5,
         last_error: "HTTP 500",
@@ -182,8 +195,11 @@ describe("Campaign page (spec 018)", () => {
     expect(rows[1]).toHaveTextContent("baseline");
     expect(rows[1]).toHaveTextContent("2 finding(s)");
     const alerts = await screen.findAllByTestId("alert-row");
-    expect(alerts).toHaveLength(1); // only this campaign's
+    expect(alerts).toHaveLength(2); // only this campaign's, one per channel (spec 022)
+    expect(alerts[0]).toHaveTextContent("webhook");
     expect(alerts[0]).toHaveTextContent("sent");
+    expect(alerts[1]).toHaveTextContent("email");
+    expect(alerts[1]).toHaveTextContent("TimeoutError");
   });
 
   it("pauses a campaign", async () => {

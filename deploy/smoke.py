@@ -40,7 +40,7 @@ UTC = dt.timezone.utc  # noqa: UP017
 TARGET_HOST = "smoke.khandaq.invalid"
 LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1")
 TARGET_MODEL = "smoke-model"
-MIN_SCHEMA = "0009"
+MIN_SCHEMA = "0010"
 
 
 class SmokeFailure(Exception):

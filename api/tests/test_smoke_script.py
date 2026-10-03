@@ -118,7 +118,7 @@ def test_smoke_script_refuses_an_unmigrated_api():
     assert smoke.Smoke(unmigrated, out=lines.append).run() is False
     assert lines == [
         "✗ API healthy and migrated: AssertionError: schema revision 'none' is missing or older "
-        "than 0009"
+        "than 0010"
     ]
 
 

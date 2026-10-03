@@ -616,7 +616,9 @@ def test_delivery_is_signed_and_audited(env, alerts_on):
     expected = "sha256=" + hmac.new(SECRET.encode(), body, hashlib.sha256).hexdigest()
     assert headers["X-Khandaq-Signature"] == expected
     assert alert["state"] == "sent" and alert["sent_at"] is not None
-    assert _audit(db, eng_id, "alert.sent") == [{"alert_id": alert["id"], "status": 204}]
+    assert _audit(db, eng_id, "alert.sent") == [
+        {"alert_id": alert["id"], "channel": "webhook", "status": 204}
+    ]
 
 
 def test_failed_deliveries_back_off_then_give_up(env, alerts_on):
@@ -661,7 +663,12 @@ def test_failed_deliveries_back_off_then_give_up(env, alerts_on):
         final = _alerts(db, eng_id)[0]
         assert final["state"] == "failed" and final["attempts"] == 3
         [failed] = _audit(db, eng_id, "alert.failed")
-        assert failed == {"alert_id": alert["id"], "attempts": 3, "error": "HTTP 302"}
+        assert failed == {
+            "alert_id": alert["id"],
+            "channel": "webhook",
+            "attempts": 3,
+            "error": "HTTP 302",
+        }
     finally:
         alerts_on.alert_max_attempts = 5
 
@@ -757,3 +764,152 @@ def test_delivery_stops_starting_sends_when_its_budget_is_spent(env, alerts_on, 
     sender = SlowSender([200] * 10)
     assert _deliver(db, sender) == 1  # one send, then the budget stops the batch
     assert len(sender.calls) == 1
+
+
+# --- Email alerts (spec 022) ---------------------------------------------------------------------
+
+
+class RecordingMailer:
+    """Stands in for the SMTP relay: records each message, or raises a chosen error."""
+
+    def __init__(self, outcomes: list[Exception | None] | None = None) -> None:
+        self.outcomes = outcomes or []
+        self.messages: list = []
+
+    def send(self, message) -> None:
+        outcome = self.outcomes.pop(0) if self.outcomes else None
+        if outcome is not None:
+            raise outcome
+        self.messages.append(message)
+
+
+@pytest.fixture
+def email_on():
+    from khandaq.settings import get_settings
+
+    settings = get_settings()
+    fields = ("alert_email_to", "alert_email_from", "smtp_url", "public_url")
+    previous = tuple(getattr(settings, f) for f in fields)
+    settings.alert_email_to = "secops@acme.example, oncall@acme.example"
+    settings.alert_email_from = "khandaq@acme.example"
+    settings.smtp_url = "smtp://localhost:1025"
+    settings.public_url = "https://khandaq.example.invalid"
+    yield settings
+    for f, v in zip(fields, previous, strict=True):
+        setattr(settings, f, v)
+
+
+def _deliver_both(db, sender=None, mailer=None) -> int:
+    from khandaq.alerts import deliver_due
+
+    with Session(db) as s:
+        return deliver_due(s, sender=sender, email_sender=mailer)
+
+
+def _worsen(client, db, name: str) -> str:
+    eng_id, tid = _engagement(client, name)
+    cid = _create(client, eng_id, tid, name="weekly\r\nBcc: someone@elsewhere.example").json()["id"]
+    _cycle(db, cid, ["a"])
+    _cycle(db, cid, ["a", "b"])
+    return eng_id
+
+
+def test_each_enabled_channel_gets_its_own_alert(env, alerts_on, email_on):
+    client, db = env
+    eng_id = _worsen(client, db, "alert-both")
+    rows = _alerts(db, eng_id)
+    assert sorted(r["channel"] for r in rows) == ["email", "webhook"]
+    assert len({r["diff_id"] for r in rows}) == 1
+    queued = _audit(db, eng_id, "alert.queued")
+    assert sorted(q["channel"] for q in queued) == ["email", "webhook"]
+    listed = client.get(f"/api/engagements/{eng_id}/alerts", headers=OWNER).json()
+    assert sorted(a["channel"] for a in listed) == ["email", "webhook"]
+
+
+def test_email_only_queues_only_email(env, email_on):
+    client, db = env
+    eng_id = _worsen(client, db, "alert-email-only")
+    assert [r["channel"] for r in _alerts(db, eng_id)] == ["email"]
+
+
+def test_an_email_alert_carries_counts_and_rule_ids_only(env, email_on):
+    client, db = env
+    eng_id = _worsen(client, db, "alert-email-content")
+    [alert] = _alerts(db, eng_id)
+    mailer = RecordingMailer()
+    assert _deliver_both(db, mailer=mailer) >= 1
+
+    # Earlier tests may leave other engagements' alerts pending: pick this alert's message.
+    [message] = [m for m in mailer.messages if m["Message-ID"] == f"<{alert['id']}@acme.example>"]
+    subject = message["Subject"]
+    assert (
+        subject == "[Khandaq] weekly Bcc: someone@elsewhere.example got worse: 1 new, 0 regressed"
+    )
+    assert "\n" not in subject and "\r" not in subject
+    assert message["Bcc"] is None  # the campaign name could not inject a header
+    assert message["To"] == "secops@acme.example, oncall@acme.example"
+    assert message["From"] == "khandaq@acme.example"
+    assert message["Message-ID"] == f"<{alert['id']}@acme.example>"
+    body = message.get_content()
+    assert "garak.b (high)" in body and f"/eng/{eng_id}" in body
+    assert "probe b" not in body  # finding titles never leave in an alert
+
+    [sent] = _alerts(db, eng_id)
+    assert sent["state"] == "sent"
+    assert _audit(db, eng_id, "alert.sent") == [
+        {"alert_id": alert["id"], "channel": "email", "status": "accepted"}
+    ]
+
+
+def test_a_stalled_relay_backs_off_while_the_webhook_is_delivered(env, alerts_on, email_on):
+    import smtplib
+
+    client, db = env
+    eng_id = _worsen(client, db, "alert-stalled-relay")
+    sender = RecordingSender([204])
+    mailer = RecordingMailer([TimeoutError("stalled"), smtplib.SMTPResponseException(550, b"x")])
+    _deliver_both(db, sender=sender, mailer=mailer)
+
+    by_channel = {r["channel"]: r for r in _alerts(db, eng_id)}
+    assert by_channel["webhook"]["state"] == "sent"
+    email = by_channel["email"]
+    assert email["state"] == "pending" and email["attempts"] == 1
+    assert email["last_error"] == "TimeoutError"
+
+    with db.begin() as conn:  # make the retry due now
+        conn.execute(
+            text("UPDATE alert_outbox SET next_attempt_at = now() WHERE id = :i"),
+            {"i": email["id"]},
+        )
+    _deliver_both(db, sender=sender, mailer=mailer)
+    retried = {r["channel"]: r for r in _alerts(db, eng_id)}["email"]
+    assert retried["attempts"] == 2
+    assert retried["last_error"] == "SMTP 550"  # the reply code, never the relay's text
+
+
+def test_the_smtp_sender_has_a_hard_deadline():
+    import time
+
+    from khandaq.smtp import SmtpSender, parse_smtp_url
+
+    class StalledRelay(SmtpSender):
+        def _send(self, message) -> None:
+            time.sleep(5)
+
+    sender = StalledRelay(parse_smtp_url("smtp://localhost:1025"), "", deadline_seconds=0.2)
+    started = time.monotonic()
+    with pytest.raises(TimeoutError):
+        sender.send(object())  # type: ignore[arg-type]
+    assert time.monotonic() - started < 2
+
+
+def test_smtp_urls_parse_with_their_default_ports():
+    from khandaq.smtp import parse_smtp_url
+
+    assert parse_smtp_url("smtps://bot%40acme@mail.acme.example").port == 465
+    assert parse_smtp_url("smtps://bot%40acme@mail.acme.example").username == "bot@acme"
+    assert parse_smtp_url("smtp+starttls://mail.acme.example").port == 587
+    assert parse_smtp_url("smtp://localhost:1025").port == 1025
+    for bad in ("https://mail.acme.example", "smtps://", "smtps://h/path", "smtps://u:p@h"):
+        with pytest.raises(ValueError):
+            parse_smtp_url(bad)

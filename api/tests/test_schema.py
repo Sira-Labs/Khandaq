@@ -75,7 +75,7 @@ def test_version_reports_revision(engine) -> None:
     from khandaq.db import schema_revision
     from khandaq.settings import Settings
 
-    assert schema_revision(Settings(database_url=TEST_URL)) == "0009_alert_outbox"
+    assert schema_revision(Settings(database_url=TEST_URL)) == "0010_alert_channels"
 
 
 def test_audit_log_is_append_only(engine) -> None:

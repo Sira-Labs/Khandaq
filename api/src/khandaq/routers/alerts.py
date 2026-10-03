@@ -1,5 +1,5 @@
-"""Alert outbox read endpoint (spec 017). Owners, operators and analysts see an engagement's alerts;
-the payload carries rule ids and counts only."""
+"""Alert outbox read endpoint (specs 017, 022). Owners, operators and analysts see an
+engagement's alerts on every channel; the payload carries rule ids and counts only."""
 
 from __future__ import annotations
 
@@ -21,6 +21,7 @@ class AlertOut(BaseModel):
     id: str
     campaign_id: str
     diff_id: str
+    channel: str
     payload: dict[str, Any]
     state: str
     attempts: int
