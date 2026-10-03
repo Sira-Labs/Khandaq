@@ -65,6 +65,12 @@ class Settings(BaseSettings):
     sigstore: str = "off"
     adapter_runtime: str = "docker-socket"
     adapter_registry: str = "ghcr.io/sira-labs"
+    # Container runs (spec 012, ADR-0009). The forwarder runs from an image with Python 3 — the
+    # deployment's own API image; without it, container runs are refused.
+    forwarder_image: str = ""
+    adapter_egress_network: str = "bridge"  # the Docker network targets are reachable from
+    adapter_timeout_seconds: int = 3600
+    adapter_output_limit_mb: int = 256
 
     @property
     def is_prod(self) -> bool:

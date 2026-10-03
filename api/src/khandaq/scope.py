@@ -480,3 +480,40 @@ def validate_target(target_type: str, spec: dict) -> str | None:
     except ScopeError as exc:
         return str(exc)
     return None
+
+
+_DEFAULT_PORTS = {"http": 80, "https": 443, "ws": 80, "wss": 443}
+
+
+def network_endpoint(target_type: str, spec: dict) -> tuple[str, int]:
+    """The one (host, port) a container run of this target may reach (spec 012, ADR-0009).
+
+    Derived from the same canonical view the scope lock checks, so the egress the worker opens is
+    exactly the endpoint that was authorised. Needs an absolute URL (the port comes from it); every
+    URL field must agree on the port. Raises ScopeError otherwise.
+    """
+    if target_type == "mcp_server":
+        urls: tuple[str, ...] = (str(spec.get("url", "")),)
+        host = normalise_host(urlsplit(urls[0]).hostname or "")
+    elif target_type in ("llm_endpoint", "agent"):
+        endpoint = _endpoint(spec)
+        if endpoint.host is None:
+            raise ScopeError("the target names no host")
+        host, urls = endpoint.host, endpoint.urls
+    else:
+        raise ScopeError(f"a {target_type} target has no network endpoint")
+    ports: set[int] = set()
+    for url in urls:
+        parts = urlsplit(url)
+        try:
+            port = parts.port or _DEFAULT_PORTS.get(parts.scheme.lower())
+        except ValueError as exc:  # a non-numeric or out-of-range port
+            raise ScopeError(f"invalid port in {url!r}") from exc
+        if port is None:
+            raise ScopeError(f"no default port for scheme {parts.scheme!r} in {url!r}")
+        ports.add(port)
+    if not ports:
+        raise ScopeError("a container run needs the target's URL ('base_url', 'url' or 'endpoint')")
+    if len(ports) > 1:
+        raise ScopeError(f"target names more than one port: {sorted(ports)}")
+    return host, ports.pop()
