@@ -152,7 +152,7 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
   **Open decision for the owner:** the ledger seals only the adapter-reported sha256, so an evidence
   row's `object_key`/`run_id`/`kind` are outside the chain (triggers stop app-level edits, not a DBA).
   Binding a canonical evidence record into `evidence_hash` changes ADR-0007's formula and would
-  invalidate existing staging chains — proposed, not done; needs an ADR.
+  invalidate existing staging chains — proposed, not done; needs an ADR. **Resolved by ADR-0014.**
 - 2026-10-02 — Rust core hardening (code review): validation dropped every field the typed model
   did not name, which broke the SARIF superset, and it accepted `HIGH` and non-object locations,
   unlike the published schema. Both are fixed. Dedup is now independent of input order, keeps
@@ -196,3 +196,10 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
   (evidence rows carry `run_id`) and its tools from `source`/`sources`, carries triage over a merge,
   and audits `findings.refingerprinted` per engagement. Downgrade uses a Python copy of the v1
   recipe pinned against the old core's output. The echo adapter's duplicate pair now shares a rule.
+- 2026-10-03 — Ledger seals evidence metadata (ADR-0014, owner decision): format-2 entries seal a
+  canonical record of the evidence row (id, engagement, run, kind, object key, sha256, bytes,
+  redacted) and tag the entry hash with `khandaq.ledger/2`. Without the tag, an entry could be
+  relabelled format 1 with the record hash written into `evidence.sha256`, and any metadata would
+  verify. Existing entries stay format 1 (migration 0005 adds the column without rewriting a row),
+  so pinned report roots stay valid; formats may only rise along a chain; the 0005 downgrade is
+  refused once format 2 is in use.
