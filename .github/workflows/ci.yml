@@ -82,8 +82,19 @@ jobs:
         options: >-
           --health-cmd "pg_isready -U khandaq" --health-interval 5s
           --health-timeout 5s --health-retries 10
+      # The evidence object store the deployments pin (spec 014): write-once and versioning are
+      # checked against the real thing, not only the fake client. Synthetic credentials.
+      rustfs:
+        image: rustfs/rustfs:1.0.0
+        env:
+          RUSTFS_ACCESS_KEY: khandaq-ci
+          RUSTFS_SECRET_KEY: khandaq-ci-synthetic
+        ports: ["9000:9000"]
     env:
       KHANDAQ_TEST_DATABASE_URL: postgresql+psycopg://khandaq:khandaq@localhost:5432/khandaq
+      KHANDAQ_TEST_S3_ENDPOINT: http://localhost:9000
+      KHANDAQ_TEST_S3_ACCESS_KEY_ID: khandaq-ci
+      KHANDAQ_TEST_S3_SECRET_ACCESS_KEY: khandaq-ci-synthetic
     steps:
       - uses: actions/checkout@v7
       # The api depends on the khandaq_core wheel (built from the Rust workspace by maturin on uv sync).
