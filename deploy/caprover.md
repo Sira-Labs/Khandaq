@@ -35,8 +35,12 @@ exactly what the one-click produces when you give it that app name. Rules:
 - Real engagement data and captured evidence live **only** on production. Staging holds synthetic data.
 - Staging and production have separate secrets: DB passwords, session secret, object-store keys, OIDC
   clients, CapRover app tokens, **and the evidence-encryption key** (ADR-0006) — production-only.
-- `main` deploys to staging automatically; production runs the **image digest staging ran**, after the
-  owner approves it (promotion, ADR-0010).
+- Every push to `main` publishes `ghcr.io/sira-labs/khandaq-api` and `-web` as `latest` and
+  `sha-<short sha>` (`release.yml`). **Nothing redeploys staging yet**: redeploy `-api`, `-worker` and
+  `-web` yourself (Deploy via ImageName), preferably with the `sha-…` tag, because a host can keep
+  serving a cached `latest`. Then check `/api/version` shows the newest migration and, with an
+  admin token, that `GET /api/deployment` lists an alive worker (spec 023). Production runs the
+  **image digest staging ran**, after the owner approves it (promotion, ADR-0010).
 - Production Postgres is backed up continuously; the evidence object store is versioned and copied,
   encrypted, to a second location; restore drills run into a throwaway DB on production, never staging.
 
