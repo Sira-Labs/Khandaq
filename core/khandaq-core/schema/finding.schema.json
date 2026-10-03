@@ -6,8 +6,8 @@
   "type": "object",
   "required": ["schema", "engagement_id", "run_id", "rule_id", "severity", "source", "x-khandaq"],
   "properties": {
-    "schema": {"const": "khandaq.finding/1"},
-    "fingerprint": {"type": "string", "description": "sha256:… ; set by khandaq-core, stable across tools/runs"},
+    "schema": {"enum": ["khandaq.finding/2", "khandaq.finding/1"], "description": "/2 is current; /2 changed only the fingerprint recipe (ADR-0013), so /1 records keep validating"},
+    "fingerprint": {"type": "string", "description": "sha256:… ; set by khandaq-core over {v: 2, weakness (rule id or equivalence-table key), target_ref, locations}; framework mappings are not part of it (ADR-0013)"},
     "engagement_id": {"type": "string", "minLength": 1},
     "run_id": {"type": "string", "minLength": 1},
     "rule_id": {"type": "string", "minLength": 1, "description": "the source tool's rule/probe id"},

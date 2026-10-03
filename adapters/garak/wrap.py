@@ -117,7 +117,7 @@ def parse_report(
         prefix = probe.split(".", 1)[0].lower()
         mappings = [{"framework": f, "id": i} for f, i in PROBE_FRAMEWORKS.get(prefix, [])]
         findings.append({
-            "schema": "khandaq.finding/1",
+            "schema": "khandaq.finding/2",
             "engagement_id": engagement_id,
             "run_id": run_id,
             "rule_id": f"garak.{probe.lower()}",

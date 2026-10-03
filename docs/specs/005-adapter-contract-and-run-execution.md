@@ -53,7 +53,8 @@ target, with its findings normalised and its evidence sealed.
      engagement is stored non-canonical with `dedup_of` set, and its tools and evidence are merged
      onto the canonical row. A partial unique index enforces one canonical row per fingerprint
      (migration 0003 links pre-existing duplicates first). `target_ref` is set server-side to the
-     target id, so the fingerprint names the real target.
+     target id, so the fingerprint names the real target. Fingerprint v2 (ADR-0013): migration
+     0004 re-fingerprints stored findings and rebuilds these links under the new recipe.
    - New findings always start `open`; an adapter cannot set triage status.
    - `evidence` and `ledger_entries` reject UPDATE/DELETE, and all three append-only tables reject
      TRUNCATE (migration 0003).

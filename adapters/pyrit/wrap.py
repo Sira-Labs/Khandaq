@@ -128,7 +128,7 @@ def parse_report(
             for f, i in STRATEGY_FRAMEWORKS.get(strategy, DEFAULT_FRAMEWORKS)
         ]
         findings.append({
-            "schema": "khandaq.finding/1",
+            "schema": "khandaq.finding/2",
             "engagement_id": engagement_id,
             "run_id": run_id,
             "rule_id": f"pyrit.{strategy}",

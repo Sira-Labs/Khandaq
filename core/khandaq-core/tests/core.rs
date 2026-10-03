@@ -1,9 +1,26 @@
 //! Tests for the canonical finding model (spec 003).
 
 use khandaq_core::{
-    dedup, fingerprint, map_frameworks, navigator_layer, validate, Mappings, Severity,
+    dedup as dedup_builtin, dedup_with, fingerprint, fingerprint_with, map_frameworks,
+    navigator_layer, validate, DedupResult, Equivalence, Finding, Mappings, Severity,
 };
 use serde_json::{json, Value};
+
+/// The rules these tests treat as one weakness across tools. Since ADR-0013 framework mappings
+/// are not identity: tools merge only through an explicit equivalence table.
+fn equivalence() -> Equivalence {
+    Equivalence::new([
+        ("garak.rule", "prompt-injection/direct"),
+        ("pyrit.rule", "prompt-injection/direct"),
+        ("promptfoo.rule", "prompt-injection/direct"),
+        ("garak.x", "prompt-injection/direct"),
+        ("pyrit.y", "prompt-injection/direct"),
+    ])
+}
+
+fn dedup(findings: Vec<Finding>) -> DedupResult {
+    dedup_with(findings, &equivalence())
+}
 
 fn finding_json(
     tool: &str,
@@ -14,7 +31,7 @@ fn finding_json(
     evidence: &[&str],
 ) -> Value {
     json!({
-        "schema": "khandaq.finding/1",
+        "schema": "khandaq.finding/2",
         "engagement_id": "eng_1",
         "run_id": "run_1",
         "rule_id": rule,
@@ -69,14 +86,14 @@ fn fingerprint_is_stable_and_order_insensitive() {
         &[],
     ))
     .unwrap();
-    // same identity, mappings listed in a different order
+    // same rule, target and location; tool, severity and mappings differ
     let b = validate(&finding_json(
-        "pyrit",
-        "r2",
+        "garak",
+        "r1",
         "low",
         "tgt_1",
-        &[("atlas", "AML.T0051"), ("owasp-llm-2026", "LLM01")],
-        &[],
+        &[("atlas", "AML.T0051")],
+        &["ev_b"],
     ))
     .unwrap();
     assert_eq!(
@@ -215,7 +232,10 @@ fn navigator_layer_collects_atlas_techniques() {
 fn published_schema_is_valid_json() {
     let schema: Value =
         serde_json::from_str(include_str!("../schema/finding.schema.json")).unwrap();
-    assert_eq!(schema["properties"]["schema"]["const"], "khandaq.finding/1");
+    assert_eq!(
+        schema["properties"]["schema"]["enum"],
+        json!(["khandaq.finding/2", "khandaq.finding/1"])
+    );
 }
 
 // --- hardening (code review, 2026-10-02) -----------------------------------------------------
@@ -435,4 +455,146 @@ fn schema_types_the_sources_items_like_the_validator() {
         assert_eq!(item["properties"][field]["type"], "string", "{field}");
     }
     assert_eq!(item["required"], json!(["tool", "version"]));
+}
+
+// --- fingerprint v2 (ADR-0013) -------------------------------------------------------------------
+
+fn rule_finding(tool: &str, rule: &str, mappings: &[(&str, &str)]) -> Finding {
+    validate(&finding_json(tool, rule, "high", "tgt_1", mappings, &[])).unwrap()
+}
+
+#[test]
+fn a_mapping_edit_does_not_change_the_fingerprint() {
+    // Curation adds an OWASP 2025 id and an ATLAS technique: the same issue keeps its identity,
+    // so its triage state and cross-run dedup survive the edit.
+    let before = rule_finding(
+        "garak",
+        "garak.promptinject.hijack",
+        &[("owasp-llm-2026", "LLM01")],
+    );
+    let after = rule_finding(
+        "garak",
+        "garak.promptinject.hijack",
+        &[
+            ("owasp-llm-2025", "LLM01"),
+            ("owasp-llm-2026", "LLM01"),
+            ("atlas", "AML.T0051"),
+        ],
+    );
+    let unmapped = rule_finding("garak", "garak.promptinject.hijack", &[]);
+    assert_eq!(fingerprint(&before), fingerprint(&after));
+    assert_eq!(fingerprint(&before), fingerprint(&unmapped));
+}
+
+#[test]
+fn distinct_rules_with_the_same_mappings_stay_distinct() {
+    // Under v1 these collapsed into one finding and dedup kept only one rule_id.
+    let a = rule_finding(
+        "garak",
+        "garak.promptinject.hijack",
+        &[("owasp-llm-2026", "LLM01")],
+    );
+    let b = rule_finding("garak", "garak.dan.dan_11", &[("owasp-llm-2026", "LLM01")]);
+    assert_ne!(fingerprint(&a), fingerprint(&b));
+    assert_eq!(dedup_builtin(vec![a, b]).canonical.len(), 2);
+}
+
+#[test]
+fn tools_merge_only_through_the_equivalence_table_and_an_equal_location() {
+    let garak = rule_finding(
+        "garak",
+        "garak.promptinject.hijack",
+        &[("owasp-llm-2026", "LLM01")],
+    );
+    let pyrit = rule_finding(
+        "pyrit",
+        "pyrit.prompt_injection",
+        &[("owasp-llm-2026", "LLM01")],
+    );
+    // Equal mappings alone are not identity.
+    assert_ne!(fingerprint(&garak), fingerprint(&pyrit));
+
+    let table = Equivalence::new([
+        ("garak.promptinject.*", "prompt-injection/direct"),
+        ("pyrit.prompt_injection", "prompt-injection/direct"),
+    ]);
+    assert_eq!(
+        fingerprint_with(&garak, &table),
+        fingerprint_with(&pyrit, &table)
+    );
+    let merged = dedup_with(vec![garak.clone(), pyrit.clone()], &table);
+    assert_eq!(merged.canonical.len(), 1);
+    assert_eq!(merged.canonical[0].x_khandaq.also_found_by, ["pyrit"]);
+
+    // The same weakness at a different location is a different finding.
+    let mut elsewhere = pyrit;
+    elsewhere.locations = vec![json!({"logicalLocations": [{"fullyQualifiedName": "other"}]})];
+    assert_ne!(
+        fingerprint_with(&garak, &table),
+        fingerprint_with(&elsewhere, &table)
+    );
+}
+
+#[test]
+fn a_weakness_key_never_equals_a_rule_identity() {
+    // A table entry naming weakness "x" must not collide with a finding whose rule id is "x".
+    let table = Equivalence::new([("tool.a", "tool.b")]);
+    let a = rule_finding("tool", "tool.a", &[]);
+    let b = rule_finding("tool", "tool.b", &[]);
+    assert_ne!(fingerprint_with(&a, &table), fingerprint_with(&b, &table));
+}
+
+#[test]
+fn the_longest_prefix_wins_and_exact_ids_beat_prefixes() {
+    let table = Equivalence::new([
+        ("garak.*", "generic"),
+        ("garak.promptinject.*", "prompt-injection/direct"),
+        ("garak.promptinject.special", "special"),
+    ]);
+    assert_eq!(
+        table.weakness_for("garak.promptinject.hijack"),
+        Some("prompt-injection/direct")
+    );
+    assert_eq!(
+        table.weakness_for("garak.promptinject.special"),
+        Some("special")
+    );
+    assert_eq!(table.weakness_for("garak.dan.dan_11"), Some("generic"));
+    // A prefix matches only at a '.' boundary, and "garak" alone is not under "garak.*".
+    assert_eq!(table.weakness_for("garakx.y"), None);
+    assert_eq!(table.weakness_for("garak"), None);
+}
+
+#[test]
+fn the_v2_recipe_is_pinned() {
+    // A change to this value is a fingerprint recipe change: it needs a schema version bump and a
+    // migration of stored fingerprints (ADR-0003, ADR-0013), never a silent edit.
+    let f = rule_finding(
+        "garak",
+        "garak.promptinject.hijack",
+        &[("atlas", "AML.T0051")],
+    );
+    assert_eq!(fingerprint(&f), PINNED_V2);
+}
+
+// Recomputed independently: sha256 over the sorted-key, compact JSON
+// {"location":"[{\"logicalLocations\":…}]","target":"tgt_1","v":2,"weakness":"rule:garak.promptinject.hijack"}.
+const PINNED_V2: &str = "sha256:cc007ab8ff7e70ce133ae606147250fb80061545f1afb8be66dd45aa693ca1e0";
+
+#[test]
+fn v1_records_validate_and_come_out_of_dedup_as_v2() {
+    let mut v1 = finding_json("garak", "garak.x", "high", "tgt_1", &[], &[]);
+    v1["schema"] = json!("khandaq.finding/1");
+    let parsed = validate(&v1).unwrap();
+    let out = dedup_builtin(vec![parsed]);
+    assert_eq!(out.canonical[0].schema, "khandaq.finding/2");
+    let mut v3 = v1.clone();
+    v3["schema"] = json!("khandaq.finding/3");
+    assert!(validate(&v3).is_err());
+}
+
+#[test]
+fn the_builtin_equivalence_table_loads() {
+    // An unknown rule falls back to its own identity.
+    assert_eq!(Equivalence::builtin().weakness_for("no.such.rule"), None);
 }

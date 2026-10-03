@@ -67,8 +67,8 @@ The heart of the model. Sketch (SARIF-superset; illustrative, not final — the 
 
 ```jsonc
 {
-  "schema": "khandaq.finding/1",
-  "fingerprint": "sha256:…",         // stable across tools & runs; basis for dedup (ADR-0003)
+  "schema": "khandaq.finding/2",
+  "fingerprint": "sha256:…",         // stable across tools & runs; basis for dedup (ADR-0003/0013)
   "engagement_id": "eng_7af3",
   "run_id": "run_93c1",
   "rule_id": "garak.promptinject.hijack",   // source tool's rule/probe id
@@ -94,9 +94,11 @@ The heart of the model. Sketch (SARIF-superset; illustrative, not final — the 
 }
 ```
 
-**Fingerprint (ADR-0003):** a stable hash over the normalised {rule family, target, location,
-salient request shape} so the same issue found by two tools, or by the same tool across runs,
-collapses to one canonical finding with the others linked as `dedup_of`. This is what lets a report
+**Fingerprint (ADR-0003, ADR-0013):** a stable hash over {the rule id, or the shared weakness an
+explicit equivalence table assigns it; target; canonical location}, so the same issue found by the
+same tool across runs, or by two tools whose rules the table declares equivalent, collapses to one
+canonical finding with the others linked as `dedup_of`. Framework mappings are not part of it, so
+curating them never re-fingerprints a finding. This is what lets a report
 say "3 high" instead of "17 raw results".
 
 **Severity (ADR-0004):** each adapter maps its tool's native severity to Khandaq's five-level scale

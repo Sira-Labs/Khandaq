@@ -20,8 +20,13 @@ results from different tools add up to one defensible report.
 Rust library (`khandaq-core`) and Python (`khandaq_core`):
 
 - `validate(value) -> Result<Finding, SchemaError>` — against `schema/finding.schema.json` (ADR-0003).
-- `fingerprint(&Finding) -> String` — `sha256:…` over the normalised {rule family, target,
-  canonical location, salient request shape}; stable and order-insensitive.
+- `fingerprint(&Finding) -> String` — `sha256:…` over `{v: 2, weakness, target, location}`
+  (ADR-0013): `weakness` is the rule id unless the equivalence table names a shared weakness;
+  framework mappings are not identity. Stable and order-insensitive. (Recipe v1 hashed the mapping
+  ids instead; changed because mapping curation re-fingerprinted triaged findings.)
+- `fingerprint_with(&Finding, &Equivalence)` / `dedup_with(Vec<Finding>, &Equivalence)` — the same
+  under an explicit table; `Equivalence::builtin()` loads `mappings/equivalence.json` (exact rule
+  ids or `prefix.*` patterns).
 - `dedup(Vec<Finding>) -> DedupResult` — groups by fingerprint; one `canonical` per group with the rest
   linked `dedup_of`; merges `source` tools and `evidence` refs onto the canonical.
 - `severity_map(&Finding, &AdapterSeverityTable) -> Severity` — native → `info|low|medium|high|critical`;
@@ -71,6 +76,13 @@ CLI: `khandaq-core validate <file>`, `… normalize <raw> --adapter garak`, `…
 > `x-khandaq.sources` keeps each contributing tool's source, including its native severity. The
 > Navigator counts a technique once per finding, with ids upper-cased. The fingerprint recipe is
 > unchanged; making it independent of mappings is proposed in ADR-0013.
+
+> Fingerprint v2 (ADR-0013, accepted 2026-10-03): the identity above (mapping ids) is replaced by
+> `{v: 2, weakness, target, location}`, where `weakness` is the rule id unless the versioned
+> equivalence table (`mappings/equivalence.json`, shipped empty) names a shared weakness. Schema id
+> `khandaq.finding/2`; `/1` records still validate and come out of `dedup` as `/2`. Reason: mapping
+> curation (ADR-0012) re-fingerprinted already-triaged findings, and distinct rules sharing a
+> mapping set collided. `fingerprint_with`/`dedup_with` take an explicit table for tests.
 
 
 ## Test cases
