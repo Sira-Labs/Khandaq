@@ -96,7 +96,9 @@ with:
 
 No secret, URL or address is shown, only whether each is set. Each worker reports a heartbeat
 every 30 s, and `alive` means it reported in the last 2 minutes. After a redeploy, check that at
-least one worker is alive and has the alert settings you expect: alerts are worker settings.
+least one worker is alive and has the alert settings you expect: alerts are worker settings. The
+console shows the same on its **Deployment** page (admins only), with warnings when no worker is
+alive or a worker's mapping table differs from the API's (spec 024).
 
 ## Smoke test after a deploy (spec 019)
 

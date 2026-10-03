@@ -214,6 +214,12 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
       configured secret appears; a failed heartbeat is logged and never stops the worker; rows not
       seen for 7 days are pruned at worker start; heartbeats are telemetry, not audited.
 
+- [x] S5-8 — spec 024 console deployment status: a **Deployment** page (admins; header link only
+      for `org_role = admin`) shows the API card and the worker table from `/api/deployment`,
+      refreshing every 30 s, with warnings when no worker is alive or a worker's mapping table
+      (versions or overlay sha256) differs from the API's. Decision: a worker reporting no summary
+      (older image) is not flagged as mismatched; a 403 shows "Organisation admins only."
+
 ## Owner / external dependencies (not software; do not block sprints on these)
 
 - [ ] Confirm the public name/domain: GitHub `Sira-Labs/Khandaq` is taken (good); check PyPI name and a

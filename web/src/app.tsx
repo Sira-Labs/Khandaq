@@ -3,6 +3,7 @@ import { useState } from "react";
 
 import { ApiError, api, getDevUser, loginUrl, setDevUser, type Me } from "./api";
 import { Campaign } from "./pages/Campaign";
+import { Deployment } from "./pages/Deployment";
 import { Engagement } from "./pages/Engagement";
 import { Engagements } from "./pages/Engagements";
 import { Findings } from "./pages/Findings";
@@ -127,6 +128,7 @@ export function App() {
     const campaign = path.match(/^\/eng\/([^/]+)\/campaigns\/([^/]+)$/);
     const detail = path.match(/^\/eng\/([^/]+)$/);
     if (path === "/tokens") body = <Tokens />;
+    else if (path === "/deployment") body = <Deployment />;
     else if (findings) body = <Findings engagementId={findings[1]} />;
     else if (campaign) body = <Campaign engagementId={campaign[1]} campaignId={campaign[2]} />;
     else if (detail) body = <Engagement engagementId={detail[1]} />;
@@ -141,6 +143,11 @@ export function App() {
         </button>
         {me.data && !me.error && (
           <div className="flex items-center gap-4">
+            {me.data.org_role === "admin" && (
+              <button className="text-sm text-[var(--muted)]" onClick={() => navigate("/deployment")}>
+                Deployment
+              </button>
+            )}
             <button className="text-sm text-[var(--muted)]" onClick={() => navigate("/tokens")}>
               API tokens
             </button>

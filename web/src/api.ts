@@ -225,6 +225,32 @@ export interface Alert {
   sent_at: string | null;
 }
 
+/** A process's non-secret settings (spec 023): secrets appear only as "set or not". */
+export interface SettingsSummary {
+  role: string;
+  env: string;
+  evidence: { key: boolean; retired_keys: number; store: string; bucket: string | null };
+  alerts: { webhook: boolean; email: boolean };
+  campaign_min_interval_minutes: number;
+  mappings: { versions: Record<string, string>; overlay: { name: string; sha256: string } | null };
+  adapter_runtime: string;
+}
+
+export interface WorkerStatus {
+  id: string;
+  started_at: string;
+  seen_at: string;
+  alive: boolean;
+  app_version: string;
+  summary: Partial<SettingsSummary>;
+}
+
+export interface DeploymentStatus {
+  checked_at: string;
+  api: { app_version: string; schema_revision: string; summary: SettingsSummary };
+  workers: WorkerStatus[];
+}
+
 export interface CampaignCreate {
   name: string;
   adapter: string;
@@ -258,6 +284,8 @@ export const api = {
   },
   logout: () => request<{ status: string }>("POST", "/auth/logout"),
   listTokens: () => request<ApiToken[]>("GET", "/auth/tokens"),
+  /** Organisation admins only (spec 023); a 403 otherwise. */
+  getDeployment: () => request<DeploymentStatus>("GET", "/deployment"),
   /** The plaintext token is in this response only; the server keeps its hash. */
   createToken: (name: string) =>
     request<{ id: string; name: string; token: string }>("POST", "/auth/tokens", { name }),
