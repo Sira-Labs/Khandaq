@@ -13,7 +13,12 @@ use serde_json::{Map, Value};
 
 use crate::severity::Severity;
 
-pub const SCHEMA_ID: &str = "khandaq.finding/1";
+/// The current schema id. `/2` changed only the fingerprint recipe (ADR-0013); the record shape
+/// is the same, so a `/1` record still validates and is re-fingerprinted under the current recipe.
+pub const SCHEMA_ID: &str = "khandaq.finding/2";
+
+/// Schema ids `validate` accepts: the current one and every earlier one with the same shape.
+pub const ACCEPTED_SCHEMA_IDS: [&str; 2] = ["khandaq.finding/1", SCHEMA_ID];
 
 /// A framework cross-walk entry, e.g. `{framework: "atlas", id: "AML.T0051"}`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, PartialOrd, Ord)]
@@ -121,9 +126,9 @@ impl std::error::Error for SchemaError {}
 pub fn validate(value: &Value) -> Result<Finding, SchemaError> {
     let finding: Finding =
         serde_json::from_value(value.clone()).map_err(|e| SchemaError(e.to_string()))?;
-    if finding.schema != SCHEMA_ID {
+    if !ACCEPTED_SCHEMA_IDS.contains(&finding.schema.as_str()) {
         return Err(SchemaError(format!(
-            "schema must be '{SCHEMA_ID}', got '{}'",
+            "schema must be one of {ACCEPTED_SCHEMA_IDS:?}, got '{}'",
             finding.schema
         )));
     }

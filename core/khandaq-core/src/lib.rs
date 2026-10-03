@@ -11,9 +11,11 @@ pub mod ledger;
 pub mod mapping;
 pub mod severity;
 
-pub use dedup::{dedup, DedupResult};
-pub use finding::{validate, Finding, Mapping, SchemaError, Source, XKhandaq, SCHEMA_ID};
-pub use fingerprint::fingerprint;
+pub use dedup::{dedup, dedup_with, DedupResult};
+pub use finding::{
+    validate, Finding, Mapping, SchemaError, Source, XKhandaq, ACCEPTED_SCHEMA_IDS, SCHEMA_ID,
+};
+pub use fingerprint::{fingerprint, fingerprint_with, Equivalence, FINGERPRINT_VERSION};
 pub use ledger::{
     append as ledger_append, entry_hash, root as ledger_root, verify as ledger_verify,
     verify_pinned as ledger_verify_pinned, LedgerEntry, LedgerError, VerifyResult,

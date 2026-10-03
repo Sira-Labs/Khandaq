@@ -8,7 +8,7 @@ import khandaq_core as kc
 def _finding(tool="garak", rule="garak.promptinject.hijack", severity="high", target="tgt_1",
              mappings=(("owasp-llm-2026", "LLM01"),), evidence=()):
     return {
-        "schema": "khandaq.finding/1",
+        "schema": "khandaq.finding/2",
         "engagement_id": "eng_1",
         "run_id": "run_1",
         "rule_id": rule,
@@ -44,14 +44,24 @@ def test_validate_rejects_bad_finding():
         raise AssertionError("expected ValueError for bad severity")
 
 
-def test_dedup_merges_cross_tool():
-    a = _finding(tool="garak", rule="garak.x", severity="medium", evidence=["ev_a"])
-    b = _finding(tool="pyrit", rule="pyrit.y", severity="high", evidence=["ev_b"])
+def test_dedup_merges_the_same_issue():
+    a = _finding(severity="medium", evidence=["ev_a"])
+    b = _finding(severity="high", evidence=["ev_b"], mappings=(("atlas", "AML.T0051"),))
     out = json.loads(kc.dedup(json.dumps([a, b])))
     assert out["duplicates"] == 1
     assert len(out["canonical"]) == 1
     assert out["canonical"][0]["severity"] == "high"
     assert out["canonical"][0]["x-khandaq"]["evidence"] == ["ev_a", "ev_b"]
+    assert out["canonical"][0]["schema"] == "khandaq.finding/2"
+
+
+def test_equal_mappings_are_not_identity():
+    # ADR-0013: two tools' rules with the same mappings are different findings unless the
+    # equivalence table names them as one weakness.
+    a = _finding(tool="garak", rule="garak.x")
+    b = _finding(tool="pyrit", rule="pyrit.y")
+    assert kc.fingerprint(json.dumps(a)) != kc.fingerprint(json.dumps(b))
+    assert len(json.loads(kc.dedup(json.dumps([a, b])))["canonical"]) == 2
 
 
 def test_framework_mappings_and_navigator():

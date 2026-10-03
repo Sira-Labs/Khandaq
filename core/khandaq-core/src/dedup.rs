@@ -11,8 +11,8 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 use serde_json::{Map, Value};
 
-use crate::finding::{Finding, Source};
-use crate::fingerprint::fingerprint;
+use crate::finding::{Finding, Source, SCHEMA_ID};
+use crate::fingerprint::{fingerprint_with, Equivalence};
 use crate::severity::Severity;
 
 #[derive(Debug, Clone)]
@@ -54,13 +54,21 @@ fn fill_missing(into: &mut Map<String, Value>, from: &Map<String, Value>) {
     }
 }
 
-/// Deduplicate a batch of findings by fingerprint.
+/// Deduplicate a batch of findings by fingerprint, under the built-in equivalence table.
 ///
 /// Groups are emitted in fingerprint order, so the output does not depend on the input order.
 pub fn dedup(findings: Vec<Finding>) -> DedupResult {
+    dedup_with(findings, Equivalence::builtin())
+}
+
+/// Deduplicate a batch of findings by fingerprint under an explicit equivalence table.
+///
+/// Every canonical finding is emitted with the current schema id: it carries a fingerprint
+/// computed under the current recipe, whichever schema version its input was written in.
+pub fn dedup_with(findings: Vec<Finding>, equivalence: &Equivalence) -> DedupResult {
     let mut groups: BTreeMap<String, Vec<Finding>> = BTreeMap::new();
     for mut f in findings {
-        let fp = fingerprint(&f);
+        let fp = fingerprint_with(&f, equivalence);
         f.fingerprint = Some(fp.clone());
         groups.entry(fp).or_default().push(f);
     }
@@ -114,6 +122,7 @@ pub fn dedup(findings: Vec<Finding>) -> DedupResult {
         };
         canon.x_khandaq.dedup_of = None;
         canon.canonical = Some(true);
+        canon.schema = SCHEMA_ID.to_string();
         canonical.push(canon);
     }
 

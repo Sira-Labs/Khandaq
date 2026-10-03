@@ -1,0 +1,7 @@
+{
+  "_meta": {
+    "note": "Rule-id to shared weakness key (ADR-0013). Two tools' findings collapse into one only when both rules map to the same weakness AND target and canonical location are equal. Keys are exact rule ids or a prefix ending in '.*'. Editing this table changes fingerprints: it is a reviewed change that ships with a fingerprint migration note (and, for stored findings, a migration that recomputes them). Framework mappings (builtin.json) are NOT identity and can change freely.",
+    "version": "1"
+  },
+  "weaknesses": {}
+}

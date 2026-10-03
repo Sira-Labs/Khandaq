@@ -114,7 +114,7 @@ def parse_report(
             severity = "medium"
         reason_text = str((res.get("gradingResult") or {}).get("reason") or "")
         findings.append({
-            "schema": "khandaq.finding/1",
+            "schema": "khandaq.finding/2",
             "engagement_id": engagement_id,
             "run_id": run_id,
             "rule_id": f"promptfoo.{plugin}",
