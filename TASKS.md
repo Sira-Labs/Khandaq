@@ -46,7 +46,16 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
       bindings + API ledger service & read/verify endpoints; the api now depends on the `khandaq_core`
       wheel (api CI job gains a Rust toolchain). 5 Rust + 1 binding + 2 API ledger tests pass.
       **Follow-up:** Sigstore signing of the ledger root is deferred (offline chain works today).
-- [ ] S2-3 — seed framework mapping tables for R1 adapters
+- [x] S2-3 — spec 020 framework mapping tables applied at ingest: `builtin.json` is now schema
+      `khandaq.mappings/1` with a version and a source per framework and an entry (with rationale)
+      for every rule family the R1 adapters and `echo` emit, plus NIST AI RMF ids; keys are rule-id
+      prefixes matched on a `.`/`:` boundary, longest first, a bare tool key being its default; the
+      API stores the tool's ids plus the table's (`merge_mappings`), or `unmapped`; reports carry
+      `mapping_tables`; `khandaq-core normalize` merges the same way. Decisions: the adapters keep
+      their dicts (released images) and a drift test fails CI if one emits an id the core table
+      lacks; garak has no default so an uncurated probe shows as `unmapped`; no stored finding is
+      re-mapped (it is a record of what was reported); EU AI Act refs and a self-hoster overlay
+      table are follow-ups.
 
 ### Sprint 3 — orchestration
 - [x] S3-1 — spec 005 adapter contract + host + run execution — manifest model + CI validator; adapter
