@@ -97,6 +97,7 @@ class RunOut(BaseModel):
     started_at: dt.datetime | None
     ended_at: dt.datetime | None
     created_at: dt.datetime
+    campaign_id: str | None = None
 
 
 class FindingOut(BaseModel):
@@ -139,3 +140,57 @@ class ReportPin(BaseModel):
         if (self.root is None) != (self.count == 0):
             raise ValueError("root is null exactly when count is 0")
         return self
+
+
+class CampaignCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    adapter: str = Field(min_length=1, max_length=100)
+    target_id: str
+    params: dict[str, Any] = Field(default_factory=dict)
+    interval_minutes: int = Field(strict=True, gt=0, le=60 * 24 * 366)
+    start_at: dt.datetime | None = None
+
+
+class CampaignUpdate(BaseModel):
+    enabled: bool | None = None
+    interval_minutes: int | None = Field(default=None, strict=True, gt=0, le=60 * 24 * 366)
+
+
+class CampaignOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: str
+    engagement_id: str
+    name: str
+    adapter: str
+    target_id: str
+    params: dict[str, Any]
+    interval_minutes: int
+    enabled: bool
+    next_run_at: dt.datetime
+    created_by: str | None
+    created_at: dt.datetime
+    updated_at: dt.datetime
+
+
+class DiffEntry(BaseModel):
+    fingerprint: str
+    finding_id: str
+    rule_id: str
+    severity: str
+    title: str | None = None
+
+
+class DiffOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: str
+    campaign_id: str
+    run_id: str
+    previous_run_id: str | None
+    baseline: bool
+    new: list[DiffEntry]
+    regressed: list[DiffEntry]
+    resolved: list[DiffEntry]
+    unchanged_count: int
+    findings_count: int
+    worsened: bool
+    created_at: dt.datetime

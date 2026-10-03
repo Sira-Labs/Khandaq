@@ -37,7 +37,7 @@ from sqlalchemy.exc import OperationalError
 
 log = logging.getLogger("khandaq.db_roles")
 
-APPEND_ONLY_TABLES = ("audit_log", "evidence", "ledger_entries")
+APPEND_ONLY_TABLES = ("audit_log", "evidence", "ledger_entries", "campaign_diffs")
 READ_ONLY_TABLES = ("alembic_version",)
 
 

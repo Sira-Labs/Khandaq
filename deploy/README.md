@@ -41,6 +41,14 @@ per run via the host Docker socket (shape A in `caprover.md`); only use this on 
   worker's evidence volume, which the API cannot read on a multi-host deployment.
 - OIDC settings for anything beyond a single-user local run
 
+## Campaigns and alerts (specs 016, 017)
+
+The worker re-runs campaigns on their interval (never more often than
+`KHANDAQ_CAMPAIGN_MIN_INTERVAL_MINUTES`, default 60) and records what changed. To be told when a
+campaign gets worse, set `KHANDAQ_ALERT_WEBHOOK_URL` (https in prod) and
+`KHANDAQ_ALERT_WEBHOOK_SECRET` on the **worker**. Alerts carry rule ids and counts, not finding text,
+and are retried with backoff (`KHANDAQ_ALERT_MAX_ATTEMPTS`, default 5).
+
 ## Safe-use reminder
 
 Khandaq runs offensive tooling. Every run must belong to an engagement whose targets you are authorised

@@ -135,6 +135,33 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
       legacy plaintext files are served only if they match their seal. CI runs RustFS 1.0.0.
       **Owner:** ADR-0016 is Proposed — confirm the envelope format and the ≥ 32-character key rule.
 
+- [x] S4-9 — spec 015 console catch-up: runs panel with state badges, duration and escaped failure
+      reasons, polling every 5 s while a run is queued/running (and refreshing ledger + findings when
+      one finishes); evidence download buttons in the finding drawer (403/404/409 explained); report
+      JSON/HTML export as files and "verify a report" (drop an exported JSON). Decisions: downloads go
+      through fetch + a revoked object URL so the dev header and CSRF behave like every other call,
+      and nothing downloaded is rendered in the console's origin; the launcher stays `echo`.
+
+### Sprint 5 — campaigns (R2)
+- [x] S5-1 — spec 016 campaigns + diff (ADR-0017, Proposed): `campaigns` table (template, interval,
+      `next_run_at`), `runs.campaign_id`, append-only `campaign_diffs`; the worker schedules due
+      campaigns each loop (`SKIP LOCKED`) through the same `queue_run` the API uses (scope lock +
+      audit), skips a window while the previous run is in flight, and never replays missed windows;
+      a succeeded campaign run records new / regressed / resolved / unchanged against the campaign's
+      earlier runs in the same transaction. Decisions: scheduling moved off Procrastinate (ADR-0017;
+      same least-privilege objection as ADR-0015); a run's sightings include its linked duplicate
+      rows, so "regressed" works across cross-run dedup; interval floor 60 min
+      (`KHANDAQ_CAMPAIGN_MIN_INTERVAL_MINUTES`); the template is scope-checked at creation (refusal
+      audited as `campaign.rejected`). Also: the worker now retries stale-run recovery while the
+      database starts (PR #31 review). **Owner:** ADR-0017 is Proposed. Next: spec 017 alerts.
+- [x] S5-2 — spec 017 alerts on a worsened campaign diff: an `alert_outbox` row is queued in the
+      diff's transaction (migration 0009) when `KHANDAQ_ALERT_WEBHOOK_URL` is set; the worker POSTs
+      it signed (`X-Khandaq-Signature` HMAC-SHA256), no redirects, under a `SKIP LOCKED` row lock,
+      backing off 2^n minutes to `failed` after `KHANDAQ_ALERT_MAX_ATTEMPTS`; every outcome audited.
+      Decisions: the webhook URL is deployment config, never per campaign (no operator-chosen
+      exfiltration target); the payload carries rule ids, severities and counts only, never titles,
+      evidence or target details; prod requires https + a 32-character secret. Email is a follow-up.
+
 ## Owner / external dependencies (not software; do not block sprints on these)
 
 - [ ] Confirm the public name/domain: GitHub `Sira-Labs/Khandaq` is taken (good); check PyPI name and a

@@ -84,6 +84,15 @@ class Settings(BaseSettings):
     # store is configured (specs 012, 014). The worker needs this volume.
     evidence_dir: str = "/var/lib/khandaq/evidence"
     worker_poll_seconds: float = 5.0
+    # Campaigns (spec 016, ADR-0017): the shortest interval a campaign may re-run at, so a
+    # schedule cannot hammer a client system. Rules of engagement still apply per run.
+    campaign_min_interval_minutes: int = 60
+    # Alerts on a worsened campaign diff (spec 017): a signed webhook, deployment-wide. Empty URL =
+    # alerts off. Deliberately not per campaign: that would let any operator send engagement data
+    # to a host of their choosing.
+    alert_webhook_url: str = ""
+    alert_webhook_secret: str = ""
+    alert_max_attempts: int = 5
 
     @property
     def is_prod(self) -> bool:
@@ -117,6 +126,11 @@ class Settings(BaseSettings):
             parse_store_url(self.object_store_url)
         except ValueError as exc:
             problems.append(str(exc))
+        if self.alert_webhook_url:
+            if not self.alert_webhook_url.startswith("https://"):
+                problems.append("KHANDAQ_ALERT_WEBHOOK_URL must be an https:// URL")
+            if len(self.alert_webhook_secret) < 32:
+                problems.append("KHANDAQ_ALERT_WEBHOOK_SECRET must be at least 32 characters")
         # OIDC BFF is the only authentication path in prod (the dev stub refuses there); without it
         # no one could log in, so the API fails closed (spec 008 / ADR-0005). Only the api role
         # serves logins: the worker never sees a browser, so it is not given (and must not need)

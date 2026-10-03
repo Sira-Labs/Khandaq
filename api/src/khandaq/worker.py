@@ -3,6 +3,8 @@
 The API commits container runs as ``queued`` and sends ``NOTIFY khandaq_runs``. The worker:
 
 1. at start, fails runs left ``running`` past the adapter timeout (a previous worker was lost);
+1a. on every iteration, queues runs for due campaigns (spec 016, ADR-0017) and delivers due
+    alerts on worsened campaign diffs (spec 017);
 2. claims the oldest queued run (``FOR UPDATE SKIP LOCKED``), re-checks its scope, marks it
    ``running`` and commits — or records it ``rejected``;
 3. executes it in a sandboxed container (``DockerRunner``) and records the outcome;
@@ -25,6 +27,8 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import NullPool
 
+from .alerts import deliver_due
+from .campaigns import schedule_due
 from .runs import NOTIFY_CHANNEL, claim_next_run, execute_run, recover_stale_runs
 from .settings import Settings, get_settings
 
@@ -68,12 +72,31 @@ def work_once(engine: Engine, runner=None) -> bool:
         return True
 
 
+def schedule_campaigns(engine: Engine) -> int:
+    """Queue runs for due campaigns (spec 016, ADR-0017); returns how many were due."""
+    with Session(engine) as session:
+        return schedule_due(session)
+
+
+def deliver_alerts(engine: Engine) -> int:
+    """Send due alerts on worsened campaign diffs (spec 017); returns how many were attempted."""
+    with Session(engine) as session:
+        return deliver_due(session)
+
+
 def drain(engine: Engine, runner=None) -> int:
     """Execute queued runs until none is left; returns how many were looked at."""
     count = 0
     while work_once(engine, runner):
         count += 1
     return count
+
+
+def _recover_lost_runs(engine: Engine, settings: Settings) -> None:
+    with Session(engine) as session:
+        older = dt.timedelta(seconds=settings.adapter_timeout_seconds) + STALE_MARGIN
+        if lost := recover_stale_runs(session, older_than=older):
+            log.warning("failed %d run(s) a previous worker lost", lost)
 
 
 def run_forever(
@@ -84,16 +107,20 @@ def run_forever(
     make_engine = engine_factory or (lambda url: create_engine(url, pool_pre_ping=True))
     engine = make_engine(settings.database_url)
     listen_engine = create_engine(settings.database_url, poolclass=NullPool)
-    with Session(engine) as session:
-        older = dt.timedelta(seconds=settings.adapter_timeout_seconds) + STALE_MARGIN
-        if lost := recover_stale_runs(session, older_than=older):
-            log.warning("failed %d run(s) a previous worker lost", lost)
     notifications: Notifications | None = None
+    recovered = False
     try:
         while not stop.is_set():
             try:
+                # Inside the retry loop: a database still starting when the worker starts is
+                # retried like any later outage instead of killing the process (PR #31 review).
+                if not recovered:
+                    _recover_lost_runs(engine, settings)
+                    recovered = True
                 if notifications is None:
                     notifications = Notifications(listen_engine)
+                schedule_campaigns(engine)
+                deliver_alerts(engine)
                 if work_once(engine):
                     continue
                 notifications.wait(settings.worker_poll_seconds)
