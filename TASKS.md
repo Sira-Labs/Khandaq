@@ -220,6 +220,20 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
       (versions or overlay sha256) differs from the API's. Decision: a worker reporting no summary
       (older image) is not flagged as mismatched; a 403 shows "Organisation admins only."
 
+### Sprint 6 — agentic & MCP (R2)
+
+- [x] S6-1 — spec 025 Cisco mcp-scanner adapter — `adapters/mcp-scanner/` (Dockerfile pinned to
+      `cisco-ai-mcp-scanner==4.8.5`, manifest, wrapper, recorded synthetic fixture, 40 contract
+      tests); the release workflow publishes `khandaq-adapter-mcp-scanner`; the core table gains
+      `mcp-scanner.prompt-injection`, `.data-exfiltration` and `.code-execution`, and the drift
+      test covers the wrapper; negative scope tests pin exact-URL `mcp_server` and host+path
+      `agent` matching. Decisions: one finding per item × analyzer × threat, with the threat name
+      slugged (`PROMPT_INJECTION` and `PROMPT INJECTION` deduplicate); the raw format keeps one
+      severity per analyzer entry, so its threats share it, and an entry left at `SAFE` with
+      findings counted is `info` (the tool never promotes INFO); an errored analyzer entry is no
+      finding, and a report where no item was scanned is refused; no `mcp-scanner` default
+      mapping (uncurated threats stay `unmapped`, as for garak); the scope lock was not changed.
+
 ## Owner / external dependencies (not software; do not block sprints on these)
 
 - [ ] Confirm the public name/domain: GitHub `Sira-Labs/Khandaq` is taken (good); check PyPI name and a
