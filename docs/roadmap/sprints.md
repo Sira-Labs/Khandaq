@@ -64,15 +64,15 @@ to CapRover staging.
 
 | Sprint | Focus | Specs (to write) |
 |---|---|---|
-| 5 | Campaigns: scheduler, baseline, diff (new/resolved/regressed), alerts | 015–016 |
-| 6 | Cisco mcp-scanner adapter (phase 07) + agent target type | 017 |
-| 7 | ART adapter (phase 05) + model_artifact/dataset target types | 018–019 |
-| 8 | Supply chain: ModelAudit/ModelScan consensus + AI-BOM (phase 08) | 020–021 |
-| 9 | Guardrail-regression harness (phase 09) | 022 |
+| 5 | Campaigns: scheduler, baseline, diff (new/resolved/regressed), alerts | 016–017 |
+| 6 | Cisco mcp-scanner adapter (phase 07) + agent target type | 018 |
+| 7 | ART adapter (phase 05) + model_artifact/dataset target types | 019–020 |
+| 8 | Supply chain: ModelAudit/ModelScan consensus + AI-BOM (phase 08) | 021–022 |
+| 9 | Guardrail-regression harness (phase 09) | 023 |
 
 (Forecast numbers shifted by one on 2026-10-03: spec 012 closes R1's execution gap; and by one
-again the same day: spec 013 wires the pinned ledger root into report re-verification, and
-spec 014 stores evidence encrypted in the object store.)
+again the same day: spec 013 wires the pinned ledger root into report re-verification, spec 014
+stores evidence encrypted in the object store, and spec 015 is the console catch-up.)
 
 Exit (**R2 done**): continuous monitoring with regression alerts; coverage across phases 03–09.
 

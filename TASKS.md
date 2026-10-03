@@ -142,6 +142,20 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
       through fetch + a revoked object URL so the dev header and CSRF behave like every other call,
       and nothing downloaded is rendered in the console's origin; the launcher stays `echo`.
 
+### Sprint 5 — campaigns (R2)
+- [x] S5-1 — spec 016 campaigns + diff (ADR-0017, Proposed): `campaigns` table (template, interval,
+      `next_run_at`), `runs.campaign_id`, append-only `campaign_diffs`; the worker schedules due
+      campaigns each loop (`SKIP LOCKED`) through the same `queue_run` the API uses (scope lock +
+      audit), skips a window while the previous run is in flight, and never replays missed windows;
+      a succeeded campaign run records new / regressed / resolved / unchanged against the campaign's
+      earlier runs in the same transaction. Decisions: scheduling moved off Procrastinate (ADR-0017;
+      same least-privilege objection as ADR-0015); a run's sightings include its linked duplicate
+      rows, so "regressed" works across cross-run dedup; interval floor 60 min
+      (`KHANDAQ_CAMPAIGN_MIN_INTERVAL_MINUTES`); the template is scope-checked at creation (refusal
+      audited as `campaign.rejected`). Also: the worker now retries stale-run recovery while the
+      database starts (PR #31 review). **Owner:** ADR-0017 is Proposed. Next: spec 017 alerts.
+- [ ] S5-2 — spec 017 alerts on a worsened diff (email/webhook)
+
 ## Owner / external dependencies (not software; do not block sprints on these)
 
 - [ ] Confirm the public name/domain: GitHub `Sira-Labs/Khandaq` is taken (good); check PyPI name and a
