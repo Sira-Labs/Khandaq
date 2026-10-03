@@ -6,6 +6,7 @@ Evidence is sealed via the ledger service (the run path will call the same servi
 
 from __future__ import annotations
 
+import json
 import os
 
 import pytest
@@ -255,3 +256,30 @@ def test_ledger_entries_report_their_format(ctx):
     entries = client.get(f"/api/engagements/{eng_id}/ledger", headers=OWNER).json()["entries"]
     assert [e["format"] for e in entries] == [2]
     assert entries[0]["evidence_hash"] != f"sha256:{5:064x}"  # the record, not the bytes alone
+
+
+def test_a_format_mismatch_is_a_value_error_so_the_run_is_recorded_failed(ctx, monkeypatch):
+    """The run path records ValueError as a failed run; any other exception would leave the run
+    'running' forever."""
+    client, eng = ctx
+    import khandaq_core
+
+    from khandaq import ledger as ledger_svc
+
+    eng_id, run_id = _engagement_with_run(client, eng, "ledger-format-mismatch")
+    real_append = khandaq_core.ledger_append
+
+    def future_format(prev, evidence_hash):
+        entry = json.loads(real_append(prev, evidence_hash))
+        return json.dumps(dict(entry, format=3))
+
+    monkeypatch.setattr(ledger_svc.kc, "ledger_append", future_format)
+    with Session(eng) as s, pytest.raises(ValueError, match="format 3"):
+        ledger_svc.seal_evidence(
+            s,
+            engagement_id=eng_id,
+            run_id=run_id,
+            kind="raw",
+            object_key="k",
+            sha256=f"sha256:{9:064x}",
+        )

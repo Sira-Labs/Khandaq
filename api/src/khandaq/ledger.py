@@ -115,7 +115,8 @@ def seal_evidence(
     sealed = kc.evidence_record_hash(json.dumps(_record(evidence)))
     entry = json.loads(kc.ledger_append(prev_json, sealed))
     if entry["format"] != 2:  # this service derives evidence_hash for formats 1 and 2 only
-        raise RuntimeError(f"khandaq_core writes ledger format {entry['format']}, expected 2")
+        # ValueError, so the run path records the run as failed instead of leaving it running.
+        raise ValueError(f"khandaq_core writes ledger format {entry['format']}, expected 2")
 
     row = LedgerEntry(
         engagement_id=engagement_id,

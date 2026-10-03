@@ -33,6 +33,9 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # Block appends until the column is gone: a check that a concurrent seal could slip past would
+    # let the downgrade strand a format-2 entry. EXCLUSIVE still allows reads.
+    op.execute("LOCK TABLE ledger_entries IN EXCLUSIVE MODE")
     sealed = (
         op.get_bind()
         .execute(text("SELECT count(*) FROM ledger_entries WHERE format <> 1"))
