@@ -49,6 +49,32 @@ campaign gets worse, set `KHANDAQ_ALERT_WEBHOOK_URL` (https in prod) and
 `KHANDAQ_ALERT_WEBHOOK_SECRET` on the **worker**. Alerts carry rule ids and counts, not finding text,
 and are retried with backoff (`KHANDAQ_ALERT_MAX_ATTEMPTS`, default 5).
 
+## Your own framework mappings (spec 021)
+
+Findings carry ATLAS, OWASP LLM (2025 and 2026) and NIST AI RMF ids from the built-in table. To add
+your own ids, or to correct an entry for your context, write an overlay in the same schema and set
+`KHANDAQ_MAPPINGS_PATH` to it on the **api and the worker** (mount the file into both):
+
+```json
+{
+  "schema": "khandaq.mappings/1",
+  "versions": {"acme-ctl": "2026.1"},
+  "sources": {"acme-ctl": "https://controls.acme.example/"},
+  "rules": {
+    "garak.leakreplay": {
+      "mappings": [{"framework": "acme-ctl", "id": "CTL-7"}],
+      "rationale": "our data-handling control"
+    }
+  }
+}
+```
+
+Keys are rule-id prefixes (the longest match wins). An overlay key replaces the built-in entry of
+the same key, so list the built-in ids too if you want to keep them. You can add frameworks, but you
+cannot change a built-in framework's version or source. A file that is missing, larger than 1 MiB,
+or invalid stops the app at startup. Every report names the overlay and its sha256. Changes take a
+restart, and stored findings are not re-mapped.
+
 ## Smoke test after a deploy (spec 019)
 
 Sign in, open **API tokens** in the console header, create a token, then run:

@@ -184,6 +184,17 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
       500 with a traceback; it is now a 503. Decision: the script's campaign starts in a day and is
       paused at once, so the smoke test never schedules a run.
 
+- [x] S5-5 — spec 021 mapping overlay: `KHANDAQ_MAPPINGS_PATH` names a `khandaq.mappings/1` file
+      the core combines with the built-in table (overlay keys replace or add; new frameworks
+      allowed); the API and worker apply it at ingest, reports name it with its sha256, and
+      `khandaq-core normalize --mappings` takes the same file. Decisions: an overlay may not
+      change a built-in framework's version or source (two ATLAS releases in one report would be
+      ambiguous); a broken overlay stops startup in every environment rather than falling back
+      to the built-in table, which would quietly drop the deployment's own ids; 1 MiB limit; each
+      finding records the table versions and overlay that mapped it (`x-khandaq.mapping_table`),
+      and reports list those recorded tables, so a later restart under another overlay never
+      changes what a report says produced its ids (PR #38 review).
+
 ## Owner / external dependencies (not software; do not block sprints on these)
 
 - [ ] Confirm the public name/domain: GitHub `Sira-Labs/Khandaq` is taken (good); check PyPI name and a

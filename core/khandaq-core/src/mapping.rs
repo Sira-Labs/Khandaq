@@ -63,42 +63,49 @@ impl Mappings {
 
     /// Parse and check a table in the `khandaq.mappings/1` schema.
     pub fn from_json(text: &str) -> Result<Self, MappingsError> {
-        let raw: RawMappings =
-            serde_json::from_str(text).map_err(|e| MappingsError(e.to_string()))?;
-        if raw.schema != MAPPINGS_SCHEMA {
-            return Err(MappingsError(format!(
-                "schema {:?}, expected {MAPPINGS_SCHEMA:?}",
-                raw.schema
-            )));
-        }
-        let mut table = HashMap::new();
-        for (key, rule) in raw.rules {
-            if key.trim().is_empty() || key.ends_with(['.', ':']) {
-                return Err(MappingsError(format!("bad rule key {key:?}")));
-            }
-            if rule.mappings.is_empty() {
-                return Err(MappingsError(format!("rule {key:?} has no mappings")));
-            }
-            for m in &rule.mappings {
-                if m.id.trim().is_empty() {
-                    return Err(MappingsError(format!("rule {key:?} has an empty id")));
-                }
-                for (what, known) in [("version", &raw.versions), ("source", &raw.sources)] {
-                    if !known.contains_key(&m.framework) {
+        let raw = parse_raw(text)?;
+        build(
+            raw.rules
+                .into_iter()
+                .map(|(k, r)| (k, r.mappings))
+                .collect(),
+            raw.versions,
+            raw.sources,
+        )
+    }
+
+    /// This table extended by a deployment overlay in the same schema (spec 021). An overlay key
+    /// replaces the entry of the same key and other keys are added. An overlay may introduce
+    /// frameworks but not change a framework's version or source: two tables claiming different
+    /// releases of one framework would make every report ambiguous.
+    pub fn with_overlay(&self, text: &str) -> Result<Self, MappingsError> {
+        let raw = parse_raw(text)?;
+        let mut versions = self.versions.clone();
+        let mut sources = self.sources.clone();
+        for (what, mine, theirs) in [
+            ("version", &mut versions, raw.versions),
+            ("source", &mut sources, raw.sources),
+        ] {
+            for (framework, value) in theirs {
+                match mine.get(&framework) {
+                    Some(existing) if existing != &value => {
                         return Err(MappingsError(format!(
-                            "framework {:?} (rule {key:?}) has no {what}",
-                            m.framework
+                            "the overlay changes the {what} of {framework:?} \
+                             ({existing:?} → {value:?})"
                         )));
+                    }
+                    Some(_) => {}
+                    None => {
+                        mine.insert(framework, value);
                     }
                 }
             }
+        }
+        let mut table = self.table.clone();
+        for (key, rule) in raw.rules {
             table.insert(key, rule.mappings);
         }
-        Ok(Mappings {
-            table,
-            versions: raw.versions,
-            sources: raw.sources,
-        })
+        build(table, versions, sources)
     }
 
     /// The entry for a rule: the longest key the rule id equals or extends on a `.`/`:` boundary.
@@ -127,6 +134,52 @@ impl Default for Mappings {
     fn default() -> Self {
         Self::builtin()
     }
+}
+
+fn parse_raw(text: &str) -> Result<RawMappings, MappingsError> {
+    let raw: RawMappings = serde_json::from_str(text).map_err(|e| MappingsError(e.to_string()))?;
+    if raw.schema != MAPPINGS_SCHEMA {
+        return Err(MappingsError(format!(
+            "schema {:?}, expected {MAPPINGS_SCHEMA:?}",
+            raw.schema
+        )));
+    }
+    Ok(raw)
+}
+
+/// Check a complete table: no empty or dangling keys, no empty rules or ids, and a version and a
+/// source for every framework a rule uses.
+fn build(
+    table: HashMap<String, Vec<Mapping>>,
+    versions: BTreeMap<String, String>,
+    sources: BTreeMap<String, String>,
+) -> Result<Mappings, MappingsError> {
+    for (key, mappings) in &table {
+        if key.trim().is_empty() || key.ends_with(['.', ':']) {
+            return Err(MappingsError(format!("bad rule key {key:?}")));
+        }
+        if mappings.is_empty() {
+            return Err(MappingsError(format!("rule {key:?} has no mappings")));
+        }
+        for m in mappings {
+            if m.id.trim().is_empty() {
+                return Err(MappingsError(format!("rule {key:?} has an empty id")));
+            }
+            for (what, known) in [("version", &versions), ("source", &sources)] {
+                if !known.contains_key(&m.framework) {
+                    return Err(MappingsError(format!(
+                        "framework {:?} (rule {key:?}) has no {what}",
+                        m.framework
+                    )));
+                }
+            }
+        }
+    }
+    Ok(Mappings {
+        table,
+        versions,
+        sources,
+    })
 }
 
 fn unmapped(finding: &Finding) -> Vec<Mapping> {

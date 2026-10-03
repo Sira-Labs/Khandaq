@@ -175,3 +175,24 @@ def test_merge_mappings_and_mapping_table():
     table = json.loads(kc.mapping_table())
     assert table["schema"] == "khandaq.mappings/1"
     assert table["versions"]["atlas"] and table["sources"]["atlas"].startswith("https://")
+
+
+def test_an_overlay_extends_the_table():
+    overlay = json.dumps({
+        "schema": "khandaq.mappings/1",
+        "versions": {"acme-ctl": "2026.1"},
+        "sources": {"acme-ctl": "https://controls.acme.example/"},
+        "rules": {"acme-scan": {"mappings": [{"framework": "acme-ctl", "id": "CTL-7"}],
+                                "rationale": "ours"}},
+    })
+    f = _finding(rule="acme-scan.secrets", mappings=())
+    assert json.loads(kc.merge_mappings(json.dumps(f), overlay)) == [
+        {"framework": "acme-ctl", "id": "CTL-7"}
+    ]
+    assert json.loads(kc.mapping_table(overlay))["versions"]["acme-ctl"] == "2026.1"
+    try:
+        kc.mapping_table(overlay.replace('"acme-ctl": "2026.1"', '"atlas": "v1"'))
+    except ValueError as exc:
+        assert "atlas" in str(exc)
+    else:
+        raise AssertionError("an overlay changing a builtin version must be refused")

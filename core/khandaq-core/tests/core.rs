@@ -335,6 +335,63 @@ fn merge_marks_unmapped_only_when_both_are_empty() {
     assert_eq!(merge_mappings(&again, &m), merge_mappings(&bare, &m));
 }
 
+const OVERLAY: &str = r#"{
+  "schema": "khandaq.mappings/1",
+  "versions": {"acme-ctl": "2026.1", "atlas": "v2026.09"},
+  "sources": {"acme-ctl": "https://controls.acme.example/"},
+  "rules": {
+    "garak": {"mappings": [{"framework": "acme-ctl", "id": "CTL-9"}], "rationale": "default"},
+    "garak.dan": {"mappings": [{"framework": "acme-ctl", "id": "CTL-1"}], "rationale": "ours"},
+    "acme-scan.secrets": {"mappings": [{"framework": "acme-ctl", "id": "CTL-7"}], "rationale": "new"}
+  }
+}"#;
+
+#[test]
+fn an_overlay_adds_replaces_and_introduces() {
+    let m = Mappings::builtin().with_overlay(OVERLAY).unwrap();
+    let rule = |r: &str| ids(m.for_rule(r).unwrap());
+    // Replaced: the overlay's entry wins over the built-in one of the same key.
+    assert_eq!(
+        rule("garak.dan.dan_11_0"),
+        vec![("acme-ctl".into(), "CTL-1".into())]
+    );
+    // Added: a new tool's rule, and a garak default that now catches uncurated probes.
+    assert_eq!(
+        rule("acme-scan.secrets.aws"),
+        vec![("acme-ctl".into(), "CTL-7".into())]
+    );
+    assert_eq!(
+        rule("garak.newprobe"),
+        vec![("acme-ctl".into(), "CTL-9".into())]
+    );
+    // Kept: built-in entries the overlay does not name, by longest prefix over both tables.
+    assert!(rule("garak.promptinject.x").contains(&("atlas".into(), "AML.T0051".into())));
+    assert_eq!(m.versions()["acme-ctl"], "2026.1");
+    assert_eq!(
+        m.versions()["atlas"],
+        Mappings::builtin().versions()["atlas"]
+    );
+}
+
+#[test]
+fn an_overlay_cannot_change_a_builtin_framework() {
+    let base = Mappings::builtin();
+    let changed = OVERLAY.replace(r#""atlas": "v2026.09""#, r#""atlas": "v1999.01""#);
+    let err = base.with_overlay(&changed).unwrap_err();
+    assert!(err.to_string().contains("version"), "{err}");
+    let resourced = OVERLAY.replace(
+        r#""sources": {"#,
+        r#""sources": {"atlas": "https://elsewhere.example/", "#,
+    );
+    assert!(base.with_overlay(&resourced).is_err());
+    let no_version = OVERLAY.replace(r#""acme-ctl": "2026.1", "#, "");
+    assert!(base.with_overlay(&no_version).is_err());
+    assert!(base
+        .with_overlay(&OVERLAY.replace("mappings/1", "mappings/2"))
+        .is_err());
+    assert!(base.with_overlay("not json").is_err());
+}
+
 #[test]
 fn navigator_layer_collects_atlas_techniques() {
     let f = validate(&finding_json(

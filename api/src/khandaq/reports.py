@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 
 from . import audit
 from . import ledger as ledger_svc
+from .mapping_overlay import table_in_effect
 from .models import AuditLog, Engagement, Finding, User
 
 EXPORT_ACTION = "report.exported"
@@ -80,13 +81,33 @@ def build_report(session: Session, engagement: Engagement) -> dict:
         },
         "findings": finding_views,
         # The table versions the framework ids refer to (spec 020).
-        "mapping_tables": _mapping_tables(),
+        "mapping_tables": _mapping_tables(findings),
     }
 
 
-def _mapping_tables() -> dict:
-    table = json.loads(kc.mapping_table())
-    return {"versions": table["versions"], "sources": table["sources"]}
+def _mapping_tables(findings: list[Finding]) -> dict:
+    """The table in effect now, and the tables recorded on the findings themselves (PR #38
+    review): a restart under another overlay must not change what a report says produced the ids
+    it lists. Findings stored before provenance was recorded are counted, not guessed."""
+    now = table_in_effect()
+    recorded: dict[str, tuple[dict, int]] = {}
+    unrecorded = 0
+    for f in findings:
+        mapped_with = ((f.body or {}).get("x-khandaq") or {}).get("mapping_table")
+        if not isinstance(mapped_with, dict):
+            unrecorded += 1
+            continue
+        key = json.dumps(mapped_with, sort_keys=True)
+        prev = recorded.get(key, (mapped_with, 0))
+        recorded[key] = (prev[0], prev[1] + 1)
+    return {
+        **now,
+        "recorded": [
+            {**table, "findings": n}
+            for table, n in sorted(recorded.values(), key=lambda item: -item[1])
+        ],
+        "unrecorded": unrecorded,
+    }
 
 
 def record_export(session: Session, report: dict, *, fmt: str, actor: User) -> None:
@@ -152,10 +173,24 @@ def render_html(report: dict) -> str:
         f"<tr><td>{html.escape(k)}</td><td>{n}</td></tr>"
         for k, n in report["summary"]["by_framework"].items()
     )
-    tables = " · ".join(
-        f"{html.escape(fw)} {html.escape(v)}"
-        for fw, v in report.get("mapping_tables", {}).get("versions", {}).items()
-    )
+    mapping_tables = report.get("mapping_tables", {})
+
+    def describe(table: dict) -> str:
+        text = " · ".join(
+            f"{html.escape(fw)} {html.escape(v)}" for fw, v in table.get("versions", {}).items()
+        )
+        overlay = table.get("overlay")
+        if overlay:
+            text += f" · overlay {html.escape(overlay['name'])} ({html.escape(overlay['sha256'])})"
+        return text or "—"
+
+    tables = f"<p>Framework tables now: {describe(mapping_tables)}.</p>"
+    for rec in mapping_tables.get("recorded", []):
+        n = int(rec["findings"])
+        tables += f"<p>{n} finding{'' if n == 1 else 's'} mapped with: {describe(rec)}.</p>"
+    if mapping_tables.get("unrecorded"):
+        n = int(mapping_tables["unrecorded"])
+        tables += f"<p>{n} finding{'' if n == 1 else 's'} predate recorded mapping tables.</p>"
     find_rows = "".join(
         "<tr>"
         f"<td>{html.escape(f['severity'])}</td>"
@@ -190,7 +225,7 @@ def render_html(report: dict) -> str:
         (sev_rows or none2) + "</table>",
         "<h2>Summary by framework</h2><table><tr><th>framework id</th><th>count</th></tr>",
         (fw_rows or none2) + "</table>",
-        f"<p>Framework tables: {tables or '—'}.</p>",
+        tables,
         "<h2>Findings</h2><table>",
         "<tr><th>severity</th><th>finding</th><th>frameworks</th><th>evidence</th></tr>",
         (find_rows or none4) + "</table>",

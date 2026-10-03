@@ -93,18 +93,26 @@ class Settings(BaseSettings):
     alert_webhook_url: str = ""
     alert_webhook_secret: str = ""
     alert_max_attempts: int = 5
+    # A deployment overlay for the framework mapping table (spec 021): a khandaq.mappings/1 JSON
+    # file adding rules and frameworks such as an internal control catalogue. Empty = built-in only.
+    mappings_path: str = ""
 
     @property
     def is_prod(self) -> bool:
         return self.env == "prod"
 
     def validate_runtime(self) -> None:
-        """Fail closed in production on missing/placeholder settings the app relies on today.
+        """Fail closed in production on missing/placeholder settings the app relies on today, and
+        in every environment on an unusable mapping overlay (spec 021).
 
         Kept deliberately narrow for the bootable skeleton: a placeholder session secret or a
         missing database URL must stop prod from starting. Further requirements (OIDC, evidence
         key) are added here as their specs are implemented, so prod never silently runs insecure.
         """
+        # In every environment: a broken overlay must not fall back to the built-in table silently.
+        from .mapping_overlay import load_overlay
+
+        load_overlay(self.mappings_path)
         if not self.is_prod:
             return
         problems: list[str] = []

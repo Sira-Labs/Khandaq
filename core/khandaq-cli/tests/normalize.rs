@@ -70,3 +70,60 @@ fn normalize_merges_the_table_into_every_finding() {
         vec![("unmapped".into(), "nobody.mapped.this".into())]
     );
 }
+
+#[test]
+fn normalize_applies_an_overlay() {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
+    let findings = dir.join(format!("overlay-findings-{}.json", std::process::id()));
+    let overlay = dir.join(format!("overlay-{}.json", std::process::id()));
+    std::fs::write(
+        &findings,
+        serde_json::to_vec(&json!([finding("acme-scan.secrets.aws", json!([]))])).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        &overlay,
+        serde_json::to_vec(&json!({
+            "schema": "khandaq.mappings/1",
+            "versions": {"acme-ctl": "2026.1"},
+            "sources": {"acme-ctl": "https://controls.acme.example/"},
+            "rules": {"acme-scan.secrets": {
+                "mappings": [{"framework": "acme-ctl", "id": "CTL-7"}], "rationale": "ours"}}
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let run = |extra: &[&std::path::Path]| {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_khandaq-core"));
+        cmd.arg("normalize").arg(&findings);
+        if let Some(path) = extra.first() {
+            cmd.arg("--mappings").arg(path);
+        }
+        let out = cmd.output().unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+        v["canonical"][0]["x-khandaq"]["mappings"].clone()
+    };
+    assert_eq!(
+        run(&[&overlay]),
+        json!([{"framework": "acme-ctl", "id": "CTL-7"}])
+    );
+    assert_eq!(
+        run(&[]),
+        json!([{"framework": "unmapped", "id": "acme-scan.secrets.aws"}])
+    );
+
+    std::fs::write(&overlay, b"{\"schema\": \"nope\"}").unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_khandaq-core"))
+        .args(["normalize"])
+        .arg(&findings)
+        .arg("--mappings")
+        .arg(&overlay)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+}

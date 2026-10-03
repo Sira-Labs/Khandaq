@@ -132,4 +132,10 @@ def test_the_report_names_the_table_versions(env):
 
     page = client.get(f"/api/engagements/{eng_id}/report.html", headers=OWNER).text
     assert f"atlas {tables['versions']['atlas']}" in page
-    assert "Framework tables:" in page
+    assert "Framework tables now:" in page
+    # Every finding records the table that mapped it (PR #38 review).
+    assert tables["recorded"] == [
+        {"versions": tables["versions"], "overlay": None, "findings": report["summary"]["total"]}
+    ]
+    assert tables["unrecorded"] == 0
+    assert f"{report['summary']['total']} findings mapped with:" in page
