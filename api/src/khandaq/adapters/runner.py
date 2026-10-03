@@ -52,8 +52,9 @@ def _docker_memory(value: str) -> str:
 class EchoRunner:
     """Deterministic in-process adapter: emits sealed-ready evidence and canonical findings.
 
-    It produces three raw findings — two sharing an identity (to exercise cross-tool dedup) and one
-    distinct — each citing a piece of evidence, all against the single provided target.
+    It produces three raw findings — two sightings of the same rule at the same location (to
+    exercise dedup) and one distinct — each citing a piece of evidence, all against the single
+    provided target.
     """
 
     def run(self, request: dict) -> dict:
@@ -84,7 +85,7 @@ class EchoRunner:
 
         def finding(rule, sev, mappings, locs, ev_local):
             return {
-                "schema": "khandaq.finding/1",
+                "schema": "khandaq.finding/2",
                 "engagement_id": eng_id,
                 "run_id": run_id,
                 "rule_id": rule,
@@ -103,10 +104,8 @@ class EchoRunner:
 
         llm01 = [("owasp-llm-2026", "LLM01"), ("atlas", "AML.T0051")]
         findings = [
-            finding("echo.inject.a", "medium", llm01, loc1, ["e1"]),
-            finding(
-                "echo.inject.b", "high", llm01, loc1, ["e2"]
-            ),  # same identity as inject.a → dup
+            finding("echo.inject", "medium", llm01, loc1, ["e1"]),
+            finding("echo.inject", "high", llm01, loc1, ["e2"]),  # same identity → dup
             finding("echo.leak", "low", [("owasp-llm-2026", "LLM02")], loc2, ["e3"]),
         ]
         return {"evidence": evidence, "findings": findings}
