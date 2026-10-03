@@ -28,8 +28,9 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
       server-side scope lock (pure `scope.evaluate` + pre-flight route), append-only audit, per-
       engagement authz. 24 tests pass. Decisions: dev-auth stub refuses in prod (501) pending OIDC
       (spec 008); org admins act as owner; `run.rejected` audit lands with the run path (spec 005).
-- [~] S1-3 — repo plumbing: `api/` uv skeleton (done, CI `api` job green), Dockerfiles for api + web,
-      `release.yml` publishing images to GHCR (done); `core/` cargo + `web/` pnpm skeletons still to do.
+- [x] S1-3 — repo plumbing: `api/` uv skeleton (done, CI `api` job green), Dockerfiles for api + web,
+      `release.yml` publishing images to GHCR (done); the `core/` cargo workspace (spec 003) and the
+      `web/` pnpm app (spec 007) have since landed with their own CI jobs.
       Fix (2026-10-02): the khandaq-api image failed to build once `api/` gained the `khandaq-core`
       wheel dependency (spec 004) — the build context omitted `core/`, so `uv pip install .` could not
       resolve the `../core/khandaq-py` path source. The build stage now copies `core/` and a Rust
@@ -62,8 +63,9 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
       registry + runners (in-process `echo`, `DockerRunner` command build); run service wires the scope
       lock onto the run path (rejected+audited), executes, seals evidence, normalises+dedups via the
       core, persists canonical findings; runs + findings-inbox endpoints. 33 api tests pass.
-      **Follow-ups:** async execution on the Procrastinate worker; evidence bytes upload to the object
-      store (hash+metadata sealed today); real Docker execution lands with spec 006.
+      **Follow-ups:** async execution on the Procrastinate worker (done in spec 012 on Khandaq's
+      own worker, ADR-0015); evidence bytes upload to the object store (done, spec 014); real
+      Docker execution lands with spec 006.
 - [x] S3-3 — bundled vulnerable local target: partially covered by the in-process `echo` adapter for the
       demo/tests; a networked vulnerable target ships with the web demo (spec 007).
 - [x] S3-2 — spec 006 garak adapter + contract test — `adapters/garak/` (Dockerfile pinned to
@@ -71,7 +73,6 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
       garak fixture → 3 schema-valid, mapped findings; CI adapters job runs contract tests; release.yml
       publishes `khandaq-adapter-garak`. **Follow-up:** Docker execution + disk-manifest registry
       wiring (deploy-verified; needs a daemon).
-- [ ] S3-3 — bundled intentionally-vulnerable local target
 
 ### Sprint 4 — console + adapters + report
 - [x] S4-1 — spec 007 web console — Vite + React 19 + TanStack Query + Tailwind v4 SPA (engagements
@@ -169,7 +170,8 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
       backing off 2^n minutes to `failed` after `KHANDAQ_ALERT_MAX_ATTEMPTS`; every outcome audited.
       Decisions: the webhook URL is deployment config, never per campaign (no operator-chosen
       exfiltration target); the payload carries rule ids, severities and counts only, never titles,
-      evidence or target details; prod requires https + a 32-character secret. Email is a follow-up.
+      evidence or target details; prod requires https + a 32-character secret. Email followed in
+      spec 022 (S5-6).
 
 - [x] S5-3 — spec 018 console campaigns: campaigns panel on the engagement page (list, create,
       enabled/paused), a campaign page with Pause/Resume, its runs (polling while in flight), its
@@ -203,6 +205,14 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
       deadline in a daemon thread, which makes email at-least-once (stable `Message-ID`); prod
       requires TLS (`smtps`/`smtp+starttls`) and refuses a password in the URL; CR/LF in names are
       flattened before they reach the subject; the 0010 downgrade refuses while email rows exist.
+
+- [x] S5-7 — spec 023 deployment status: workers upsert a heartbeat (`worker_heartbeats`, migration
+      0011) with a non-secret settings summary every 30 s; `GET /api/deployment` (org admins)
+      shows the API's and each worker's summary with `alive`; the smoke test fails when no worker
+      is alive (skipped, not passed, for a non-admin token). Decisions: secrets, URLs and
+      addresses become booleans/counts in one function (`settings_summary`), with a test that no
+      configured secret appears; a failed heartbeat is logged and never stops the worker; rows not
+      seen for 7 days are pruned at worker start; heartbeats are telemetry, not audited.
 
 ## Owner / external dependencies (not software; do not block sprints on these)
 
