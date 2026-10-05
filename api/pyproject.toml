@@ -10,7 +10,7 @@ dependencies = [
     "pydantic-settings>=2.5",
     # Pinned to the lines validated for spec 001 (the 2.1 / 3.3 lines are brand-new; revisit together).
     "sqlalchemy>=2.0,<2.1",
-    "psycopg[binary]>=3.2,<3.3",
+    "psycopg[binary]>=3.2,<3.4",
     "alembic>=1.13",
     # OIDC BFF (spec 008): httpx for the token/JWKS calls, PyJWT for id_token validation.
     "httpx>=0.27",
