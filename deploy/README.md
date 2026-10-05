@@ -100,6 +100,14 @@ least one worker is alive and has the alert settings you expect: alerts are work
 console shows the same on its **Deployment** page (admins only), with warnings when no worker is
 alive or a worker's mapping table differs from the API's (spec 024).
 
+## Keycloak answers "Invalid parameter: redirect_uri"
+
+Khandaq sent a callback address the realm does not know. It is `KHANDAQ_PUBLIC_URL` +
+`/api/auth/callback`, so check `KHANDAQ_PUBLIC_URL` on the api app: it must be the web console's
+https origin (`https://khandaq-stg.siralabs.org` on staging), exactly as the realm file was rendered
+for. A value such as `https://$$cap_appname-web.<root domain>` is an unfilled one-click default;
+from `sha-` builds after 5 Oct the API refuses to start with one.
+
 ## Sign-in says "identity provider cannot be reached"
 
 The API could not talk to Keycloak. The API log names the step and the cause:
