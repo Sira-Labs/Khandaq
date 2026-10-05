@@ -153,9 +153,8 @@ caproverOneClickApp:
       validRegex: /^[^\s]*$/
     - id: $$cap_public_url
       label: Public URL of the web console
-      defaultValue: https://$$cap_appname-web.$$cap_root_domain
-      description: 'The exact HTTPS address people will open — enter your custom domain if you will connect one (e.g. https://khandaq-stg.siralabs.org), not the default. It must equal the origin you rendered the Keycloak realm with: the realm''s redirect URI is this URL + /api/auth/callback. Changing domains later means updating KHANDAQ_PUBLIC_URL on <app>-api and the realm client together.'
-      validRegex: /^https?:\/\/.{1,}/
+      description: 'The exact HTTPS address people will open — your custom domain (e.g. https://khandaq-stg.siralabs.org). There is no default: CapRover does not fill in $$cap_appname inside a default, and an unfilled placeholder makes Keycloak refuse sign-in (the API now refuses to start with one). It must equal the origin you rendered the Keycloak realm with: the realm''s redirect URI is this URL + /api/auth/callback. Changing domains later means updating KHANDAQ_PUBLIC_URL on <app>-api and the realm client together.'
+      validRegex: /^https:\/\/[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(:[0-9]{1,5})?\/?$/
     - id: $$cap_oidc_issuer
       label: OIDC issuer URL
       description: 'Your realm''s public URL, e.g. https://keycloak.example.org/realms/khandaq — for Sira Labs staging https://miftachun.apps.data-and-ai-dude.ch/realms/khandaq. Import deploy/keycloak/khandaq-realm-staging.json (or -production.json) first with Create realm; the template file is refused.'

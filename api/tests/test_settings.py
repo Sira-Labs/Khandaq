@@ -154,3 +154,30 @@ def test_bad_email_settings_stop_startup_everywhere(env, overrides, error, messa
 
 def test_dev_allows_a_plain_local_catcher():
     Settings(env="dev", **_EMAIL, smtp_url="smtp://localhost:1025").validate_runtime()
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://$$cap_appname-web.apps.example.org",  # an unfilled CapRover one-click default
+        "http://khandaq.example",
+        "https://khandaq.example/console",
+        "https://user@khandaq.example",
+        "khandaq.example",
+        "https://khandaq.example:99999",
+    ],
+)
+def test_prod_refuses_a_public_url_that_is_not_an_https_origin(url):
+    with pytest.raises(RuntimeError, match="KHANDAQ_PUBLIC_URL"):
+        Settings(**{**_PROD_FULL, "public_url": url}).validate_runtime()
+
+
+@pytest.mark.parametrize("url", ["https://khandaq.example", "https://khandaq.example:8443/"])
+def test_prod_accepts_a_public_https_origin(url):
+    Settings(**{**_PROD_FULL, "public_url": url}).validate_runtime()  # must not raise
+
+
+def test_prod_refuses_an_issuer_with_an_unfilled_placeholder():
+    issuer = "https://$$cap_keycloak.example/realms/khandaq"
+    with pytest.raises(RuntimeError, match="KHANDAQ_OIDC_ISSUER"):
+        Settings(**{**_PROD_FULL, "oidc_issuer": issuer}).validate_runtime()

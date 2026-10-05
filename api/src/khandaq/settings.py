@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 from functools import lru_cache
 from typing import Literal
+from urllib.parse import urlsplit
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -174,6 +175,16 @@ class Settings(BaseSettings):
                 problems.append("KHANDAQ_OIDC_CLIENT_SECRET must be set to a real value")
             if not self.public_url:
                 problems.append("KHANDAQ_PUBLIC_URL must be set (OIDC redirect URI)")
+            elif not _is_https_origin(self.public_url):
+                # A CapRover one-click default such as https://$$cap_appname-web.<root> is left
+                # unsubstituted when the form is submitted unchanged; Keycloak then refuses the
+                # redirect URI and nobody can sign in.
+                problems.append(
+                    "KHANDAQ_PUBLIC_URL must be the web console's https origin, e.g. "
+                    "https://khandaq.example.org (no path, no unfilled $$ placeholder)"
+                )
+            if "$" in self.oidc_issuer:
+                problems.append("KHANDAQ_OIDC_ISSUER contains an unfilled $$ placeholder")
         if problems:
             raise RuntimeError(
                 "Refusing to start in prod with insecure configuration: " + "; ".join(problems)
@@ -194,6 +205,25 @@ class Settings(BaseSettings):
                     f"(local@domain); got {address!r}"
                 )
         return target
+
+
+def _is_https_origin(url: str) -> bool:
+    """An absolute ``https://host[:port]`` with no path, query, fragment, user info or ``$``."""
+    if "$" in url:
+        return False
+    parts = urlsplit(url.strip())
+    try:
+        parts.port  # noqa: B018 - raises ValueError on an invalid port
+    except ValueError:
+        return False
+    return (
+        parts.scheme == "https"
+        and bool(parts.hostname)
+        and parts.username is None
+        and parts.path in ("", "/")
+        and not parts.query
+        and not parts.fragment
+    )
 
 
 @lru_cache
