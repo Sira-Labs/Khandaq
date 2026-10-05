@@ -72,8 +72,9 @@ describe("api client", () => {
 
   it("builds a login URL that only returns to a same-origin path", async () => {
     const { loginUrl } = await import("../api");
-    expect(loginUrl("/eng/eng_1")).toBe("/api/auth/login?next=%2Feng%2Feng_1");
-    expect(loginUrl("//evil.example")).toBe("/api/auth/login?next=%2F");
-    expect(loginUrl("https://evil.example")).toBe("/api/auth/login?next=%2F");
+    expect(loginUrl("/eng/eng_1")).toBe("/api/auth/login?method=google&next=%2Feng%2Feng_1");
+    expect(loginUrl("//evil.example")).toBe("/api/auth/login?method=google&next=%2F");
+    expect(loginUrl("https://evil.example")).toBe("/api/auth/login?method=google&next=%2F");
+    expect(loginUrl("/", "passkey")).toBe("/api/auth/login?method=passkey&next=%2F");
   });
 });

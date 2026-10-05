@@ -33,8 +33,8 @@ Database — new table `sessions` (migration `0002_sessions`):
 `revoked_at` (nullable).
 
 Routes (prefix `/api/auth`):
-- `GET /login?next=<relative-path>` → `307` to the IdP authorization endpoint (Authorization Code +
-  PKCE). Sets a short-lived signed (HMAC over `session_secret`) `khandaq_login` cookie carrying
+- `GET /login?method=google|github|passkey&next=<relative-path>` → `307` to the IdP authorization
+  endpoint (Authorization Code + PKCE). `method` defaults to `google`; any other value is a `422`. Sets a short-lived signed (HMAC over `session_secret`) `khandaq_login` cookie carrying
   `state`, `nonce`, PKCE `verifier`, and the sanitised `next`.
 - `GET /callback?code&state` → verifies the login cookie and `state`, exchanges the code at the token
   endpoint with the PKCE verifier, validates the `id_token` (signature via JWKS, `iss`, `aud`, `exp`,
@@ -90,6 +90,13 @@ header stub, **non-prod only**. If none resolve: `401` (prod no longer returns `
    request) and read by `audit.record`. The first version used a `ContextVar` set in the sync
    `current_user` dependency, which FastAPI runs in a threadpool on a copied context, so endpoints
    never saw it and token actions were recorded without `actor_token_id`.
+
+10. **Sign-in method** (2026-10-05, found on staging). The realm's browser flow is SSO cookie →
+    identity-provider redirect → passkey, and the redirect step only fires on a `kc_idp_hint`.
+    Without one, Keycloak shows only its passkey step, which a first-time user cannot pass. So the
+    console offers three buttons, as Tabayyun does: Google and GitHub send `kc_idp_hint=google` or
+    `github` (straight to the broker), and a passkey sends `prompt=login` (authenticate afresh even
+    inside an SSO session).
 
 ## Acceptance criteria
 

@@ -93,3 +93,31 @@ def test_a_failing_token_endpoint_is_unavailable_but_a_refused_code_is_a_400(mon
     with pytest.raises(HTTPException) as refused:
         client.exchange(code="c", code_verifier="v")
     assert refused.value.status_code == 400
+
+
+@pytest.mark.parametrize(
+    ("method", "expected", "absent"),
+    [
+        ("google", {"kc_idp_hint": ["google"]}, "prompt"),
+        ("github", {"kc_idp_hint": ["github"]}, "prompt"),
+        ("passkey", {"prompt": ["login"]}, "kc_idp_hint"),
+    ],
+)
+def test_the_sign_in_method_routes_the_realm(monkeypatch, method, expected, absent):
+    from urllib.parse import parse_qs, urlparse
+
+    _discovery(monkeypatch, ENDPOINTS)
+    url = _client("https://idp.test/realms/x").authorization_url(
+        state="s", nonce="n", code_challenge="c", method=method
+    )
+    query = parse_qs(urlparse(url).query)
+    assert {k: query[k] for k in expected} == expected
+    assert absent not in query
+
+
+def test_an_unknown_sign_in_method_is_refused(monkeypatch):
+    _discovery(monkeypatch, ENDPOINTS)
+    with pytest.raises(ValueError, match="sign-in method"):
+        _client("https://idp.test/realms/x").authorization_url(
+            state="s", nonce="n", code_challenge="c", method="password"
+        )

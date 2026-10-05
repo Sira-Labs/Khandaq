@@ -37,8 +37,16 @@ def make_pkce() -> tuple[str, str]:
     return verifier, challenge
 
 
+# How a person signs in at the realm (spec 008 §2a). Google and GitHub go straight to the broker
+# through `kc_idp_hint`; without a hint the realm's browser flow shows only its passkey step, which
+# a first-time user cannot pass.
+SIGN_IN_METHODS = ("google", "github", "passkey")
+
+
 class OidcClient(Protocol):
-    def authorization_url(self, *, state: str, nonce: str, code_challenge: str) -> str: ...
+    def authorization_url(
+        self, *, state: str, nonce: str, code_challenge: str, method: str = "google"
+    ) -> str: ...
 
     def exchange(self, *, code: str, code_verifier: str) -> dict: ...
 
@@ -94,7 +102,14 @@ class KeycloakOidcClient:
             self._jwks = jwt.PyJWKClient(self._metadata()["jwks_uri"])
         return self._jwks
 
-    def authorization_url(self, *, state: str, nonce: str, code_challenge: str) -> str:
+    def authorization_url(
+        self, *, state: str, nonce: str, code_challenge: str, method: str = "google"
+    ) -> str:
+        """Where the browser signs in with ``method``: Google or GitHub through the realm's broker,
+        or a passkey. ``prompt=login`` makes a passkey sign-in authenticate afresh even inside an
+        existing SSO session."""
+        if method not in SIGN_IN_METHODS:
+            raise ValueError(f"unknown sign-in method {method!r}")
         params = {
             "response_type": "code",
             "client_id": self._s.oidc_client_id,
@@ -105,6 +120,10 @@ class KeycloakOidcClient:
             "code_challenge": code_challenge,
             "code_challenge_method": "S256",
         }
+        if method == "passkey":
+            params["prompt"] = "login"
+        else:
+            params["kc_idp_hint"] = method
         return f"{self._metadata()['authorization_endpoint']}?{urlencode(params)}"
 
     def exchange(self, *, code: str, code_verifier: str) -> dict:

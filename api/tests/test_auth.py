@@ -24,10 +24,12 @@ class FakeOidc:
     def __init__(self) -> None:
         self.claims_to_return = {"email": "alice@test", "name": "Alice", "email_verified": True}
 
-    def authorization_url(self, *, state: str, nonce: str, code_challenge: str) -> str:
+    def authorization_url(
+        self, *, state: str, nonce: str, code_challenge: str, method: str = "google"
+    ) -> str:
         return (
             "https://idp.test/authorize"
-            f"?state={state}&nonce={nonce}"
+            f"?state={state}&nonce={nonce}&method={method}"
             f"&code_challenge={code_challenge}&code_challenge_method=S256"
         )
 
@@ -388,3 +390,16 @@ def test_an_idp_failing_during_the_callback_sends_it_to_the_notice(client, fake,
     r2 = client.get(f"/api/auth/callback?code=abc&state={state}", follow_redirects=False)
     assert r2.status_code == 307 and r2.headers["location"] == "/?signin=unavailable"
     assert client.get("/api/auth/me").json()["auth"] != "session"  # no session was created
+
+
+@pytest.mark.parametrize("method", ["google", "github", "passkey"])
+def test_login_passes_the_chosen_sign_in_method(client, method):
+    r = client.get(f"/api/auth/login?method={method}", follow_redirects=False)
+    assert r.status_code == 307
+    assert parse_qs(urlparse(r.headers["location"]).query)["method"] == [method]
+
+
+def test_login_defaults_to_google_and_refuses_an_unknown_method(client):
+    r = client.get("/api/auth/login", follow_redirects=False)
+    assert parse_qs(urlparse(r.headers["location"]).query)["method"] == ["google"]
+    assert client.get("/api/auth/login?method=password", follow_redirects=False).status_code == 422
