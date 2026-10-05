@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
-import { ApiError, api, getDevUser, loginUrl, setDevUser, type Me } from "./api";
+import { ApiError, api, getDevUser, loginUrl, setDevUser, type Me, type SignInMethod } from "./api";
 import { Campaign } from "./pages/Campaign";
 import { Deployment } from "./pages/Deployment";
 import { Engagement } from "./pages/Engagement";
@@ -69,6 +69,12 @@ function SignedIn({ me }: { me: Me }) {
   );
 }
 
+const SIGN_IN_METHODS: { method: SignInMethod; label: string }[] = [
+  { method: "google", label: "Sign in with Google" },
+  { method: "github", label: "Sign in with GitHub" },
+  { method: "passkey", label: "Sign in with a passkey" },
+];
+
 /** Not signed in, or signed in without access. Never redirects on its own: with an IdP session
  * for a refused account, an automatic redirect would bounce between the IdP and this page. */
 function SignIn({ denied, unavailable = false }: { denied: boolean; unavailable?: boolean }) {
@@ -90,12 +96,26 @@ function SignIn({ denied, unavailable = false }: { denied: boolean; unavailable?
       ) : (
         <p className="text-[var(--muted)]">For authorised AI red-team engagements only.</p>
       )}
-      <a
-        className="inline-block rounded bg-[var(--ember)] px-5 py-2 font-medium text-black"
-        href={loginUrl(denied ? "/" : next || "/")}
-      >
-        {denied ? "Sign in with another account" : "Sign in"}
-      </a>
+      {denied && <p className="text-[var(--muted)]">Sign in with another account:</p>}
+      <div className="flex flex-col items-center gap-2">
+        {SIGN_IN_METHODS.map(({ method, label }, i) => (
+          <a
+            key={method}
+            className={
+              i === 0
+                ? "w-64 rounded bg-[var(--ember)] px-5 py-2 font-medium text-black"
+                : "w-64 rounded border border-white/15 px-5 py-2"
+            }
+            href={loginUrl(denied ? "/" : next || "/", method)}
+          >
+            {label}
+          </a>
+        ))}
+      </div>
+      <p className="text-xs text-[var(--muted)]">
+        A passkey works after you have added one in your account; the first sign-in uses Google or
+        GitHub.
+      </p>
     </div>
   );
 }

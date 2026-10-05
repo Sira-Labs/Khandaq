@@ -51,8 +51,16 @@ describe("app sign-in", () => {
   it("offers sign-in (without auto-redirecting) when there is no session", async () => {
     meMock.mockRejectedValue(new ApiError(401, "authentication required"));
     await renderApp();
-    const link = await screen.findByRole("link", { name: "Sign in" });
-    expect(link).toHaveAttribute("href", "/api/auth/login?next=%2Feng%2Feng_1");
+    const link = await screen.findByRole("link", { name: "Sign in with Google" });
+    expect(link).toHaveAttribute("href", "/api/auth/login?method=google&next=%2Feng%2Feng_1");
+    expect(screen.getByRole("link", { name: "Sign in with GitHub" })).toHaveAttribute(
+      "href",
+      "/api/auth/login?method=github&next=%2Feng%2Feng_1",
+    );
+    expect(screen.getByRole("link", { name: "Sign in with a passkey" })).toHaveAttribute(
+      "href",
+      "/api/auth/login?method=passkey&next=%2Feng%2Feng_1",
+    );
   });
 
   it("explains a refused account instead of looping back to the IdP", async () => {
@@ -60,7 +68,11 @@ describe("app sign-in", () => {
     meMock.mockRejectedValue(new ApiError(401, "authentication required"));
     await renderApp();
     expect(await screen.findByRole("alert")).toHaveTextContent("no access");
-    expect(screen.getByRole("link", { name: "Sign in with another account" })).toBeInTheDocument();
+    expect(screen.getByText("Sign in with another account:")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Sign in with Google" })).toHaveAttribute(
+      "href",
+      "/api/auth/login?method=google&next=%2F",
+    );
   });
 
   it("shows the signed-in user and sign-out, and no dev identity box", async () => {
@@ -120,9 +132,9 @@ describe("sign-in when the identity provider is unreachable", () => {
     window.history.replaceState(null, "", "/?signin=unavailable");
     await renderApp();
     expect(await screen.findByRole("alert")).toHaveTextContent("cannot reach its identity provider");
-    expect(screen.getByRole("link", { name: "Sign in" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "Sign in with Google" })).toHaveAttribute(
       "href",
-      "/api/auth/login?next=%2F",
+      "/api/auth/login?method=google&next=%2F",
     );
   });
 

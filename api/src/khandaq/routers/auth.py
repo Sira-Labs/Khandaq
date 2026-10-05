@@ -8,6 +8,7 @@ Automation uses API tokens minted here. State-changing requests are CSRF-protect
 from __future__ import annotations
 
 import secrets
+from typing import Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse
@@ -68,6 +69,7 @@ def _safe_next(raw: str | None) -> str:
 @router.get("/login")
 def login(
     next: str | None = Query(default=None),
+    method: Literal["google", "github", "passkey"] = Query(default="google"),
     client: OidcClient = Depends(provide_oidc_client),
     settings: Settings = Depends(get_settings),
 ) -> RedirectResponse:
@@ -80,7 +82,9 @@ def login(
         ttl_seconds=LOGIN_TTL_SECONDS,
     )
     try:
-        url = client.authorization_url(state=state, nonce=nonce, code_challenge=challenge)
+        url = client.authorization_url(
+            state=state, nonce=nonce, code_challenge=challenge, method=method
+        )
     except IdentityProviderUnavailable:  # logged with its cause by the client
         return RedirectResponse(SIGNIN_UNAVAILABLE, status_code=307)
     resp = RedirectResponse(url, status_code=307)

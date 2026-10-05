@@ -37,10 +37,13 @@ export class ApiError extends Error {
   }
 }
 
-/** Where the "Sign in" button goes: the API starts the OIDC login and returns to `next`. */
-export function loginUrl(next: string): string {
+/** How a person signs in at the realm: Google or GitHub through its broker, or a passkey. */
+export type SignInMethod = "google" | "github" | "passkey";
+
+/** Where a sign-in button goes: the API starts the OIDC login with `method` and returns to `next`. */
+export function loginUrl(next: string, method: SignInMethod = "google"): string {
   const safeNext = next.startsWith("/") && !next.startsWith("//") ? next : "/";
-  return `/api/auth/login?next=${encodeURIComponent(safeNext)}`;
+  return `/api/auth/login?method=${method}&next=${encodeURIComponent(safeNext)}`;
 }
 
 function headersFor(method: string): Record<string, string> {
