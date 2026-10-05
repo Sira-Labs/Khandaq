@@ -48,7 +48,7 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
       - uses: taiki-e/install-action@cargo-audit
       - run: cargo audit || true   # advisory, as in the core job
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with: { python-version: "3.12" }
       - run: python -m venv .venv && . .venv/bin/activate && pip install "maturin>=1.5,<2" pytest
       - run: . .venv/bin/activate && maturin develop
@@ -59,7 +59,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with: { python-version: "3.12" }
       - run: pip install pyyaml jsonschema pytest
       - run: python adapters/_tooling/validate_manifests.py
