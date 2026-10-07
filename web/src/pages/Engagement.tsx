@@ -5,6 +5,7 @@ import { api, type RunParams } from "../api";
 import { CampaignsPanel } from "../components/CampaignsPanel";
 import { ReportPanel } from "../components/ReportPanel";
 import { RunsPanel } from "../components/RunsPanel";
+import { SetupPanel } from "../components/SetupPanel";
 import { navigate } from "../router";
 
 export function Engagement({ engagementId }: { engagementId: string }) {
@@ -78,6 +79,8 @@ export function Engagement({ engagementId }: { engagementId: string }) {
         <span className="text-xs uppercase text-[var(--muted)]">{eng.data.state}</span>
       </div>
 
+      <SetupPanel engagement={eng.data} />
+
       <section className="rounded border border-white/10 p-4">
         <h2 className="mb-2 font-semibold">Run a suite</h2>
         <div className="flex flex-wrap items-center gap-2">
@@ -92,7 +95,7 @@ export function Engagement({ engagementId }: { engagementId: string }) {
             <option value="">select target…</option>
             {targets.data?.map((t) => (
               <option key={t.id} value={t.id}>
-                {t.type}: {String((t.spec as { host?: string }).host ?? t.id)}
+                {t.type}: {String((t.spec as { host?: string; url?: string }).url ?? (t.spec as { host?: string }).host ?? t.id)}
               </option>
             ))}
           </select>

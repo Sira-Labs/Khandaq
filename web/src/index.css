@@ -16,4 +16,7 @@ body {
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 
-a { color: var(--ember); }
+/* In the base layer, so Tailwind utilities (a button's text colour) win over it. */
+@layer base {
+  a { color: var(--ember); }
+}
