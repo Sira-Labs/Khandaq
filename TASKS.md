@@ -234,6 +234,15 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
       finding, and a report where no item was scanned is refused; no `mcp-scanner` default
       mapping (uncurated threats stay `unmapped`, as for garak); the scope lock was not changed.
 
+- [x] S6-3 — spec 026 console engagement setup: a draft engagement's owner adds targets (LLM
+      endpoint, agent, MCP server by URL), saves a scope generated from them (optional requests per
+      minute) and activates with the authorisation reference, all through the spec 002 routes; an
+      active engagement shows its targets and locked scope read-only. The header shows "Signed in
+      as" with email and role, and the primary sign-in button's label is legible again. Decisions:
+      the scope is generated from the targets, not typed (deny, windows and techniques stay
+      API-only); Activate stays off while the saved scope no longer matches the targets; the global
+      link colour moved into Tailwind's base layer, because unlayered CSS beat the utilities.
+
 ## Owner / external dependencies (not software; do not block sprints on these)
 
 - [ ] Confirm the public name/domain: GitHub `Sira-Labs/Khandaq` is taken (good); check PyPI name and a
