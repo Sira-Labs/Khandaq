@@ -139,6 +139,24 @@ export interface Target {
   spec: Record<string, unknown>;
 }
 
+/** An engagement's scope document (spec 002); `locked` once the engagement is active. */
+export interface Scope {
+  engagement_id: string;
+  version: number;
+  allow: Record<string, Record<string, unknown>[]>;
+  deny: Record<string, unknown>[];
+  roe: Record<string, unknown>;
+  locked: boolean;
+}
+
+export interface ScopeIn {
+  allow: Record<string, Record<string, unknown>[]>;
+  deny: Record<string, unknown>[];
+  roe: Record<string, unknown>;
+}
+
+export type TargetType = "llm_endpoint" | "agent" | "mcp_server";
+
 export interface Finding {
   id: string;
   fingerprint: string;
@@ -299,7 +317,15 @@ export const api = {
     request<Engagement>("POST", "/engagements", { name, client }),
   getEngagement: (id: string) => request<Engagement>("GET", `/engagements/${id}`),
   listTargets: (id: string) => request<Target[]>("GET", `/engagements/${id}/targets`),
-  getScope: (id: string) => request<Record<string, unknown> | null>("GET", `/engagements/${id}/scope`),
+  getScope: (id: string) => request<Scope | null>("GET", `/engagements/${id}/scope`),
+  /** Owner only, while the engagement is a draft (spec 002). */
+  addTarget: (id: string, type: TargetType, spec: Record<string, unknown>) =>
+    request<Target>("POST", `/engagements/${id}/targets`, { type, spec }),
+  /** Owner only; validated and audited by the API (spec 002). */
+  setScope: (id: string, scope: ScopeIn) => request<Scope>("PUT", `/engagements/${id}/scope`, scope),
+  /** Owner only; needs a target, a scope and the authorisation reference, then locks the scope. */
+  activate: (id: string, authorisationRef: string) =>
+    request<Engagement>("POST", `/engagements/${id}/activate`, { authorisation_ref: authorisationRef }),
   listRuns: (id: string) => request<Run[]>("GET", `/engagements/${id}/runs`),
   listFindings: (id: string, severity?: string) =>
     request<Finding[]>("GET", `/engagements/${id}/findings${severity ? `?severity=${severity}` : ""}`),

@@ -79,6 +79,8 @@ describe("app sign-in", () => {
     meMock.mockResolvedValue(SESSION_ME);
     await renderApp();
     expect(await screen.findByText("Alice")).toBeInTheDocument();
+    expect(screen.getByText(/Signed in as/)).toHaveTextContent("Signed in as Alice · alice@acme.test");
+    expect(screen.getByText("member")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Sign out" })).toBeInTheDocument();
     expect(screen.queryByLabelText("dev user email")).toBeNull();
   });

@@ -38,7 +38,11 @@ function SignedIn({ me }: { me: Me }) {
   if (me.auth === "dev") return <DevIdentity />;
   return (
     <div className="flex items-center gap-3 text-sm">
-      <span className="text-[var(--muted)]">{me.display_name || me.email}</span>
+      <span className="text-[var(--muted)]">
+        Signed in as <span className="text-[var(--fg)]">{me.display_name || me.email}</span>
+        {me.display_name && <span> · {me.email}</span>}
+      </span>
+      <span className="rounded bg-white/10 px-2 py-0.5 text-xs uppercase tracking-wide">{me.org_role}</span>
       {me.auth === "session" && (
         <button
           className="text-[var(--ember)] disabled:opacity-50"
