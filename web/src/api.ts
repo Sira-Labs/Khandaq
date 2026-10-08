@@ -198,6 +198,16 @@ export interface ReportVerify {
 
 export type RunParams = Record<string, unknown>;
 
+/** A registered adapter (spec 027). `paces_requests` is false for one that cannot hold a rate cap. */
+export interface Adapter {
+  name: string;
+  version: string;
+  phases: string[];
+  frameworks: string[];
+  builtin: boolean;
+  paces_requests: boolean;
+}
+
 export interface Campaign {
   id: string;
   engagement_id: string;
@@ -329,10 +339,13 @@ export const api = {
   listRuns: (id: string) => request<Run[]>("GET", `/engagements/${id}/runs`),
   listFindings: (id: string, severity?: string) =>
     request<Finding[]>("GET", `/engagements/${id}/findings${severity ? `?severity=${severity}` : ""}`),
-  scopeCheck: (id: string, targetId: string, params: RunParams = {}) =>
+  listAdapters: () => request<Adapter[]>("GET", "/adapters"),
+  /** The scope pre-flight; with an adapter it also checks the adapter can honour the RoE. */
+  scopeCheck: (id: string, targetId: string, params: RunParams = {}, adapter?: string) =>
     request<{ allowed: boolean; reason: string | null }>("POST", `/engagements/${id}/scope-check`, {
       target_id: targetId,
       params,
+      ...(adapter ? { adapter } : {}),
     }),
   createRun: (id: string, adapter: string, targetId: string, params: RunParams = {}) =>
     request<Run>("POST", `/engagements/${id}/runs`, { adapter, target_id: targetId, params }),

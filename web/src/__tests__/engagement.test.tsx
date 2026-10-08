@@ -17,6 +17,10 @@ vi.mock("../api", async (orig) => {
       listCampaigns: vi.fn(async () => []),
       ledger: vi.fn(async () => ({ root: null, verify: { ok: true } })),
       scopeCheck: vi.fn(async () => ({ allowed: false, reason: "host 'gw.acme.test' is not in the allow-list" })),
+      listAdapters: vi.fn(async () => [
+        { name: "echo", version: "0.1.0", phases: [], frameworks: [], builtin: true, paces_requests: true },
+        { name: "garak", version: "0.17.0", phases: [], frameworks: [], builtin: false, paces_requests: false },
+      ]),
       createRun: vi.fn(async () => ({ id: "run_1", adapter: "echo", state: "succeeded", reject_reason: null, target_id: "tgt_1" })),
     },
   };
@@ -73,7 +77,7 @@ describe("Engagement run launcher", () => {
     fireEvent.change(screen.getByLabelText("target"), { target: { value: "tgt_1" } });
 
     await waitFor(() =>
-      expect(api.scopeCheck).toHaveBeenLastCalledWith("eng_1", "tgt_1", { rate_per_minute: 30 }),
+      expect(api.scopeCheck).toHaveBeenLastCalledWith("eng_1", "tgt_1", { rate_per_minute: 30 }, "echo"),
     );
     const run = screen.getByRole("button", { name: "Run" });
     await waitFor(() => expect(run).toBeEnabled());
@@ -123,5 +127,48 @@ describe("Engagement run launcher", () => {
 
     fireEvent.change(screen.getByLabelText("rate per minute"), { target: { value: "0" } });
     expect(screen.getByRole("alert")).toHaveTextContent("at least 1");
+  });
+
+  it("runs garak with the chosen probes, checked for that adapter", async () => {
+    const { api } = await import("../api");
+    vi.mocked(api.scopeCheck).mockReset();
+    vi.mocked(api.scopeCheck).mockImplementation(async (_e, _t, _p, adapter) =>
+      adapter === "garak" ? { allowed: true, reason: null } : new Promise(() => {}),
+    );
+    vi.mocked(api.createRun).mockClear();
+    const { Engagement } = await import("../pages/Engagement");
+    const { fireEvent } = await import("@testing-library/react");
+    render(wrap(<Engagement engagementId="eng_1" />));
+
+    await screen.findByText("Acme");
+    await screen.findByRole("option", { name: /garak 0\.17\.0/ });
+    fireEvent.change(screen.getByLabelText("adapter"), { target: { value: "garak" } });
+    fireEvent.change(screen.getByLabelText("garak probes"), { target: { value: "promptinject, dan.Dan_11_0" } });
+    fireEvent.change(screen.getByLabelText("target"), { target: { value: "tgt_1" } });
+
+    const params = { probes: ["promptinject", "dan.Dan_11_0"] };
+    await waitFor(() => expect(api.scopeCheck).toHaveBeenLastCalledWith("eng_1", "tgt_1", params, "garak"));
+    const run = screen.getByRole("button", { name: "Run" });
+    await waitFor(() => expect(run).toBeEnabled());
+    fireEvent.click(run);
+    await waitFor(() => expect(api.createRun).toHaveBeenCalledWith("eng_1", "garak", "tgt_1", params));
+  });
+
+  it("shows why a capped engagement refuses an adapter that cannot pace its requests", async () => {
+    const { api } = await import("../api");
+    vi.mocked(api.scopeCheck).mockReset();
+    vi.mocked(api.scopeCheck).mockResolvedValue({
+      allowed: false,
+      reason: "adapter 'garak' cannot hold the rules of engagement's request-rate limit",
+    });
+    const { Engagement } = await import("../pages/Engagement");
+    const { fireEvent } = await import("@testing-library/react");
+    render(wrap(<Engagement engagementId="eng_1" />));
+
+    await screen.findByRole("option", { name: /garak/ });
+    fireEvent.change(screen.getByLabelText("adapter"), { target: { value: "garak" } });
+    fireEvent.change(screen.getByLabelText("target"), { target: { value: "tgt_1" } });
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("request-rate limit"));
+    expect(screen.getByRole("button", { name: "Run" })).toBeDisabled();
   });
 });
