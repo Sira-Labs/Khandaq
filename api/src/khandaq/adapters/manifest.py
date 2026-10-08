@@ -22,6 +22,9 @@ class AdapterManifest:
     entrypoint: str | None = None
     resources: dict = field(default_factory=dict)
     builtin: bool = False  # True for in-process adapters (e.g. echo) that need no container
+    # True when the adapter holds a requests-per-minute limit itself (spec 027). One that cannot is
+    # refused when the rules of engagement cap the rate, rather than risk exceeding it.
+    paces_requests: bool = False
 
     def problems(self) -> list[str]:
         """Return reasons this manifest is invalid (empty list = valid)."""

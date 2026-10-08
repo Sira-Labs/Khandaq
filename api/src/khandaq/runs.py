@@ -32,7 +32,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
 from . import audit
-from .adapters import build_run_request, get_manifest, get_runner
+from .adapters import AdapterManifest, build_run_request, get_manifest, get_runner
 from .campaign_diff import record_diff
 from .deps import EngagementAccess
 from .evidence_crypto import Keyring
@@ -94,6 +94,35 @@ def scope_refusal(
         now=_now(),
     )
     return None if decision.allowed else decision.reason
+
+
+def adapter_refusal(manifest: AdapterManifest, roe: dict | None) -> str | None:
+    """Why this adapter cannot honour the engagement's rules of engagement, or ``None`` (spec 027).
+
+    The scope lock checks the requested ``rate_per_minute`` against the cap; this checks that the
+    adapter can actually hold a rate. One that cannot is refused rather than trusted to stay under.
+    """
+    if (roe or {}).get("max_requests_per_minute") is not None and not manifest.paces_requests:
+        return (
+            f"adapter '{manifest.name}' cannot hold the rules of engagement's request-rate limit;"
+            " use an adapter that paces its requests, or an engagement without a rate limit"
+        )
+    return None
+
+
+def run_refusal(
+    session: Session,
+    engagement: Engagement,
+    target: Target | None,
+    manifest: AdapterManifest,
+    params: dict,
+) -> str | None:
+    """The scope lock, then the adapter's ability to honour the rules of engagement."""
+    reason = scope_refusal(session, engagement, target, params)
+    if reason is not None:
+        return reason
+    scope_row = session.get(Scope, engagement.id)
+    return adapter_refusal(manifest, scope_row.roe if scope_row is not None else None)
 
 
 def _reject(session: Session, run: Run, reason: str, actor: User | None, **detail) -> None:
@@ -174,7 +203,7 @@ def queue_run(
         raise ValueError(f"unknown adapter '{adapter_name}'")
     run = _new_run(session, engagement, target, adapter_name, manifest.version, params, campaign_id)
     context = {"campaign_id": campaign_id} if campaign_id else {}
-    reason = scope_refusal(session, engagement, target, params)
+    reason = run_refusal(session, engagement, target, manifest, params)
     if reason is not None:
         _reject(session, run, reason, actor, **context)
     else:
@@ -195,7 +224,7 @@ def create_run(access: EngagementAccess, *, adapter_name: str, target_id: str, p
         raise _refuse(access, 404, "target not found in this engagement", target_id=target_id)
 
     run = _new_run(session, eng, target, adapter_name, manifest.version, params)
-    reason = scope_refusal(session, eng, target, params)
+    reason = run_refusal(session, eng, target, manifest, params)
     if reason is not None:
         _reject(session, run, reason, access.user)
         session.commit()
@@ -235,9 +264,11 @@ def claim_next_run(session: Session) -> str | None:
     target = session.get(Target, run.target_id) if run.target_id else None
     if engagement is None:  # pragma: no cover - engagements are never deleted
         raise RuntimeError(f"run {run.id} has no engagement")
-    reason = scope_refusal(session, engagement, target, run.params or {})
-    if reason is None and get_manifest(run.adapter) is None:
-        reason = f"adapter '{run.adapter}' is no longer available"
+    manifest = get_manifest(run.adapter)
+    if manifest is None:
+        reason: str | None = f"adapter '{run.adapter}' is no longer available"
+    else:
+        reason = run_refusal(session, engagement, target, manifest, run.params or {})
     if reason is not None:
         _reject(session, run, reason, None, at="claim")
         session.commit()
