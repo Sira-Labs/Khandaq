@@ -1,4 +1,4 @@
-# garak adapter (spec 006). garak is NVIDIA's LLM vulnerability scanner (Apache-2.0).
+# garak adapter (specs 006, 027). garak is NVIDIA's LLM vulnerability scanner (Apache-2.0).
 # Khandaq orchestrates it (ADR-0001); this manifest pins an exact upstream version.
 name: garak
 version: "0.17.0"                 # exact upstream version; bump deliberately with the contract test
@@ -20,3 +20,6 @@ severity_table:
 resources:
   cpu: "1"
   memory: 2Gi
+# garak sends one request at a time but cannot hold a requests-per-minute limit, so an engagement
+# whose rules of engagement cap the rate refuses it (spec 027).
+paces_requests: false
