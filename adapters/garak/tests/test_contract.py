@@ -105,6 +105,20 @@ def test_records_after_completion_are_refused():
         _parse(FIXTURE + [FIXTURE[2]])
 
 
+DIGEST = '{"entry_type": "digest", "meta": {}, "eval": {}}'
+
+
+def test_garak_0_17_digest_after_completion_is_accepted():
+    # A real garak 0.17.0 run (spec 027) appends one `digest` record after `completion`.
+    assert len(_parse(FIXTURE + [DIGEST])) == 3
+
+
+@pytest.mark.parametrize("tail", [[DIGEST, DIGEST], [DIGEST, FIXTURE[2]]])
+def test_anything_beyond_one_digest_after_completion_is_refused(tail):
+    with pytest.raises(wrap.ReportError, match="after the completion"):
+        _parse(FIXTURE + tail)
+
+
 def test_a_report_with_no_evals_is_refused():
     with pytest.raises(wrap.ReportError, match="no eval"):
         _parse([FIXTURE[0], FIXTURE[1], FIXTURE[-1]])

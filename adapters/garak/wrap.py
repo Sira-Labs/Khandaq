@@ -85,6 +85,7 @@ def parse_report(
     findings: list[dict] = []
     evals = 0
     completed = False
+    digested = False
     for n, line in enumerate(report_lines, start=1):
         line = line.strip()
         if not line:
@@ -96,7 +97,12 @@ def parse_report(
         if not isinstance(rec, dict):
             raise ReportError(f"line {n} is not a JSON object")
         kind = rec.get("entry_type")
-        if completed:  # garak closes the report right after `completion`: anything later is foreign
+        if completed:
+            # garak 0.17 closes the report with `completion` and then appends one `digest` (its run
+            # summary, seen on a real run). Anything else, or a second digest, is foreign.
+            if kind == "digest" and not digested:
+                digested = True
+                continue
             raise ReportError(f"line {n}: a record after the completion record")
         if kind == "completion":
             completed = True
