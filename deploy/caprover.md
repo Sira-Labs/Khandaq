@@ -238,6 +238,52 @@ environment's apps via CapRover app tokens, and `promote.yml` that deploys the *
 variables will live on those GitHub environments, not at repo level. A tag ruleset limits `v*` tags to
 org admins.
 
+## Testing with garak: the demo target or your own Ollama (spec 027)
+
+garak runs in the sandbox against an **OpenAI-compatible** endpoint that the engagement authorises.
+On staging, use a target that lives on the same server and is not published:
+- the bundled demo target;
+- your own Ollama with a small model.
+
+**1. A target app, internal only.** Create the app and tick **Do not expose as web app**, so it has
+no domain and is reachable only on CapRover's overlay network as `srv-captain--<app>`.
+- **Demo target.** App `khandaq-stg-target`, *Deploy via ImageName*
+  `ghcr.io/sira-labs/khandaq-vulnerable-target:sha-<short sha>`, container port `8900`.
+  - Target URL: `http://srv-captain--khandaq-stg-target:8900/v1/chat/completions`.
+  - Model: any name, for example `demo`.
+- **Ollama.** App `khandaq-stg-ollama`, *Deploy via ImageName* `ollama/ollama:<exact tag>`,
+  persistent directory `/root/.ollama`, container port `11434`.
+  1. Pull a small model once, from the server:
+     `docker exec $(docker ps -qf name=srv-captain--khandaq-stg-ollama) ollama pull llama3.2:1b`.
+  2. Target URL: `http://srv-captain--khandaq-stg-ollama:11434/v1/chat/completions`.
+  3. Model: `llama3.2:1b`.
+
+**2. The worker reaches it through the overlay.** On the worker app, set
+`KHANDAQ_ADAPTER_EGRESS_NETWORK=captain-overlay-network`. The per-run forwarder joins that network:
+- it can relay to `srv-captain--…` addresses, which the worker resolves and checks;
+- it still routes out to remote targets.
+
+Keep the socket mount and `KHANDAQ_FORWARDER_IMAGE` from section 3. The first garak run pulls
+`ghcr.io/sira-labs/khandaq-adapter-garak:0.17.0`, which is several GB, so allow for that once.
+
+**3. In the console** (spec 026):
+1. Create an engagement.
+2. Add an *LLM endpoint* target with the URL and model above.
+3. Save the scope **without** a requests-per-minute limit. garak cannot hold a rate cap, so a capped
+   engagement refuses it (spec 027).
+4. Activate the engagement.
+5. Under *Run a suite*, choose **garak 0.17.0**, the target, and optionally probe names.
+6. Press Run.
+
+The run is queued, and the worker runs it. It ends either:
+- **succeeded**, with findings and garak's report and hit log as evidence;
+- or **failed**, with garak's last output as the reason.
+
+A CPU-only Ollama answers slowly. Keep the default probe set for a first run and raise
+`KHANDAQ_ADAPTER_TIMEOUT_SECONDS` (default 3600) for longer ones.
+
+Only point garak at systems you are authorised to test. The scope lock refuses any other target.
+
 ## Local self-host (one box)
 
 `cd deploy && cp .env.example .env && docker compose up` brings up api, worker, Postgres, RustFS and

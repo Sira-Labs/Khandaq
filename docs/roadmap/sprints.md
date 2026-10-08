@@ -65,10 +65,10 @@ to CapRover staging.
 | Sprint | Focus | Specs (to write) |
 |---|---|---|
 | 5 | Campaigns: scheduler, baseline, diff (new/resolved/regressed), alerts (webhook + email); console, tokens + smoke test, mapping tables + overlay, deployment status (API + console) | 016–024 (written) |
-| 6 | Cisco mcp-scanner adapter (phase 07) + agent target type | 025 (written; the scope lock already had the `mcp_server` and `agent` types) |
-| 7 | ART adapter (phase 05) + model_artifact/dataset target types | 027–028 (026 went to the console setup form, found on staging) |
-| 8 | Supply chain: ModelAudit/ModelScan consensus + AI-BOM (phase 08) | 028–029 |
-| 9 | Guardrail-regression harness (phase 09) | 030 |
+| 6 | Cisco mcp-scanner adapter (phase 07) + agent target type; console setup; garak runs in the sandbox | 025–027 (written; the scope lock already had the `mcp_server` and `agent` types) |
+| 7 | ART adapter (phase 05) + model_artifact/dataset target types | 028–029 (026 went to the console setup form and 027 to real garak runs, both found on staging) |
+| 8 | Supply chain: ModelAudit/ModelScan consensus + AI-BOM (phase 08) | 030–031 |
+| 9 | Guardrail-regression harness (phase 09) | 032 |
 
 (Forecast numbers shifted by one on 2026-10-03: spec 012 closes R1's execution gap; and by one
 again the same day: spec 013 wires the pinned ledger root into report re-verification, spec 014

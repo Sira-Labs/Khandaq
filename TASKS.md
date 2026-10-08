@@ -242,6 +242,20 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
       the scope is generated from the targets, not typed (deny, windows and techniques stay
       API-only); Activate stays off while the saved scope no longer matches the targets; the global
       link colour moved into Tailwind's base layer, because unlayered CSS beat the utilities.
+- [x] S6-4 — spec 027 garak runs in the sandbox: the wrapper follows the spec 012 contract (request
+      from the environment, garak 0.17.0 through `openai.OpenAICompatible`, report and hit log as
+      evidence, tar on stdout, fail closed); `garak` is registered (drift-tested against
+      `adapter.yaml`); `GET /api/adapters`; the run launcher offers the adapter and garak probe
+      names; CapRover steps for an internal demo target or Ollama. Manual e2e on 2026-10-08: the
+      real `DockerRunner` ran the image against the bundled vulnerable target, and the run
+      succeeded with one high finding (`promptinject.HijackHateHumans`, 256/256), two sealed
+      evidence files and a verifying ledger. Decisions: the base URI is the target URL minus
+      `/chat/completions`, so garak's request path is the authorised URL; a new `paces_requests`
+      manifest flag, and an engagement with an RoE rate cap refuses adapters that cannot pace (audited at
+      creation and claim) rather than trust them; the parser accepts the one `digest` record garak
+      0.17 writes after `completion` (found on the real run; the recorded fixture lacked it).
+      Follow-ups: the image is 10.4 GB because pip pulls CUDA torch, so a CPU-only torch would
+      shrink it; per-run target credentials; a pacing forwarder; PyRIT and promptfoo next.
 
 ## Owner / external dependencies (not software; do not block sprints on these)
 
