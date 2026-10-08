@@ -21,6 +21,7 @@ import sys
 import tarfile
 from pathlib import Path
 from typing import IO
+from urllib.parse import urlsplit
 
 PHASE_FOR_PREFIX = {
     "promptinject": "04-prompt-injection",
@@ -203,13 +204,18 @@ def generator_target(target: dict) -> tuple[str, str]:
     spec = target.get("spec") or {}
     url = spec.get("url") or spec.get("base_url")
     model = spec.get("model")
-    if not isinstance(url, str) or not url.startswith(("http://", "https://")):
+    parts = urlsplit(url) if isinstance(url, str) else None
+    if parts is None or parts.scheme not in ("http", "https") or not parts.hostname:
         raise RequestError("the target needs an absolute http(s) URL")
-    if not url.rstrip("/").endswith(CHAT_PATH):
+    if parts.query or parts.fragment:
+        raise RequestError("the target URL must not carry a query or fragment")
+    path = parts.path.rstrip("/")
+    if not path.endswith(CHAT_PATH):
         raise RequestError(f"the target URL must end with {CHAT_PATH} (an OpenAI-compatible API)")
     if not isinstance(model, str) or not model.strip():
         raise RequestError("the target needs a model name")
-    return url.rstrip("/")[: -len(CHAT_PATH)] + "/", model.strip()
+    base = f"{parts.scheme}://{parts.netloc}{path[: -len(CHAT_PATH)]}/"
+    return base, model.strip()
 
 
 def probe_spec(params: dict) -> str:

@@ -207,6 +207,14 @@ def test_the_built_command_targets_the_in_scope_endpoint_only(tmp_path):
     assert kwargs["stdout"] is sys.stderr  # stdout carries only the evidence tar
 
 
+def test_a_trailing_slash_and_port_keep_the_authorised_base(tmp_path):
+    target = {
+        "type": "agent",
+        "spec": {"url": "https://gw.test:8443/api/v1/chat/completions/", "model": "m"},
+    }
+    assert wrap.generator_target(target) == ("https://gw.test:8443/api/v1/", "m")
+
+
 def test_a_successful_run_writes_findings_with_evidence(tmp_path):
     code, evidence, _ = _run(tmp_path, _req(), FakeGarak())
     assert code == 0
@@ -256,6 +264,14 @@ def test_malformed_probe_selections_are_refused_before_garak_runs(tmp_path, prob
         {"type": "llm_endpoint", "spec": {"url": "http://demo-target:8080/v1/chat/completions"}},
         {"type": "llm_endpoint", "spec": {"host": "demo-target", "model": "m"}},
         {"type": "llm_endpoint", "spec": {"url": "file:///v1/chat/completions", "model": "m"}},
+        # The parsed path must be the chat endpoint: a query or fragment cannot fake it.
+        {
+            "type": "llm_endpoint",
+            "spec": {"url": "http://h/other?next=/chat/completions", "model": "m"},
+        },
+        {"type": "llm_endpoint", "spec": {"url": "http://h/v1/chat/completions?x=1", "model": "m"}},
+        {"type": "llm_endpoint", "spec": {"url": "http://h/other#/chat/completions", "model": "m"}},
+        {"type": "llm_endpoint", "spec": {"url": "http:///v1/chat/completions", "model": "m"}},
     ],
 )
 def test_unusable_targets_are_refused_before_garak_runs(tmp_path, target):
