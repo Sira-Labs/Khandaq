@@ -1,19 +1,27 @@
 #!/usr/bin/env python3
-"""garak adapter wrapper (spec 006).
+"""garak adapter wrapper (specs 006 and 027).
 
-Khandaq orchestrates garak; it does not reimplement it (ADR-0001). At runtime this wrapper reads the
-scope-checked run request, runs garak against the one in-scope target, and translates garak's JSONL
-report into canonical Khandaq findings. The report parser is factored out so it can be contract-tested
-against a recorded fixture without running garak or a container.
+Khandaq orchestrates garak; it does not reimplement it (ADR-0001). Inside the run sandbox (spec 012)
+this wrapper reads the scope-checked run request, runs the pinned garak CLI against the one
+in-scope target through garak's OpenAI-compatible generator, and translates garak's JSONL report
+into canonical Khandaq findings. It adds no probes or prompts of its own: it only selects garak's
+published probes by name. The report parser is factored out so it can be contract-tested against a
+recorded fixture without running garak or a container.
 
-Only the target the control plane passed is ever used; the adapter reaches no other host.
+Only the target the control plane passed is ever used; the sandbox's network reaches no other host.
 """
 
 from __future__ import annotations
 
 import json
+import os
+import re
+import subprocess
 import sys
+import tarfile
 from pathlib import Path
+from typing import IO
+from urllib.parse import urlsplit
 
 PHASE_FOR_PREFIX = {
     "promptinject": "04-prompt-injection",
@@ -35,6 +43,7 @@ PROBE_FRAMEWORKS = {
     "xss": [("owasp-llm-2025", "LLM05"), ("owasp-llm-2026", "LLM10")],
 }
 
+VERSION = "0.17.0"
 REPORT_NAME = "garak-report.jsonl"
 
 
@@ -77,6 +86,7 @@ def parse_report(
     findings: list[dict] = []
     evals = 0
     completed = False
+    digested = False
     for n, line in enumerate(report_lines, start=1):
         line = line.strip()
         if not line:
@@ -88,7 +98,12 @@ def parse_report(
         if not isinstance(rec, dict):
             raise ReportError(f"line {n} is not a JSON object")
         kind = rec.get("entry_type")
-        if completed:  # garak closes the report right after `completion`: anything later is foreign
+        if completed:
+            # garak 0.17 closes the report with `completion` and then appends one `digest` (its run
+            # summary, seen on a real run). Anything else, or a second digest, is foreign.
+            if kind == "digest" and not digested:
+                digested = True
+                continue
             raise ReportError(f"line {n}: a record after the completion record")
         if kind == "completion":
             completed = True
@@ -124,7 +139,7 @@ def parse_report(
             "title": f"garak: {probe} failed {fails}/{total} ({detector})",
             "severity": severity,
             "confidence": "firm",
-            "source": {"tool": "garak", "version": "0.17.0", "native_severity": severity},
+            "source": {"tool": "garak", "version": VERSION, "native_severity": severity},
             "target_ref": target_ref,
             "locations": [{"logicalLocations": [{"fullyQualifiedName": probe}]}],
             "x-khandaq": {
@@ -140,31 +155,214 @@ def parse_report(
     return findings
 
 
-def main(request_path: Path = Path("/run-request.json"), evidence: Path = Path("/evidence")) -> int:
-    """Translate the garak report in ``evidence`` into ``findings.jsonl``.
+# --- running garak (spec 027) ---------------------------------------------------------------------
 
-    Exits non-zero, and writes no findings file, when the report is missing, incomplete or
-    unreadable: a run that produced no trustworthy report must surface as a failed run, never as a
-    run with zero findings. Invoking garak itself inside the run sandbox lands with Docker execution
-    on the worker (spec 006 notes); until then the report must already be present.
+GENERATOR = "openai.OpenAICompatible"
+CHAT_PATH = "/chat/completions"
+EVIDENCE_NAMES = {"report": REPORT_NAME, "hitlog": "garak-hitlog.jsonl"}
+FINDINGS_NAME = "findings.jsonl"
+# garak's own published probes, chosen by name: a small set that finishes in minutes on a CPU model.
+DEFAULT_PROBES = ("promptinject.HijackHateHumans",)
+MAX_PROBES = 10
+# A probe family (`promptinject`) or one probe class (`promptinject.HijackHateHumans`).
+_PROBE = re.compile(r"[a-z0-9_]{1,64}(\.[A-Za-z0-9_]{1,64})?")
+# garak needs an API key value for an OpenAI-compatible endpoint; per-run credentials are not part
+# of the run request yet, so targets that need none (a local model, the demo target) work today.
+PLACEHOLDER_KEY = "khandaq-no-credential"
+_PREFIX = "khandaq"
+
+
+class RequestError(ValueError):
+    """The run request cannot be turned into a garak run; the run fails before garak starts."""
+
+
+def load_request(environ: dict[str, str], fallback: Path) -> dict:
+    """The run request from ``KHANDAQ_RUN_REQUEST`` (the sandbox contract), else from a file."""
+    raw = environ.get("KHANDAQ_RUN_REQUEST")
+    if raw is None:
+        if not fallback.is_file():
+            raise RequestError("no run request: KHANDAQ_RUN_REQUEST is not set")
+        raw = fallback.read_text()
+    try:
+        request = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RequestError(f"the run request is not JSON: {exc}") from exc
+    if not isinstance(request, dict) or not isinstance(request.get("target"), dict):
+        raise RequestError("the run request has no target")
+    return request
+
+
+def generator_target(target: dict) -> tuple[str, str]:
+    """(base URI, model) for garak's OpenAI-compatible generator.
+
+    The target must name its chat-completions URL and model. garak calls ``<base>chat/completions``,
+    so the base is the URL minus that suffix: the request garak makes is exactly the URL the scope
+    authorised, never a sibling path.
     """
-    request = json.loads(request_path.read_text())
-    report = evidence / REPORT_NAME
-    if not report.is_file():
-        print(f"garak adapter: {report} is missing; garak did not run", file=sys.stderr)
+    if target.get("type") not in ("llm_endpoint", "agent"):
+        raise RequestError(f"garak tests an LLM endpoint or agent, not a {target.get('type')!r}")
+    spec = target.get("spec") or {}
+    url = spec.get("url") or spec.get("base_url")
+    model = spec.get("model")
+    parts = urlsplit(url) if isinstance(url, str) else None
+    if parts is None or parts.scheme not in ("http", "https") or not parts.hostname:
+        raise RequestError("the target needs an absolute http(s) URL")
+    if parts.query or parts.fragment:
+        raise RequestError("the target URL must not carry a query or fragment")
+    path = parts.path.rstrip("/")
+    if not path.endswith(CHAT_PATH):
+        raise RequestError(f"the target URL must end with {CHAT_PATH} (an OpenAI-compatible API)")
+    if not isinstance(model, str) or not model.strip():
+        raise RequestError("the target needs a model name")
+    base = f"{parts.scheme}://{parts.netloc}{path[: -len(CHAT_PATH)]}/"
+    return base, model.strip()
+
+
+def probe_spec(params: dict) -> str:
+    """The comma-separated probe list for ``--probes``: ``params.probes`` or the default set."""
+    probes = params.get("probes")
+    if probes is None:
+        return ",".join(DEFAULT_PROBES)
+    if isinstance(probes, str):
+        probes = [p.strip() for p in probes.split(",") if p.strip()]
+    if not isinstance(probes, list) or not probes:
+        raise RequestError("params.probes must be a non-empty list of garak probe names")
+    if len(probes) > MAX_PROBES:
+        raise RequestError(f"at most {MAX_PROBES} probes per run")
+    for name in probes:
+        if not isinstance(name, str) or not _PROBE.fullmatch(name):
+            raise RequestError(f"not a garak probe name: {name!r}")
+    return ",".join(dict.fromkeys(probes))
+
+
+def garak_command(model: str, option_file: Path, probes: str) -> list[str]:
+    """The garak CLI invocation: one generation per prompt, one request at a time."""
+    return [
+        sys.executable,
+        "-m",
+        "garak",
+        "--target_type",
+        GENERATOR,
+        "--target_name",
+        model,
+        "--generator_option_file",
+        str(option_file),
+        "--probes",
+        probes,
+        "--generations",
+        "1",
+        "--parallel_attempts",
+        "1",
+        "--report_prefix",
+        _PREFIX,
+    ]
+
+
+def garak_env(environ: dict[str, str], scratch: Path) -> dict[str, str]:
+    """garak's environment: its data, cache and config under the writable scratch directory (the
+    root filesystem is read-only) and the API key value its generator requires."""
+    env = {k: v for k, v in environ.items() if k != "KHANDAQ_RUN_REQUEST"}
+    for var, sub in (
+        ("XDG_DATA_HOME", "data"),
+        ("XDG_CACHE_HOME", "cache"),
+        ("XDG_CONFIG_HOME", "config"),
+    ):
+        env[var] = str(scratch / sub)
+    env["OPENAICOMPATIBLE_API_KEY"] = PLACEHOLDER_KEY
+    return env
+
+
+def _garak_output(scratch: Path, kind: str) -> Path | None:
+    matches = sorted(scratch.glob(f"data/garak/**/{_PREFIX}.{kind}.jsonl"))
+    return matches[0] if matches else None
+
+
+def write_tar(evidence: Path, out: IO[bytes]) -> None:
+    """The sandbox output contract (spec 012): one uncompressed tar of ``evidence`` on stdout."""
+    with tarfile.open(fileobj=out, mode="w|") as tar:
+        for path in sorted(evidence.iterdir()):
+            tar.add(path, arcname=path.name)
+
+
+def run(
+    request: dict, *, evidence: Path, scratch: Path, environ: dict[str, str], runner=None
+) -> int:
+    """Run garak for ``request`` and write ``findings.jsonl`` and the evidence into ``evidence``.
+
+    Returns non-zero, with no findings file, on any failure: a run that produced no trustworthy
+    report must surface as a failed run, never as a run with zero findings.
+    """
+    try:
+        base, model = generator_target(request["target"])
+        probes = probe_spec(request.get("params") or {})
+    except RequestError as exc:
+        print(f"garak adapter: {exc}", file=sys.stderr)
+        return 2
+    options = scratch / "generator.json"
+    options.write_text(json.dumps({"openai": {"OpenAICompatible": {"uri": base}}}))
+    command = garak_command(model, options, probes)
+    print(f"garak adapter: running garak {VERSION} probes={probes} model={model}", file=sys.stderr)
+    # garak's console output goes to stderr: stdout carries only the evidence tar.
+    result = (runner or subprocess.run)(
+        command,
+        stdout=sys.stderr,
+        stderr=sys.stderr,
+        env=garak_env(environ, scratch),
+        cwd=scratch,
+        check=False,
+    )
+    report = _garak_output(scratch, "report")
+    if result.returncode != 0 or report is None:
+        print(
+            f"garak adapter: garak exited with {result.returncode} and report={report}",
+            file=sys.stderr,
+        )
         return 2
     try:
         findings = parse_report(
             report.read_text().splitlines(),
             engagement_id=request["engagement_id"],
             run_id=request["run_id"],
-            target_ref=request["target"].get("spec", {}).get("host", "target"),
+            target_ref=_target_ref(request["target"]),
         )
     except ReportError as exc:
         print(f"garak adapter: refusing an untrustworthy report: {exc}", file=sys.stderr)
         return 2
-    (evidence / "findings.jsonl").write_text("".join(json.dumps(f) + "\n" for f in findings))
+    (evidence / EVIDENCE_NAMES["report"]).write_bytes(report.read_bytes())
+    local = [EVIDENCE_NAMES["report"]]
+    hitlog = _garak_output(scratch, "hitlog")
+    if hitlog is not None:
+        (evidence / EVIDENCE_NAMES["hitlog"]).write_bytes(hitlog.read_bytes())
+        local.append(EVIDENCE_NAMES["hitlog"])
+    for finding in findings:
+        finding["_evidence_local"] = local
+    (evidence / FINDINGS_NAME).write_text("".join(json.dumps(f) + "\n" for f in findings))
     return 0
+
+
+def _target_ref(target: dict) -> str:
+    spec = target.get("spec") or {}
+    return str(spec.get("url") or spec.get("base_url") or spec.get("host") or "target")
+
+
+def main(
+    request_path: Path = Path("/run-request.json"),
+    evidence: Path = Path("/evidence"),
+    scratch: Path = Path("/tmp/garak"),
+    out: IO[bytes] | None = None,
+) -> int:
+    """Sandbox entrypoint: run garak, then emit the evidence tar on stdout (only on success)."""
+    environ = dict(os.environ)
+    try:
+        request = load_request(environ, request_path)
+    except RequestError as exc:
+        print(f"garak adapter: {exc}", file=sys.stderr)
+        return 2
+    scratch.mkdir(parents=True, exist_ok=True)
+    code = run(request, evidence=evidence, scratch=scratch, environ=environ)
+    if code == 0:
+        write_tar(evidence, out or sys.stdout.buffer)
+    return code
 
 
 if __name__ == "__main__":

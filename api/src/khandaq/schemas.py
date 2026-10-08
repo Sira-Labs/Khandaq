@@ -66,6 +66,8 @@ class ActivateIn(BaseModel):
 class ScopeCheckIn(BaseModel):
     target_id: str
     params: dict[str, Any] = Field(default_factory=dict)
+    # With an adapter, the pre-flight also checks it can honour the rules of engagement (spec 027).
+    adapter: str | None = None
 
 
 class ScopeCheckOut(BaseModel):
@@ -77,6 +79,15 @@ class MemberOut(BaseModel):
     user_id: str
     role: str
     email: str | None = None
+
+
+class AdapterOut(BaseModel):
+    name: str
+    version: str
+    phases: list[str]
+    frameworks: list[str]
+    builtin: bool
+    paces_requests: bool
 
 
 class RunCreate(BaseModel):

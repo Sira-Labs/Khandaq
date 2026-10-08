@@ -14,8 +14,12 @@ export function Engagement({ engagementId }: { engagementId: string }) {
   const targets = useQuery({ queryKey: ["targets", engagementId], queryFn: () => api.listTargets(engagementId) });
   const ledger = useQuery({ queryKey: ["ledger", engagementId], queryFn: () => api.ledger(engagementId) });
 
+  const adapters = useQuery({ queryKey: ["adapters"], queryFn: api.listAdapters });
+
+  const [adapter, setAdapter] = useState("echo");
   const [targetId, setTargetId] = useState("");
   const [rate, setRate] = useState("");
+  const [probes, setProbes] = useState("");
   // A pre-flight answer is only valid for the exact target + params it checked (key below).
   // `error` means the check itself failed (network, CSRF, 5xx): no scope decision was made, so it
   // must not read as a denial.
@@ -33,18 +37,27 @@ export function Engagement({ engagementId }: { engagementId: string }) {
     rateValue !== null && !(Number.isSafeInteger(rateValue) && rateValue > 0)
       ? "Enter a whole number of requests per minute, at least 1."
       : null;
-  const params: RunParams = rateValue === null || rateError ? {} : { rate_per_minute: rateValue };
+  // garak runs its own published probes, chosen by name; the wrapper validates the names.
+  const probeList = probes
+    .split(",")
+    .map((p) => p.trim())
+    .filter(Boolean);
+  const params: RunParams = {
+    ...(rateValue === null || rateError ? {} : { rate_per_minute: rateValue }),
+    ...(adapter === "garak" && probeList.length ? { probes: probeList } : {}),
+  };
   const paramsKey = JSON.stringify(params);
+  const checkKey = `${adapter}|${targetId}|${paramsKey}`;
 
   useEffect(() => {
     if (!targetId || rateError) {
       setChecked(null);
       return;
     }
-    const key = `${targetId}|${paramsKey}`;
+    const key = checkKey;
     let active = true;
     api
-      .scopeCheck(engagementId, targetId, JSON.parse(paramsKey) as RunParams)
+      .scopeCheck(engagementId, targetId, JSON.parse(paramsKey) as RunParams, adapter)
       .then((r) => {
         if (active) setChecked({ key, ...r });
       })
@@ -54,12 +67,13 @@ export function Engagement({ engagementId }: { engagementId: string }) {
     return () => {
       active = false;
     };
-  }, [engagementId, targetId, paramsKey, rateError]);
+  }, [engagementId, adapter, targetId, paramsKey, checkKey, rateError]);
 
-  const preflight = checked && checked.key === `${targetId}|${paramsKey}` ? checked : null;
+  const preflight = checked && checked.key === checkKey ? checked : null;
+  const adapterList = adapters.data ?? [{ name: "echo", version: "", builtin: true }];
 
   const run = useMutation({
-    mutationFn: () => api.createRun(engagementId, "echo", targetId, params),
+    mutationFn: () => api.createRun(engagementId, adapter, targetId, params),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["runs", engagementId] });
       qc.invalidateQueries({ queryKey: ["ledger", engagementId] });
@@ -84,8 +98,20 @@ export function Engagement({ engagementId }: { engagementId: string }) {
       <section className="rounded border border-white/10 p-4">
         <h2 className="mb-2 font-semibold">Run a suite</h2>
         <div className="flex flex-wrap items-center gap-2">
-          <span className="text-sm text-[var(--muted)]">adapter</span>
-          <span className="rounded bg-black/30 px-2 py-1 text-sm">echo</span>
+          <select
+            aria-label="adapter"
+            className="rounded border border-white/15 bg-black/30 px-2 py-1 text-sm"
+            value={adapter}
+            onChange={(e) => setAdapter(e.target.value)}
+          >
+            {adapterList.map((a) => (
+              <option key={a.name} value={a.name}>
+                {a.name}
+                {a.version ? ` ${a.version}` : ""}
+                {a.builtin ? " (demo, sends nothing)" : ""}
+              </option>
+            ))}
+          </select>
           <select
             aria-label="target"
             className="rounded border border-white/15 bg-black/30 px-2 py-1 text-sm"
@@ -107,6 +133,15 @@ export function Engagement({ engagementId }: { engagementId: string }) {
             value={rate}
             onChange={(e) => setRate(e.target.value.replace(/[^0-9]/g, ""))}
           />
+          {adapter === "garak" && (
+            <input
+              aria-label="garak probes"
+              className="w-64 rounded border border-white/15 bg-black/30 px-2 py-1 text-sm"
+              placeholder="garak probes (optional, comma-separated)"
+              value={probes}
+              onChange={(e) => setProbes(e.target.value)}
+            />
+          )}
           <button
             className="rounded bg-[var(--ember)] px-4 py-1.5 font-medium text-black disabled:opacity-40"
             disabled={!targetId || !!rateError || preflight?.allowed !== true || run.isPending}

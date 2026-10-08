@@ -19,7 +19,7 @@ from . import audit
 from .adapters import get_manifest
 from .deps import EngagementAccess
 from .models import Campaign, Engagement, Run, Target, User
-from .runs import queue_run, scope_refusal
+from .runs import queue_run, run_refusal
 from .schemas import CampaignCreate, CampaignUpdate
 from .settings import get_settings
 
@@ -61,7 +61,8 @@ def _view(c: Campaign) -> dict:
 def create_campaign(access: EngagementAccess, body: CampaignCreate) -> Campaign:
     """Validate, scope-check and store a campaign (spec 016 §1). Commits."""
     session, eng = access.session, access.engagement
-    if get_manifest(body.adapter) is None:
+    manifest = get_manifest(body.adapter)
+    if manifest is None:
         raise CampaignError(422, f"unknown adapter '{body.adapter}'")
     target = session.get(Target, body.target_id)
     if target is None or target.engagement_id != eng.id:
@@ -70,7 +71,7 @@ def create_campaign(access: EngagementAccess, body: CampaignCreate) -> Campaign:
     if eng.state != "active":
         raise CampaignError(409, f"engagement is '{eng.state}', not active")
 
-    reason = scope_refusal(session, eng, target, body.params)
+    reason = run_refusal(session, eng, target, manifest, body.params)
     if reason is not None:
         audit.record(
             session,

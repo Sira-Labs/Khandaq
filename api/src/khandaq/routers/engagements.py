@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import audit, campaigns, scope
+from ..adapters import get_manifest
 from ..deps import (
     EngagementAccess,
     current_user,
@@ -20,6 +21,7 @@ from ..deps import (
     require_engagement_role,
 )
 from ..models import AuditLog, Engagement, EngagementMember, Scope, Target, User
+from ..runs import adapter_refusal
 from ..schemas import (
     ActivateIn,
     AuditOut,
@@ -270,6 +272,13 @@ def scope_check(
         params=body.params,
         now=_now(),
     )
+    if decision.allowed and body.adapter is not None:
+        manifest = get_manifest(body.adapter)
+        if manifest is None:
+            raise HTTPException(422, f"unknown adapter '{body.adapter}'")
+        reason = adapter_refusal(manifest, scope_row.roe)
+        if reason is not None:
+            return ScopeCheckOut(allowed=False, reason=reason)
     return ScopeCheckOut(allowed=decision.allowed, reason=decision.reason)
 
 
