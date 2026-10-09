@@ -264,7 +264,7 @@ no domain and is reachable only on CapRover's overlay network as `srv-captain--<
 - it still routes out to remote targets.
 
 Keep the socket mount and `KHANDAQ_FORWARDER_IMAGE` from section 3. The first garak run pulls
-`ghcr.io/sira-labs/khandaq-adapter-garak:0.17.0`, which is several GB, so allow for that once.
+`ghcr.io/sira-labs/khandaq-adapter-garak:0.17.0`, which is about 600 MB to download, so allow for that once.
 
 **3. In the console** (spec 026):
 1. Create an engagement.

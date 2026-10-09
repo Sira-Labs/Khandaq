@@ -142,5 +142,5 @@ adapter; the rate-cap refusal is shown and Run stays disabled.
   targets that need no key, or accept any key, can be tested.
 - A requests-per-minute limiter for garak, for example a pacing forwarder: a later spec. Until then
   capped engagements refuse garak.
-- A CI job that runs the garak image end to end. The image is several GB, so the e2e check is
+- A CI job that runs the garak image end to end. The image is about 3 GB, so the e2e check is
   manual for now (acceptance criterion above).
