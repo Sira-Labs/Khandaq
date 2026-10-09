@@ -119,7 +119,7 @@ any other host fails to connect.
 - [x] Evidence bytes are retained write-once and sealed; the ledger verifies.
 - [ ] garak, PyRIT and promptfoo adapters invoke their tool, and contract tests assert the built
       command. A CI e2e run of the garak image against the vulnerable target produces schema-valid
-      findings. (garak: done in spec 027, with the e2e run manual because the image is several GB;
+      findings. (garak: done in spec 027, with the e2e run manual because the image is about 3 GB;
       PyRIT and promptfoo follow in their own specs.)
 - [ ] Mapping seeds cover the R1 adapters' rule ids (test: no `unmapped` for a known rule).
 
