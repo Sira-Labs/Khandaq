@@ -256,6 +256,8 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
       0.17 writes after `completion` (found on the real run; the recorded fixture lacked it).
       Follow-ups: the image is 10.4 GB because pip pulls CUDA torch, so a CPU-only torch would
       shrink it; per-run target credentials; a pacing forwarder; PyRIT and promptfoo next.
+      Fix after merge: the release now also tags each adapter image with its manifest's tag
+      (`khandaq-adapter-garak:0.17.0` was never published) and publishes the demo target.
 
 ## Owner / external dependencies (not software; do not block sprints on these)
 

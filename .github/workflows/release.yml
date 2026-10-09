@@ -1,8 +1,9 @@
 name: release
 
-# Build and publish the control-plane and web images to GHCR so the CapRover one-click and the
-# compose bundle can pull them (ghcr.io/sira-labs/khandaq-api, -web). `latest` tracks main;
-# v* tags and a short SHA tag are also published.
+# Build and publish the control-plane, web, adapter and demo-target images to GHCR so the CapRover
+# one-click, the compose bundle and the worker can pull them. `latest` tracks main; v* tags and a
+# short SHA tag are also published. An adapter image is also tagged with the tag its adapter.yaml
+# names (e.g. khandaq-adapter-garak:0.17.0): that is the image the worker runs (spec 027).
 on:
   push:
     branches: [main]
@@ -31,15 +32,23 @@ jobs:
           - name: khandaq-adapter-garak
             file: adapters/garak/Dockerfile
             context: adapters/garak
+            manifest: adapters/garak/adapter.yaml
           - name: khandaq-adapter-pyrit
             file: adapters/pyrit/Dockerfile
             context: adapters/pyrit
+            manifest: adapters/pyrit/adapter.yaml
           - name: khandaq-adapter-promptfoo
             file: adapters/promptfoo/Dockerfile
             context: adapters/promptfoo
+            manifest: adapters/promptfoo/adapter.yaml
           - name: khandaq-adapter-mcp-scanner
             file: adapters/mcp-scanner/Dockerfile
             context: adapters/mcp-scanner
+            manifest: adapters/mcp-scanner/adapter.yaml
+          # The bundled intentionally-vulnerable demo target (never a third party).
+          - name: khandaq-vulnerable-target
+            file: deploy/targets/vulnerable-llm/Dockerfile
+            context: deploy/targets/vulnerable-llm
     steps:
       - uses: actions/checkout@v7
       - uses: docker/setup-buildx-action@v3
@@ -48,12 +57,22 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # The tag in the adapter manifest's `image:` line (empty for the other images).
+      - id: manifest
+        run: |
+          tag=""
+          if [ -n "${{ matrix.manifest }}" ]; then
+            tag=$(sed -n 's/^image: *[^ ]*:\([A-Za-z0-9._-]*\).*/\1/p' "${{ matrix.manifest }}")
+            test -n "$tag" || { echo "no image tag in ${{ matrix.manifest }}"; exit 1; }
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
       - id: meta
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/sira-labs/${{ matrix.name }}
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=${{ steps.manifest.outputs.tag || 'unused' }},enable=${{ steps.manifest.outputs.tag != '' && github.ref == 'refs/heads/main' }}
             type=ref,event=tag
             type=sha,format=short
       - uses: docker/build-push-action@v6
