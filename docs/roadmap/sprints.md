@@ -11,6 +11,20 @@ authorised-use invariants preserved with their tests, and — for user-facing st
 CLI transcript in the PR. Every story gets a spec in `docs/specs/` (copy `000-template.md`) before code.
 Priorities: **M** must (sprint fails without it), **S** should, **C** could.
 
+## Status (2026-10-10)
+
+**R1 (the spine) is done; R2 (coverage) is advanced.** Specs 001–027 are implemented (sprints 1–6);
+see `TASKS.md` for the per-spec decision log and `docs/roadmap/handover.md` for a full orientation.
+A full authorised engagement works end to end — scope → run → deduped, framework-mapped findings →
+sealed, verifiable evidence → exported report → scheduled campaigns with regression alerts — behind
+real OIDC on CapRover staging.
+
+Adapters: `garak` runs its real tool in the spec-012 sandbox (spec 027, e2e-verified 2026-10-08).
+`pyrit`, `promptfoo` and `mcp-scanner` have parsers, fixtures and passing contract tests, but their
+sandbox-execution wrappers are **not yet written** — that is the next sprint (specs 028–030, each on
+the spec-027 pattern). The PyRIT and promptfoo wrappers are the immediate blocker noted in
+`handover.md` §6.
+
 ## R1 — the spine
 
 ### Sprint 1 — foundation: schema, engagement, scope lock
@@ -65,10 +79,10 @@ to CapRover staging.
 | Sprint | Focus | Specs (to write) |
 |---|---|---|
 | 5 | Campaigns: scheduler, baseline, diff (new/resolved/regressed), alerts (webhook + email); console, tokens + smoke test, mapping tables + overlay, deployment status (API + console) | 016–024 (written) |
-| 6 | Cisco mcp-scanner adapter (phase 07) + agent target type; console setup; garak runs in the sandbox | 025–027 (written; the scope lock already had the `mcp_server` and `agent` types) |
-| 7 | ART adapter (phase 05) + model_artifact/dataset target types | 028–029 (026 went to the console setup form and 027 to real garak runs, both found on staging) |
-| 8 | Supply chain: ModelAudit/ModelScan consensus + AI-BOM (phase 08) | 030–031 |
-| 9 | Guardrail-regression harness (phase 09) | 032 |
+| 6 | Cisco mcp-scanner adapter (phase 07) + agent target type; console setup; garak runs in the sandbox | 025–027 (done; the scope lock already had the `mcp_server` and `agent` types) |
+| 7 | Finish adapter execution: PyRIT, promptfoo, mcp-scanner run their real tools in the spec-012 sandbox (spec-027 pattern) | 028–030 (to write) |
+| 8 | Per-run target credentials + a pacing forwarder for garak (lets capped engagements run it); ART adapter (phase 05) + model_artifact/dataset target types | 031–033 |
+| 9 | Supply chain: ModelAudit/ModelScan consensus + AI-BOM (phase 08); guardrail-regression harness (phase 09) | 034–036 |
 
 (Forecast numbers shifted by one on 2026-10-03: spec 012 closes R1's execution gap; and by one
 again the same day: spec 013 wires the pinned ledger root into report re-verification, spec 014
