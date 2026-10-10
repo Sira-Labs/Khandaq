@@ -21,8 +21,8 @@ real OIDC on CapRover staging.
 
 Adapters: `garak` runs its real tool in the spec-012 sandbox (spec 027, e2e-verified 2026-10-08).
 `pyrit`, `promptfoo` and `mcp-scanner` have parsers, fixtures and passing contract tests, but their
-sandbox-execution wrappers are **not yet written** — that is the next sprint (specs 028–030, each on
-the spec-027 pattern). The PyRIT and promptfoo wrappers are the immediate blocker noted in
+sandbox-execution wrappers are **not yet written** — that is the next sprint (specs 029–031, each on
+the spec-027 pattern), after spec 028 (per-run target credentials, written and awaiting approval). The PyRIT and promptfoo wrappers are the immediate blocker noted in
 `handover.md` §6.
 
 ## R1 — the spine
@@ -80,8 +80,8 @@ to CapRover staging.
 |---|---|---|
 | 5 | Campaigns: scheduler, baseline, diff (new/resolved/regressed), alerts (webhook + email); console, tokens + smoke test, mapping tables + overlay, deployment status (API + console) | 016–024 (written) |
 | 6 | Cisco mcp-scanner adapter (phase 07) + agent target type; console setup; garak runs in the sandbox | 025–027 (done; the scope lock already had the `mcp_server` and `agent` types) |
-| 7 | Finish adapter execution: PyRIT, promptfoo, mcp-scanner run their real tools in the spec-012 sandbox (spec-027 pattern) | 028–030 (to write) |
-| 8 | Per-run target credentials + a pacing forwarder for garak (lets capped engagements run it); ART adapter (phase 05) + model_artifact/dataset target types | 031–033 |
+| 7 | Per-run target credentials (028, written); then finish adapter execution: PyRIT, promptfoo, mcp-scanner run their real tools in the spec-012 sandbox (spec-027 pattern) | 028 (written), 029–031 (to write) |
+| 8 | A pacing forwarder for garak (lets capped engagements run it); ART adapter (phase 05) + model_artifact/dataset target types | 032–033 |
 | 9 | Supply chain: ModelAudit/ModelScan consensus + AI-BOM (phase 08); guardrail-regression harness (phase 09) | 034–036 |
 
 (Forecast numbers shifted by one on 2026-10-03: spec 012 closes R1's execution gap; and by one

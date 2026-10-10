@@ -261,6 +261,16 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
       torch is the CUDA build and no model runs in the container: 10.4 GB → 2.8 GB on disk
       (3.4 GB → 0.6 GB to pull); the manual e2e run was repeated with the new image.
 
+### Sprint 7 — credentials, then the remaining adapters run (R2)
+
+- [~] S7-1 — spec 028 per-run target credentials: spec written (2026-10-10), **awaiting owner
+      approval before code**. One write-only secret per target, envelope-encrypted under a separate
+      `KHANDAQ_CREDENTIAL_KEY` (off when unset), injected into the sandbox as one env var for the run,
+      redacted from findings/evidence/errors, destroyed when the engagement closes. Decisions to
+      confirm: a key separate from the evidence key; no key over plain `http` to a dotted host; an
+      adapter must declare `accepts_credential` (garak only for now); the unused free-text
+      `targets.credential_ref` is nulled and refused from now on.
+
 ## Owner / external dependencies (not software; do not block sprints on these)
 
 - [ ] Confirm the public name/domain: GitHub `Sira-Labs/Khandaq` is taken (good); check PyPI name and a

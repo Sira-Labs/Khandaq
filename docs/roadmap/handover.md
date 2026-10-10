@@ -164,16 +164,20 @@ the reason is the above, not a code defect.
 
 See `docs/roadmap/sprints.md` for the full sprint plan and forecast. In priority order from here:
 
-**Finish adapter execution (spec-027 pattern, one spec each):**
-- Spec 028 — PyRIT runs in the sandbox (PyRIT 1.1.0 Python API; built-in rate limiter, so it can set
+**In progress — spec 028, per-run target credentials** (`docs/specs/028-target-credentials.md`,
+written, awaiting owner approval before any code): one write-only, envelope-encrypted secret per
+target under its own `KHANDAQ_CREDENTIAL_KEY`, injected into the sandboxed adapter as a single env
+var for the run, redacted from all evidence and records. It unblocks testing hosted endpoints that
+need an API key (today only no-key or any-key targets work). It needs only plumbing, no attack
+content.
+
+**Then finish adapter execution (spec-027 pattern, one spec each):**
+- Spec 029 — PyRIT runs in the sandbox (PyRIT 1.1.0 Python API; built-in rate limiter, so it can set
   `paces_requests: true`).
-- Spec 029 — promptfoo runs in the sandbox.
-- A later spec — mcp-scanner runs in the sandbox.
+- Spec 030 — promptfoo runs in the sandbox.
+- Spec 031 — mcp-scanner runs in the sandbox.
 
 **Platform items offered but not yet specced (each needs a spec first, per the session protocol):**
-- Per-run target credentials — an ephemeral key in the run request, injected only as the env var the
-  adapter already expects, never logged or placed on a command line. Unblocks testing targets that
-  require an API key (today only no-key or any-key targets work). Spec-027 "out of scope" names this.
 - A requests-per-minute limiter for garak (a pacing forwarder), so capped engagements can run garak
   instead of refusing it.
 - Findings view grouped by probe family in the console.
