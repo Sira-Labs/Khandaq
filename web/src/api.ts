@@ -137,6 +137,16 @@ export interface Target {
   id: string;
   type: string;
   spec: Record<string, unknown>;
+  /** Whether a write-only credential is stored for the target (spec 028). Never the value. */
+  has_credential?: boolean;
+  credential_updated_at?: string | null;
+}
+
+/** What setting a target credential returns (spec 028): its status, never the value. */
+export interface CredentialStatus {
+  has_credential: boolean;
+  version: number;
+  updated_at: string;
 }
 
 /** An engagement's scope document (spec 002); `locked` once the engagement is active. */
@@ -206,6 +216,8 @@ export interface Adapter {
   frameworks: string[];
   builtin: boolean;
   paces_requests: boolean;
+  /** True for an adapter that uses a target's stored credential (spec 028). */
+  accepts_credential?: boolean;
 }
 
 export interface Campaign {
@@ -265,6 +277,8 @@ export interface SettingsSummary {
   campaign_min_interval_minutes: number;
   mappings: { versions: Record<string, string>; overlay: { name: string; sha256: string } | null };
   adapter_runtime: string;
+  /** Whether target credentials can be stored (spec 028); the key itself is never reported. */
+  credentials_enabled?: boolean;
 }
 
 export interface WorkerStatus {
@@ -331,6 +345,11 @@ export const api = {
   /** Owner only, while the engagement is a draft (spec 002). */
   addTarget: (id: string, type: TargetType, spec: Record<string, unknown>) =>
     request<Target>("POST", `/engagements/${id}/targets`, { type, spec }),
+  /** Owner only (spec 028). Write-only: the API stores the key encrypted and never returns it. */
+  setCredential: (id: string, targetId: string, value: string) =>
+    request<CredentialStatus>("PUT", `/engagements/${id}/targets/${targetId}/credential`, { value }),
+  clearCredential: (id: string, targetId: string) =>
+    request<void>("DELETE", `/engagements/${id}/targets/${targetId}/credential`),
   /** Owner only; validated and audited by the API (spec 002). */
   setScope: (id: string, scope: ScopeIn) => request<Scope>("PUT", `/engagements/${id}/scope`, scope),
   /** Owner only; needs a target, a scope and the authorisation reference, then locks the scope. */

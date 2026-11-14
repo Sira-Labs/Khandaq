@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
 import { api, type Engagement, type ScopeIn, type Target, type TargetType } from "../api";
+import { TargetCredential } from "./TargetCredential";
 
 // Engagement setup in the console (spec 026): targets, a scope generated from them, activation.
 // Every step goes through the spec 002 routes, so validation, the scope lock and the audit trail
@@ -116,6 +117,8 @@ export function SetupPanel({ engagement }: { engagement: Engagement }) {
     },
   });
 
+  const isOwner = !!me.data && me.data.id === engagement.owner_user_id;
+
   if (engagement.state !== "draft") {
     return (
       <section className={box} aria-label="Targets and scope">
@@ -125,7 +128,15 @@ export function SetupPanel({ engagement }: { engagement: Engagement }) {
         </h2>
         <ul className="mb-2 space-y-1 text-sm">
           {list.map((t) => (
-            <li key={t.id}>{targetLabel(t)}</li>
+            <li key={t.id}>
+              {targetLabel(t)}
+              {/* A closed engagement holds no credentials (spec 028), so there is nothing to edit. */}
+              <TargetCredential
+                engagementId={id}
+                target={t}
+                canEdit={isOwner && engagement.state === "active"}
+              />
+            </li>
           ))}
         </ul>
         {saved && (
@@ -168,7 +179,10 @@ export function SetupPanel({ engagement }: { engagement: Engagement }) {
         ) : (
           <ul className="space-y-1 text-sm">
             {list.map((t) => (
-              <li key={t.id}>{targetLabel(t)}</li>
+              <li key={t.id}>
+                {targetLabel(t)}
+                <TargetCredential engagementId={id} target={t} canEdit={isOwner} />
+              </li>
             ))}
           </ul>
         )}
