@@ -11,6 +11,8 @@ no message it raises contains one.
 from __future__ import annotations
 
 import datetime as dt
+import ipaddress
+import re
 from typing import Literal
 from urllib.parse import urlsplit
 
@@ -21,13 +23,25 @@ from . import audit
 from .adapters import AdapterManifest
 from .credential_values import CredentialError, validate_value
 from .evidence_crypto import MIN_KEY_CHARS, EvidenceDecryptError, EvidenceKeyError, Keyring
-from .models import AuditLog, Run, Target, TargetCredential, User
+from .ledger import lock_engagement
+from .models import AuditLog, Engagement, Run, Target, TargetCredential, User
 from .scope import ScopeError, network_endpoint
 from .settings import Settings
 
 # The spec fields a target's URLs live in; kept equal to the scope lock's by a test.
 URL_FIELDS = ("url", "base_url", "endpoint")
 _ENCRYPTED_SCHEMES = frozenset({"https", "wss"})
+
+_NUMERIC_HOST = re.compile(r"(0x[0-9a-f]+|[0-9]+)(\.(0x[0-9a-f]+|[0-9]+))*", re.IGNORECASE)
+
+
+def _is_ip(host: str) -> bool:
+    try:
+        ipaddress.ip_address(host.strip("[]"))
+    except ValueError:
+        return False
+    return True
+
 
 CredentialUse = Literal["injected", "none", "not_accepted"]
 
@@ -45,10 +59,14 @@ def transport_problem(target_type: str, spec: dict) -> str | None:
         host, _port = network_endpoint(target_type, spec)
     except ScopeError as exc:
         return f"the target has no usable network endpoint: {exc}"
+    if _NUMERIC_HOST.fullmatch(host) or _is_ip(host):
+        # A bare address names no service of the deployment, a numeric host (`134744072`) is an
+        # address in disguise, and the sandbox runs no IP-literal target anyway.
+        return "a credential needs a target named by host name, not by address"
     schemes = {urlsplit(str(spec[field])).scheme.lower() for field in URL_FIELDS if spec.get(field)}
     if schemes <= _ENCRYPTED_SCHEMES:
         return None
-    if "." in host or ":" in host:
+    if "." in host:
         return (
             "a credential is not sent over plain http to a public-looking host; "
             "use an https URL for this target"
@@ -95,10 +113,23 @@ def by_target(session: Session, engagement_id: str) -> dict[str, TargetCredentia
     return {row.target_id: row for row in rows}
 
 
+def lock_for_change(session: Session, engagement: Engagement) -> Engagement:
+    """Serialise credential changes with closing the engagement, and reload its state.
+
+    Without it a `PUT` that read the engagement as active could commit after a concurrent close
+    had deleted the credentials, leaving a closed engagement with a live secret; and two first
+    `PUT`s for one target would both insert. Held until the transaction ends.
+    """
+    lock_engagement(session, engagement.id)
+    session.refresh(engagement)
+    return engagement
+
+
 def set_credential(
     session: Session, target: Target, value: object, *, actor: User, settings: Settings
 ) -> TargetCredential:
-    """Store or replace the target's credential and audit it in the caller's transaction."""
+    """Store or replace the target's credential and audit it in the caller's transaction. The
+    caller holds ``lock_for_change``."""
     ring = keyring(settings)
     secret = validate_value(value)
     problem = transport_problem(target.type, target.spec)

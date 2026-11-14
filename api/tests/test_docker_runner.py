@@ -409,3 +409,24 @@ def test_stderr_and_error_text_are_redacted_before_they_are_recorded():
     with pytest.raises(RunnerError) as exc:
         _keyed_runner(Leaky(CliResult(0, GOOD_OUTPUT, b""))).run(_request(), credential=KEY)
     assert "[REDACTED:target-credential]" in str(exc.value) and KEY not in str(exc.value)
+
+
+def test_a_setup_error_is_redacted_before_it_is_cut_and_cleanup_logs_are_redacted(caplog):
+    # The key straddles the 2000-character cut of a daemon error.
+    daemon = ("x" * 50 + KEY + "y" * (2000 - len(KEY) // 2)).encode()
+
+    class Leaky(FakeCli):
+        def __call__(self, args, *, timeout=None, stdout_limit=None):
+            if args[0] == "create":
+                return CliResult(1, b"", daemon)
+            if args[0] == "rm":
+                return CliResult(1, b"", f"cannot remove: env {KEY}".encode())
+            return super().__call__(args, timeout=timeout, stdout_limit=stdout_limit)
+
+    with caplog.at_level("DEBUG"), pytest.raises(RunnerError) as exc:
+        _keyed_runner(Leaky(CliResult(0, GOOD_OUTPUT, b""))).run(_request(), credential=KEY)
+    message = str(exc.value)
+    assert KEY not in message and KEY[len(KEY) // 2 :] not in message
+    assert KEY not in caplog.text and "[REDACTED:target-credential]" in caplog.text
+    # A container that could not be removed still holds the key: that is an error, not a warning.
+    assert any(r.levelname == "ERROR" and "cleanup" in r.message for r in caplog.records)

@@ -45,8 +45,10 @@ Taken while implementing, in the same spirit:
   placeholder key, so the audit trail and what happened cannot disagree.
 - Error text is redacted before it is cut to its recorded length; a cut through the key would leave
   a fragment that no longer matches.
-- The credential request body is read untyped, and the old field is refused in the route, so that
-  no validation error can echo a secret back.
+- The credential and target request bodies are validated in the route, and the old field is
+  refused there, so that no validation error can echo a secret back.
+- Setting, clearing and closing take the engagement's lock, so a credential cannot be committed
+  behind a concurrent close.
 
 ## Alternatives considered
 
@@ -65,7 +67,15 @@ Taken while implementing, in the same spirit:
   change and injection is audited without the value.
 - Evidence of a keyed run can differ from what the tool wrote by the redaction marker only; the
   `redacted` flag says where.
-- Redaction covers the raw, percent-encoded and JSON-escaped forms. Other encodings (for example
-  base64 inside a Basic header) are out of scope until a spec adds them; the value rule
-  (`[A-Za-z0-9._~+/=:-]`, 8 to 1024 characters) keeps the key in a form those three cover.
+- Redaction covers the raw, percent-encoded and JSON-escaped forms of every character. Other
+  encodings (double percent-encoding, base64 inside a Basic header) are out of scope until a spec
+  adds them; the value rule (`[A-Za-z0-9._~+/=:-]`, 8 to 1024 characters) keeps the key in a form
+  those three cover.
+- "A single-label host is inside the deployment network" is an assumption about the worker's
+  resolver: a DNS search domain on the worker host could map such a name to a public address, and
+  the key would then travel over plain HTTP. Deployments that set search domains should give
+  keyed targets `https` URLs. A target named by address holds no credential at all.
+- Two places outside Khandaq's records can hold the key until an operator cleans up: an adapter
+  container that Docker failed to remove (its configuration; logged as an error), and the 0600
+  env file of a worker killed mid-run (its temp directory).
 - Each further adapter (PyRIT, promptfoo, mcp-scanner) adds `accepts_credential` in its own spec.

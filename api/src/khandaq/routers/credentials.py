@@ -34,7 +34,9 @@ def set_credential(
     access: EngagementAccess = Depends(require_engagement_role("owner")),
 ) -> CredentialOut:
     target = _target(access, target_id)
-    if access.engagement.state == "closed":
+    # The state is read under the lock that closing takes, so a credential cannot slip in behind
+    # a concurrent close.
+    if target_credentials.lock_for_change(access.session, access.engagement).state == "closed":
         raise HTTPException(409, "a closed engagement holds no credentials")
     value = body.get("value") if isinstance(body, dict) else None
     try:
@@ -54,6 +56,7 @@ def clear_credential(
     access: EngagementAccess = Depends(require_engagement_role("owner")),
 ) -> Response:
     target = _target(access, target_id)
+    target_credentials.lock_for_change(access.session, access.engagement)
     row = target_credentials.get(access.session, target.id)
     if row is None:
         raise HTTPException(404, "this target has no credential")

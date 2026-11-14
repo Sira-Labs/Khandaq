@@ -365,13 +365,26 @@ class DockerRunner:
         try:
             with os.fdopen(fd, "w") as f:
                 f.write(line)
-            self._ok(["network", "create", "--internal", *labels, network], "create the network")
-            self._ok(self.forwarder_args(forwarder, port, address, labels), "start the forwarder")
+            self._ok(
+                ["network", "create", "--internal", *labels, network],
+                "create the network",
+                credential,
+            )
+            self._ok(
+                self.forwarder_args(forwarder, port, address, labels),
+                "start the forwarder",
+                credential,
+            )
             self._ok(
                 ["network", "connect", "--alias", host, network, forwarder],
                 "attach the forwarder",
+                credential,
             )
-            self._ok(self.adapter_args(adapter, network, env_file, labels), "create the adapter")
+            self._ok(
+                self.adapter_args(adapter, network, env_file, labels),
+                "create the adapter",
+                credential,
+            )
             result = self.cli(
                 ["start", "--attach", adapter],
                 timeout=self.settings.adapter_timeout_seconds,
@@ -379,7 +392,7 @@ class DockerRunner:
             )
         finally:
             os.unlink(env_file)
-            self._cleanup(network, forwarder, adapter)
+            self._cleanup(network, forwarder, adapter, credential)
         if result.returncode != 0:
             # Redact before cutting the tail: a cut through the credential would leave a part of it
             # that no longer matches.
@@ -388,22 +401,28 @@ class DockerRunner:
         files, redacted = redact_output(read_output(result.stdout), credential)
         return artifacts_from_output(files, request, redacted)
 
-    def _ok(self, args: list[str], what: str) -> CliResult:
+    def _ok(self, args: list[str], what: str, credential: str | None = None) -> CliResult:
         result = self.cli(args, timeout=120)
         if result.returncode != 0:
-            detail = result.stderr.decode("utf-8", "replace")[-_STDERR_TAIL:]
-            raise RunnerError(f"could not {what}: {detail}")
+            # Redacted before the cut, as for the adapter's own stderr.
+            detail = redact(result.stderr.decode("utf-8", "replace"), credential)
+            raise RunnerError(f"could not {what}: {detail[-_STDERR_TAIL:]}")
         return result
 
-    def _cleanup(self, network: str, forwarder: str, adapter: str) -> None:
-        """Remove everything the run created; each step runs even if an earlier one failed."""
+    def _cleanup(
+        self, network: str, forwarder: str, adapter: str, credential: str | None = None
+    ) -> None:
+        """Remove everything the run created; each step runs even if an earlier one failed.
+
+        A container that could not be removed still holds the run's environment, the credential
+        included, in its configuration on the Docker host: that failure is logged as an error.
+        """
         for args in (["rm", "--force", adapter, forwarder], ["network", "rm", network]):
             try:
                 result = self.cli(args, timeout=60)
             except RunnerError as exc:
-                log.error("cleanup %s failed: %s", args, exc)
+                log.error("cleanup %s failed: %s", args, redact(str(exc), credential))
                 continue
             if result.returncode != 0:
-                log.warning(
-                    "cleanup %s: %s", args, result.stderr.decode("utf-8", "replace").strip()
-                )
+                detail = redact(result.stderr.decode("utf-8", "replace").strip(), credential)
+                log.error("cleanup %s failed: %s", args, detail)

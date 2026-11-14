@@ -139,17 +139,27 @@ logged, or included in a report. I can replace it when it rotates and remove it 
   the entry says `injected`, and a credential removed in between fails the run (Behaviour 6 only
   covered the undecryptable case). Reason: the audit entry must not claim an injection that did not
   happen, or miss one that did.
-- **Redaction also matches a JSON-escaped solidus** (`\/`) and any mix of raw and percent-encoded
-  characters, and error text is redacted before it is cut to length. Reason: a serialiser that
-  escapes `/`, or a cut through the key, would otherwise leave it readable.
-- **Plain `ws`, IP literals and targets without a URL** are refused like plain `http` to a dotted
-  host. Reason: the same exposure; a target without a URL cannot be run in the sandbox at all.
+- **Redaction matches each character raw, percent-encoded (the unreserved ones too: several
+  encoders write `~` as `%7E`) or as a JSON escape** (`\u002b`, `\/`), in any mix, and error text
+  is redacted before it is cut to length. Reason: an encoder or serialiser on the target's side,
+  or a cut through the key, would otherwise leave it readable. Double encoding stays out of scope.
+- **Plain `ws` and targets without a URL** are refused like plain `http` to a dotted host, and
+  **a target named by address** (an IP literal or a numeric host such as `134744072`) holds no
+  credential under any scheme. Reason: the same exposure; the sandbox runs no IP-literal target,
+  and a numeric host is an address without a dot.
+- **Credential changes and closing the engagement take the engagement's lock.** Reason: a `PUT`
+  that read the engagement as active could otherwise commit after a concurrent close had deleted
+  the credentials, leaving a closed engagement with a live secret (Behaviour 5).
+- **A failed run's recorded error keeps its first and its last lines** instead of its first 500
+  characters, for every adapter. This is the one change for runs without a key (Behaviour 9);
+  reason: on the e2e run the cut hid the 401 that Behaviour 6 says must be visible.
 - **The Docker runner refuses a credential for an adapter that does not declare
   `accepts_credential`**, in addition to the worker not passing one.
 - **Outside production a credential key under 32 characters is a 503 on `PUT`** (the feature is
   unusable) instead of a start-up refusal, as for the evidence key.
-- **The request body of `PUT …/credential` is read untyped and `credential_ref` is refused in the
-  route**, because a framework validation error would echo the submitted value.
+- **The request bodies of `PUT …/credential` and `POST …/targets` are validated in the route**,
+  and `credential_ref` is refused there, because a framework validation error repeats the
+  submitted body. Validation errors for a target still name the field, without the input.
 - **The bundled demo target takes an optional `DEMO_REQUIRED_API_KEY`**, so the manual e2e has a
   local endpoint that requires a bearer key. Unset, it behaves as before.
 - Web tests live in `web/src/__tests__/target-credential.test.tsx`; the redaction, runner and

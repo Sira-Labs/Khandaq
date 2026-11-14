@@ -32,10 +32,6 @@ class TargetCreate(BaseModel):
     type: TargetType
     spec: dict[str, Any]
 
-    # The old free-text field (spec 028). Declared only so the route can see that it was sent and
-    # refuse it with a fixed message; it is never stored, returned or echoed.
-    credential_ref: Any = Field(default=None, exclude=True, repr=False)
-
 
 class TargetOut(BaseModel):
     id: str

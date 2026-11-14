@@ -15,8 +15,6 @@ VALUE_RULE = (
 )
 # The set that survives a command line, an env file and JSON unchanged; redact() relies on it.
 _VALUE = re.compile(rf"[A-Za-z0-9._~+/=:-]{{{MIN_VALUE_CHARS},{MAX_VALUE_CHARS}}}")
-# Characters of the value set a percent-encoder leaves alone (RFC 3986 unreserved).
-_UNRESERVED = re.compile(r"[A-Za-z0-9._~-]")
 
 
 class CredentialError(Exception):
@@ -36,17 +34,26 @@ def validate_value(value: object) -> str:
     return value
 
 
+def _hex(char: str) -> str:
+    """The character's two hex digits, matching either case."""
+    return "".join(f"[{d.upper()}{d.lower()}]" if d.isalpha() else d for d in f"{ord(char):02x}")
+
+
 def _pattern(secret: str) -> str:
-    """Matches the secret raw, percent-encoded in either case, or any mix of the two, and with a
-    JSON-escaped solidus."""
+    """Matches the secret with each character raw, percent-encoded (``%2B``) or, for the
+    punctuation, as a JSON escape (``\\u002b``, ``\\/``), in any mix and in either hex case.
+
+    Every character gets the percent-encoded alternative, the unreserved ones too: several
+    encoders write ``~`` as ``%7E``. No alternative is optional or repeated, so the match is linear.
+    """
     parts = []
     for char in secret:
-        if _UNRESERVED.fullmatch(char):
-            parts.append(re.escape(char))
-            continue
-        encoded = "%" + "".join(f"[{d.upper()}{d.lower()}]" for d in f"{ord(char):02x}")
-        literal = r"\\?/" if char == "/" else re.escape(char)
-        parts.append(f"(?:{literal}|{encoded})")
+        forms = [re.escape(char), "%" + _hex(char)]
+        if not char.isalnum():
+            forms.append(r"\\u00" + _hex(char))
+        if char == "/":
+            forms.append(r"\\/")
+        parts.append("(?:" + "|".join(forms) + ")")
     return "".join(parts)
 
 

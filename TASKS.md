@@ -270,7 +270,7 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
       refused; the worker hands the key of the run's own target to an adapter that declares
       `accepts_credential` (garak) through the 0600 env file; `DockerRunner` redacts it from
       findings, evidence and errors before hashing; closing an engagement deletes its credentials;
-      console key status and Set/Replace/Remove. 490 api tests, 135 adapter contract tests, 70 web
+      console key status and Set/Replace/Remove. 501 api tests, 135 adapter contract tests, 70 web
       tests. Manual e2e on 2026-11-14 (local daemon, garak 0.17.0, the bundled demo target started
       with `DEMO_REQUIRED_API_KEY`): no key stored → the target answers 401 and the run fails; key
       stored → the run succeeds with one high finding (`promptinject.HijackHateHumans`, 256/256),
@@ -283,7 +283,12 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
       and targets without a URL are refused like plain `http` to a dotted host; the `PUT` body is
       read untyped and `credential_ref` is refused in the route, because a validation error would
       echo the value; a failed run's recorded error now keeps its last lines (the 401 was cut off);
-      the demo target gained the optional required key for the e2e. `scope.py`, `audit.py` and the
+      the demo target gained the optional required key for the e2e. An independent review before
+      merge (CodeRabbit was over its hourly limit) led to: credential changes and close take the
+      engagement lock (a `PUT` could commit behind a concurrent close); redaction of
+      percent-encoded unreserved characters and JSON `\u00XX` escapes; no credential for a target
+      named by address; target-create validation moved into the route (the framework's 422 echoed
+      a pasted `credential_ref`). `scope.py`, `audit.py` and the
       ledger are untouched.
       **Owner:** set `KHANDAQ_CREDENTIAL_KEY` (and keep it backed up) on staging api + worker to
       switch the feature on; it blocks testing hosted endpoints that need a key; default: stays off.

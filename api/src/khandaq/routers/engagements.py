@@ -7,8 +7,10 @@ inside the authorised boundary. Auth/roles come from khandaq.deps (a dev stub un
 from __future__ import annotations
 
 import datetime as dt
+from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -138,15 +140,21 @@ def list_members(access: EngagementAccess = Depends(require_engagement_role())) 
 
 @router.post("/{engagement_id}/targets", response_model=TargetOut, status_code=201)
 def add_target(
-    body: TargetCreate,
+    payload: Any = Body(...),
     access: EngagementAccess = Depends(require_engagement_role("owner")),
 ) -> TargetOut:
-    if "credential_ref" in body.model_fields_set:
-        # Refused rather than kept or silently dropped: someone may have pasted a secret (spec 028).
+    # The body is validated here, not by the framework, whose 422 repeats the submitted body:
+    # someone may have pasted a secret into the old credential_ref field (spec 028).
+    if isinstance(payload, dict) and "credential_ref" in payload:
+        # Refused rather than kept or silently dropped.
         raise HTTPException(
             422,
             "credential_ref is no longer accepted; send the key to the target's credential route",
         )
+    try:
+        body = TargetCreate.model_validate(payload)
+    except ValidationError as exc:
+        raise HTTPException(422, exc.errors(include_input=False, include_url=False)) from None
     if access.engagement.state != "draft":
         raise HTTPException(409, "targets can only be added while the engagement is in draft")
     problem = scope.validate_target(body.type, body.spec)
@@ -265,6 +273,8 @@ def activate(
 @router.post("/{engagement_id}/close", response_model=EngagementOut)
 def close(access: EngagementAccess = Depends(require_engagement_role("owner"))) -> Engagement:
     session, eng = access.session, access.engagement
+    # Under the lock credential changes take: none can commit after the deletion below (spec 028).
+    target_credentials.lock_for_change(session, eng)
     if eng.state == "closed":
         raise HTTPException(409, "engagement is already closed")
     eng.state = "closed"

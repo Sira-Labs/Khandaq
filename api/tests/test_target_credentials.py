@@ -769,3 +769,118 @@ def test_a_long_failure_keeps_its_last_lines_where_the_cause_is():
     assert brief.startswith("adapter failed: adapter exited with 2: garak adapter")
     assert brief.endswith("HTTP 401 from the target")
     assert _brief("short") == "short"
+
+
+# --- review follow-ups (independent review of PR #76) ---------------------------------------------
+
+
+def test_redaction_covers_percent_encoded_unreserved_characters_and_json_unicode_escapes():
+    key = "ab+cd/ef=gh:ij~kl.mn_op-qr"
+    forms = [
+        "ab%2Bcd%2Fef%3Dgh%3Aij%7Ekl%2Emn%5Fop%2Dqr",  # an encoder that leaves nothing alone
+        "ab%2bcd%2fef%3dgh%3aij%7ekl.mn_op-qr",
+        "ab\\u002bcd\\u002fef\\u003dgh\\u003aij\\u007ekl.mn_op-qr",  # JSON escapes, lower case
+        "ab\\u002Bcd\\/ef\\u003Dgh:ij~kl.mn_op-qr",  # mixed
+        "%61b+cd/ef=gh:ij~kl.mn_op-qr",  # even a letter may arrive encoded
+    ]
+    for form in forms:
+        assert redact(f"<{form}>", key) == f"<{REDACTION}>", form
+        assert redact_bytes(f"<{form}>".encode(), key) == f"<{REDACTION}>".encode(), form
+    assert redact("ab+cd/ef=gh:ij~kl.mn_op-qX", key) == "ab+cd/ef=gh:ij~kl.mn_op-qX"
+
+
+def test_redaction_of_a_long_repetitive_key_stays_fast():
+    import time
+
+    key = "+/" * 512  # the worst case the value rule allows
+    haystack = ("+/" * 400 + "x") * 200
+    started = time.perf_counter()
+    assert redact(haystack, key) == haystack
+    assert time.perf_counter() - started < 5
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://134744072/v1/chat/completions",  # 8.8.8.8 written as one number
+        "http://0x8080808/v1/chat/completions",
+        "https://203.0.113.7/v1/chat/completions",  # an address even over TLS: never run anyway
+        "https://[2001:db8::1]/v1/chat/completions",
+        "http://127.1/v1/chat/completions",
+    ],
+)
+def test_a_credential_needs_a_host_name_not_an_address(url):
+    problem = target_credentials.transport_problem("llm_endpoint", {"url": url, "model": "m"})
+    assert problem is not None and "host name" in problem
+
+
+def test_an_invalid_target_create_never_echoes_what_was_sent(env):
+    client, _, _ = env
+    eng_id = client.post("/api/engagements", json={"name": "echo"}, headers=OWNER).json()["id"]
+    bodies = [
+        {"type": "llm_endpoint", "credential_ref": KEY_A},  # spec missing AND the old field
+        {"type": "not-a-type", "spec": {"note": KEY_A}},
+        {"type": "llm_endpoint", "spec": KEY_A},
+        KEY_A,
+        [KEY_A],
+    ]
+    for body in bodies:
+        r = client.post(f"/api/engagements/{eng_id}/targets", json=body, headers=OWNER)
+        assert r.status_code == 422, r.text
+        assert KEY_A not in r.text
+    assert client.get(f"/api/engagements/{eng_id}/targets", headers=OWNER).json() == []
+    # A valid target is still created, and an invalid one still says which field is wrong.
+    r = client.post(f"/api/engagements/{eng_id}/targets", json={"type": "nope"}, headers=OWNER)
+    assert {tuple(e["loc"]) for e in r.json()["detail"]} == {("type",), ("spec",)}
+    ok = client.post(
+        f"/api/engagements/{eng_id}/targets",
+        json={"type": "llm_endpoint", "spec": SPEC_A},
+        headers=OWNER,
+    )
+    assert ok.status_code == 201 and ok.json()["has_credential"] is False
+
+
+def test_a_credential_cannot_slip_in_behind_a_concurrent_close(env):
+    """The race the lock closes: a PUT that started while the engagement was active must not
+    commit after the close deleted the credentials."""
+    import threading
+
+    from khandaq import models as m
+    from khandaq.ledger import lock_engagement
+
+    client, db, _ = env
+    eng_id, tid, _ = _engagement(client, "race")
+    result: dict = {}
+
+    def put() -> None:
+        result["response"] = _put(client, eng_id, tid, KEY_A)
+
+    with Session(db) as closing:
+        lock_engagement(closing, eng_id)  # a close is in progress and holds the lock
+        thread = threading.Thread(target=put)
+        thread.start()
+        thread.join(timeout=1.0)
+        assert thread.is_alive(), "the PUT must wait for the close, not run beside it"
+        engagement = closing.get(m.Engagement, eng_id)
+        engagement.state = "closed"
+        engagement.closed_at = dt.datetime.now(dt.UTC)
+        closing.commit()  # releases the lock
+    thread.join(timeout=10)
+
+    assert not thread.is_alive()
+    assert result["response"].status_code == 409
+    assert _stored(db, tid) == []
+    assert _audit(db, eng_id, "target.credential_set") == []
+
+
+def test_two_first_puts_for_one_target_do_not_collide(env):
+    from concurrent.futures import ThreadPoolExecutor
+
+    client, db, _ = env
+    eng_id, tid, _ = _engagement(client, "double")
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        responses = list(pool.map(lambda key: _put(client, eng_id, tid, key), [KEY_A, KEY_B]))
+    assert [r.status_code for r in responses] == [200, 200]
+    assert sorted(r.json()["version"] for r in responses) == [1, 2]
+    [(version, _)] = _stored(db, tid)
+    assert version == 2
