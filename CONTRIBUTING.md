@@ -35,7 +35,7 @@ covers the workflow; the design lives in `docs/` and is the source of truth: rea
 | `core/khandaq-py/` | maturin | `VIRTUAL_ENV=../../api/.venv ../../api/.venv/bin/maturin develop --release && ../../api/.venv/bin/pytest -q` |
 | `api/` | Python 3.12+, uv | `uv sync --extra dev && uv run pytest -q && uv run ruff check . && uv run ruff format --check . && uv run mypy` |
 | `adapters/<tool>/` | Docker | `make build && make contract-test` |
-| `web/` | Node 22.12+, pnpm 10 | `pnpm install --frozen-lockfile && pnpm lint && pnpm build` |
+| `web/` | Node 22.22.2+ (or 24.15+), pnpm 10 | `pnpm install --frozen-lockfile && pnpm lint && pnpm build` |
 
 `make lint` and `make test` run everything; `make demo` runs a suite against the bundled
 intentionally-vulnerable local target and shows the unified report; `make dev-infra` starts
