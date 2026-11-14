@@ -22,6 +22,11 @@ older notes in the repository where the two disagree.
 - **The run merges.** It opens its PRs ready for review and enables auto-merge; where that is not
   possible it merges once every required check is green and every review thread is resolved. It
   never merges with a red or pending check.
+- **Except the authorised-use controls.** A PR that changes how the scope lock, the audit log or
+  the evidence ledger work (the paths `.github/CODEOWNERS` singles out, and any change to those
+  mechanisms elsewhere) keeps the reviewer sign-off `CONTRIBUTING.md` requires, whatever branch
+  protection enforces. The run opens it, gets it green, answers the review, and leaves it for the
+  owner with an `Owner:` line in `TASKS.md`; it does not merge it and takes the next story.
 - **One story per run**, in this order: its own open PRs and a broken `main` first; then
   Dependabot PRs (about a third of the run at most; adapter version pins and the ignore rules in
   `.github/dependabot.yml` are respected; a major bump that needs migration work becomes a backlog
@@ -30,8 +35,9 @@ older notes in the repository where the two disagree.
   account, a server, a licence, a product decision) gets one `Owner:` line in `TASKS.md` and the
   run takes the next story. Where an earlier session left a question with a recommended answer,
   the recommendation is taken, recorded (an ADR if it is hard to reverse) and reported.
-- **Reporting.** Open `Owner:` items are mailed to the owner once a week (Sunday); every run ends
-  with a summary.
+- **Reporting.** Once a week (Sunday) the owner gets one mail with every open `Owner:` item and
+  every decision a run took on his behalf since the last mail (accepted recommendations, new ADRs),
+  including those that left no open item. Every run ends with a summary.
 
 What does **not** change:
 
