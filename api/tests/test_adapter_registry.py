@@ -51,6 +51,14 @@ def test_garak_is_a_registered_container_adapter():
     assert garak.image == "ghcr.io/sira-labs/khandaq-adapter-garak:0.17.0"
 
 
+def test_mcp_scanner_is_a_registered_container_adapter():
+    scanner = get_manifest("mcp-scanner")
+    assert scanner is not None and not scanner.builtin
+    assert scanner.image == "ghcr.io/sira-labs/khandaq-adapter-mcp-scanner:4.8.5"
+    # No rate cap it could hold; the target's credential is its bearer token (spec 031).
+    assert scanner.paces_requests is False and scanner.accepts_credential is True
+
+
 @pytest.mark.parametrize(
     ("adapter", "roe", "refused"),
     [
@@ -58,6 +66,8 @@ def test_garak_is_a_registered_container_adapter():
         ("garak", {}, False),
         ("garak", None, False),
         ("garak", {"max_requests_per_minute": 0}, True),  # a zero cap is still a cap
+        ("mcp-scanner", {"max_requests_per_minute": 60}, True),
+        ("mcp-scanner", {}, False),
         ("echo", {"max_requests_per_minute": 60}, False),  # echo sends nothing to the target
     ],
 )
@@ -118,9 +128,11 @@ def test_the_adapter_list(ctx):
     r = client.get("/api/adapters", headers=OWNER)
     assert r.status_code == 200
     by_name = {a["name"]: a for a in r.json()}
-    assert {"echo", "garak"} <= set(by_name)
+    assert {"echo", "garak", "mcp-scanner"} <= set(by_name)
+    assert by_name["mcp-scanner"]["version"] == "4.8.5"
+    assert by_name["mcp-scanner"]["accepts_credential"] is True
     assert by_name["garak"]["builtin"] is False and by_name["garak"]["paces_requests"] is False
-    # Only garak consumes a target credential so far (spec 028).
+    # The built-in echo adapter takes no credential (spec 028).
     assert by_name["garak"]["accepts_credential"] is True
     assert by_name["echo"]["accepts_credential"] is False
     assert by_name["garak"]["version"] == "0.17.0"

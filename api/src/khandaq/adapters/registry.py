@@ -39,7 +39,21 @@ GARAK = AdapterManifest(
     accepts_credential=True,
 )
 
-_REGISTRY = {m.name: m for m in (ECHO, GARAK)}
+# mcp-scanner connects to the one in-scope MCP server and checks its tools with its bundled YARA
+# rules (spec 031). It cannot hold a requests-per-minute limit either.
+MCP_SCANNER = AdapterManifest(
+    name="mcp-scanner",
+    version="4.8.5",
+    phases=["07-agentic-mcp"],
+    frameworks=["owasp-agentic", "owasp-llm-2026", "atlas"],
+    severity_table={"HIGH": "high", "MEDIUM": "medium", "LOW": "low", "INFO": "info"},
+    image="ghcr.io/sira-labs/khandaq-adapter-mcp-scanner:4.8.5",
+    entrypoint="/usr/local/bin/wrap.py",
+    resources={"cpu": "1", "memory": "1Gi"},
+    accepts_credential=True,
+)
+
+_REGISTRY = {m.name: m for m in (ECHO, GARAK, MCP_SCANNER)}
 
 
 def get_manifest(name: str) -> AdapterManifest | None:
