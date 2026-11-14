@@ -25,6 +25,9 @@ class AdapterManifest:
     # True when the adapter holds a requests-per-minute limit itself (spec 027). One that cannot is
     # refused when the rules of engagement cap the rate, rather than risk exceeding it.
     paces_requests: bool = False
+    # True when the adapter consumes KHANDAQ_TARGET_CREDENTIAL (spec 028). A target's credential is
+    # handed only to an adapter that declares it, never to one that would ignore or mishandle it.
+    accepts_credential: bool = False
 
     def problems(self) -> list[str]:
         """Return reasons this manifest is invalid (empty list = valid)."""

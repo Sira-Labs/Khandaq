@@ -56,6 +56,7 @@ def settings_summary(settings: Settings) -> dict:
         "campaign_min_interval_minutes": settings.campaign_min_interval_minutes,
         "mappings": {"versions": table["versions"], "overlay": table["overlay"]},
         "adapter_runtime": settings.adapter_runtime,
+        "credentials_enabled": bool(settings.credential_key),
     }
 
 

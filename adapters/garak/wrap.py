@@ -166,9 +166,11 @@ DEFAULT_PROBES = ("promptinject.HijackHateHumans",)
 MAX_PROBES = 10
 # A probe family (`promptinject`) or one probe class (`promptinject.HijackHateHumans`).
 _PROBE = re.compile(r"[a-z0-9_]{1,64}(\.[A-Za-z0-9_]{1,64})?")
-# garak needs an API key value for an OpenAI-compatible endpoint; per-run credentials are not part
-# of the run request yet, so targets that need none (a local model, the demo target) work today.
+# garak needs an API key value for an OpenAI-compatible endpoint. A target with a stored credential
+# gets it through KHANDAQ_TARGET_CREDENTIAL (spec 028); a target that needs none (a local model,
+# the demo target) gets this placeholder.
 PLACEHOLDER_KEY = "khandaq-no-credential"
+CREDENTIAL_ENV = "KHANDAQ_TARGET_CREDENTIAL"
 _PREFIX = "khandaq"
 
 
@@ -260,15 +262,18 @@ def garak_command(model: str, option_file: Path, probes: str) -> list[str]:
 
 def garak_env(environ: dict[str, str], scratch: Path) -> dict[str, str]:
     """garak's environment: its data, cache and config under the writable scratch directory (the
-    root filesystem is read-only) and the API key value its generator requires."""
-    env = {k: v for k, v in environ.items() if k != "KHANDAQ_RUN_REQUEST"}
+    root filesystem is read-only) and the API key value its generator requires.
+
+    The target's credential, when the control plane injected one, becomes that API key and nothing
+    else: it is not passed on under its own name, written to the option file, or printed."""
+    env = {k: v for k, v in environ.items() if k not in ("KHANDAQ_RUN_REQUEST", CREDENTIAL_ENV)}
     for var, sub in (
         ("XDG_DATA_HOME", "data"),
         ("XDG_CACHE_HOME", "cache"),
         ("XDG_CONFIG_HOME", "config"),
     ):
         env[var] = str(scratch / sub)
-    env["OPENAICOMPATIBLE_API_KEY"] = PLACEHOLDER_KEY
+    env["OPENAICOMPATIBLE_API_KEY"] = environ.get(CREDENTIAL_ENV) or PLACEHOLDER_KEY
     return env
 
 

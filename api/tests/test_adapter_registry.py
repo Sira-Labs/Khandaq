@@ -41,6 +41,7 @@ def test_container_manifests_match_their_adapter_yaml(manifest):
     assert manifest.severity_table == disk["severity_table"]
     assert manifest.resources == disk["resources"]
     assert manifest.paces_requests == disk.get("paces_requests", False)
+    assert manifest.accepts_credential == disk.get("accepts_credential", False)
     assert manifest.problems() == []
 
 
@@ -119,6 +120,9 @@ def test_the_adapter_list(ctx):
     by_name = {a["name"]: a for a in r.json()}
     assert {"echo", "garak"} <= set(by_name)
     assert by_name["garak"]["builtin"] is False and by_name["garak"]["paces_requests"] is False
+    # Only garak consumes a target credential so far (spec 028).
+    assert by_name["garak"]["accepts_credential"] is True
+    assert by_name["echo"]["accepts_credential"] is False
     assert by_name["garak"]["version"] == "0.17.0"
 
 

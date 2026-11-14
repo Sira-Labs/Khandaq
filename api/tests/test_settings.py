@@ -103,7 +103,7 @@ def test_prod_accepts_s3_store_and_retired_keys():
     s.validate_runtime()  # must not raise
 
 
-# --- Email alerts (spec 022) ---------------------------------------------------------------------
+# --- Email alerts (spec 022) ---------------------------------
 
 _EMAIL = {
     "alert_email_to": "secops@acme.example, oncall@acme.example",
@@ -181,3 +181,34 @@ def test_prod_refuses_an_issuer_with_an_unfilled_placeholder():
     issuer = "https://$$cap_keycloak.example/realms/khandaq"
     with pytest.raises(RuntimeError, match="KHANDAQ_OIDC_ISSUER"):
         Settings(**{**_PROD_FULL, "oidc_issuer": issuer}).validate_runtime()
+
+
+# --- target-credential key (spec 028) ---------------------------------
+
+
+@pytest.mark.parametrize(
+    "override, message",
+    [
+        ({"credential_key": "changeme"}, "KHANDAQ_CREDENTIAL_KEY must be a real value"),
+        ({"credential_key": "generate-with-openssl-rand-base64-48"}, "real value"),
+        ({"credential_key": "too-short-credential-key"}, "at least 32 characters"),
+        ({"credential_key": _PROD_BASE["evidence_key"]}, "must differ from KHANDAQ_EVIDENCE_KEY"),
+        (
+            {"credential_key": "c" * 40, "credential_previous_keys": "d" * 40 + ",short"},
+            "KHANDAQ_CREDENTIAL_PREVIOUS_KEYS",
+        ),
+    ],
+)
+def test_settings_refuse_a_placeholder_short_or_evidence_equal_credential_key(override, message):
+    s = Settings(**{**_PROD_FULL, **override})
+    with pytest.raises(RuntimeError) as exc:
+        s.validate_runtime()
+    assert message in str(exc.value)
+    assert override["credential_key"] not in str(exc.value)  # the refusal never prints the key
+
+
+def test_prod_runs_without_a_credential_key_and_with_a_real_one():
+    Settings(**_PROD_FULL).validate_runtime()  # unset: the feature is off, nothing else changes
+    Settings(
+        **{**_PROD_FULL, "credential_key": "c" * 40, "credential_previous_keys": "d" * 40}
+    ).validate_runtime()

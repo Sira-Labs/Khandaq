@@ -7,6 +7,7 @@ containment test lives in ``tests/e2e``.
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import os
@@ -288,3 +289,144 @@ def test_an_oversized_request_is_refused_before_anything_is_created():
     with pytest.raises(RunnerError, match="exceeds"):
         _runner(cli).run(request)
     assert cli.calls == []
+
+
+# --- target credentials (spec 028) ---------------------------------
+
+KEY = "synthetic/runner+key=for:tests-0123456789"  # synthetic; every encodable character
+ACCEPTING = AdapterManifest(
+    name="garak",
+    version="0.17.0",
+    phases=["03-scanning"],
+    severity_table={"high": "high"},
+    image="ghcr.io/sira-labs/khandaq-adapter-garak:0.17.0",
+    resources={"cpu": "1", "memory": "2Gi"},
+    accepts_credential=True,
+)
+
+
+def _keyed_runner(cli: FakeCli) -> DockerRunner:
+    return DockerRunner(ACCEPTING, SETTINGS, cli=cli, resolver=lambda host, port: ["203.0.113.7"])
+
+
+def test_the_credential_is_only_in_the_env_file_never_in_any_docker_argument():
+    cli = FakeCli(CliResult(0, GOOD_OUTPUT, b""))
+
+    _keyed_runner(cli).run(_request(), credential=KEY)
+
+    path, content, mode = cli.env_file
+    request_line, credential_line = content.splitlines()
+    assert mode == 0o600
+    assert credential_line == f"KHANDAQ_TARGET_CREDENTIAL={KEY}"
+    assert request_line.startswith("KHANDAQ_RUN_REQUEST=") and KEY not in request_line
+    assert all(KEY not in arg for call in cli.calls for arg in call)
+    assert not os.path.exists(path)
+
+    # Without a credential the file is exactly what it was before spec 028: one line.
+    plain = FakeCli(CliResult(0, GOOD_OUTPUT, b""))
+    _keyed_runner(plain).run(_request())
+    assert (
+        plain.env_file[1].count("\n") == 1 and "KHANDAQ_TARGET_CREDENTIAL" not in plain.env_file[1]
+    )
+
+
+@pytest.mark.parametrize(
+    "start", [CliResult(2, b"", b"boom"), RunnerError("adapter did not finish within 600s")]
+)
+def test_the_env_file_is_removed_even_when_the_run_fails(start):
+    cli = FakeCli(start)
+    with pytest.raises(RunnerError):
+        _keyed_runner(cli).run(_request(), credential=KEY)
+    assert not os.path.exists(cli.env_file[0]) and cli.cleaned_up()
+
+
+def test_a_credential_is_never_handed_to_an_adapter_that_does_not_accept_one():
+    cli = FakeCli(CliResult(0, GOOD_OUTPUT, b""))
+    with pytest.raises(RunnerError) as exc:
+        _runner(cli).run(_request(), credential=KEY)  # MANIFEST declares no accepts_credential
+    assert "does not accept a credential" in str(exc.value) and KEY not in str(exc.value)
+    assert cli.calls == []  # nothing was created, and no env file was written
+
+
+def test_echoed_credentials_are_redacted_from_findings_and_evidence_before_hashing():
+    from urllib.parse import quote
+
+    finding = {**FINDING, "title": f"the target replayed {KEY}"}
+    report = f'{{"output":"key={KEY}"}}\n'.encode()
+    hitlog = f'{{"url":"?k={quote(KEY, safe="")}"}}\n'.encode()
+    output = _tar(
+        {
+            "findings.jsonl": (json.dumps(finding) + "\n").encode(),
+            "report.jsonl": report,
+            "hitlog.jsonl": hitlog,
+            "clean.log": b"nothing to see\n",
+        }
+    )
+    cli = FakeCli(CliResult(0, output, f"garak said {KEY}".encode()))
+
+    result = _keyed_runner(cli).run(_request(), credential=KEY)
+
+    marker = b"[REDACTED:target-credential]"
+    by_name = {e["local_id"]: e for e in result["evidence"]}
+    assert by_name["report.jsonl"]["content"] == b'{"output":"key=' + marker + b'"}\n'
+    assert by_name["hitlog.jsonl"]["content"] == b'{"url":"?k=' + marker + b'"}\n'
+    assert by_name["clean.log"]["content"] == b"nothing to see\n"
+    assert {name: e["redacted"] for name, e in by_name.items()} == {
+        "report.jsonl": True,
+        "hitlog.jsonl": True,
+        "clean.log": False,
+    }
+    for e in result["evidence"]:  # the hash and size are those of the bytes that will be stored
+        assert e["sha256"] == "sha256:" + hashlib.sha256(e["content"]).hexdigest()
+        assert e["bytes"] == len(e["content"])
+    assert by_name["report.jsonl"]["sha256"] != "sha256:" + hashlib.sha256(report).hexdigest()
+    [found] = result["findings"]
+    assert found["title"] == "the target replayed [REDACTED:target-credential]"
+    assert KEY not in json.dumps(result["findings"])
+
+    # The same output without a credential is untouched and unmarked.
+    untouched = _keyed_runner(FakeCli(CliResult(0, output, b""))).run(_request())
+    assert all(e["redacted"] is False for e in untouched["evidence"])
+
+
+def test_stderr_and_error_text_are_redacted_before_they_are_recorded():
+    # The key sits across the point where the 2000-character tail is cut: cutting first would
+    # leave half a key that no longer matches.
+    stderr = ("x" * 100 + KEY + "y" * (2000 - len(KEY) // 2)).encode()
+    with pytest.raises(RunnerError) as exc:
+        _keyed_runner(FakeCli(CliResult(2, b"", stderr))).run(_request(), credential=KEY)
+    message = str(exc.value)
+    assert KEY not in message and KEY[len(KEY) // 2 :] not in message
+    assert exc.value.__cause__ is None and exc.value.__suppress_context__  # no chained original
+
+    # A setup step whose daemon error repeats the env file is redacted too.
+    class Leaky(FakeCli):
+        def __call__(self, args, *, timeout=None, stdout_limit=None):
+            if args[0] == "create":
+                return CliResult(1, b"", f"invalid env file line: {KEY}".encode())
+            return super().__call__(args, timeout=timeout, stdout_limit=stdout_limit)
+
+    with pytest.raises(RunnerError) as exc:
+        _keyed_runner(Leaky(CliResult(0, GOOD_OUTPUT, b""))).run(_request(), credential=KEY)
+    assert "[REDACTED:target-credential]" in str(exc.value) and KEY not in str(exc.value)
+
+
+def test_a_setup_error_is_redacted_before_it_is_cut_and_cleanup_logs_are_redacted(caplog):
+    # The key straddles the 2000-character cut of a daemon error.
+    daemon = ("x" * 50 + KEY + "y" * (2000 - len(KEY) // 2)).encode()
+
+    class Leaky(FakeCli):
+        def __call__(self, args, *, timeout=None, stdout_limit=None):
+            if args[0] == "create":
+                return CliResult(1, b"", daemon)
+            if args[0] == "rm":
+                return CliResult(1, b"", f"cannot remove: env {KEY}".encode())
+            return super().__call__(args, timeout=timeout, stdout_limit=stdout_limit)
+
+    with caplog.at_level("DEBUG"), pytest.raises(RunnerError) as exc:
+        _keyed_runner(Leaky(CliResult(0, GOOD_OUTPUT, b""))).run(_request(), credential=KEY)
+    message = str(exc.value)
+    assert KEY not in message and KEY[len(KEY) // 2 :] not in message
+    assert KEY not in caplog.text and "[REDACTED:target-credential]" in caplog.text
+    # A container that could not be removed still holds the key: that is an error, not a warning.
+    assert any(r.levelname == "ERROR" and "cleanup" in r.message for r in caplog.records)

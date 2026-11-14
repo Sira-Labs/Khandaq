@@ -31,9 +31,10 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
-from . import audit
+from . import audit, target_credentials
 from .adapters import AdapterManifest, build_run_request, get_manifest, get_runner
 from .campaign_diff import record_diff
+from .credential_values import CredentialError, redact
 from .deps import EngagementAccess
 from .evidence_crypto import Keyring
 from .evidence_store import EvidenceStore, retain, store_from_settings
@@ -137,9 +138,19 @@ def _reject(session: Session, run: Run, reason: str, actor: User | None, **detai
     )
 
 
-def _start(session: Session, run: Run, actor: User | None, **detail) -> None:
+def _start(
+    session: Session,
+    run: Run,
+    target: Target,
+    manifest: AdapterManifest,
+    actor: User | None,
+    **detail,
+) -> None:
+    """Mark the run running and audit it, including whether it will carry the target's credential
+    (spec 028): ``injected``, ``none``, or ``not_accepted`` when the adapter takes none."""
     run.state = "running"
     run.started_at = _now()
+    detail["credential"] = target_credentials.planned_use(session, target, manifest)
     audit.record(
         session,
         action="run.started",
@@ -238,7 +249,7 @@ def create_run(access: EngagementAccess, *, adapter_name: str, target_id: str, p
         return run
 
     # Builtin: make the record durable BEFORE anything reaches the target, then run it here.
-    _start(session, run, access.user)
+    _start(session, run, target, manifest, access.user)
     session.commit()
     return execute_run(session, run.id, actor=access.user)
 
@@ -269,11 +280,11 @@ def claim_next_run(session: Session) -> str | None:
         reason: str | None = f"adapter '{run.adapter}' is no longer available"
     else:
         reason = run_refusal(session, engagement, target, manifest, run.params or {})
-    if reason is not None:
-        _reject(session, run, reason, None, at="claim")
+    if reason is not None or target is None or manifest is None:
+        _reject(session, run, reason or "the target or the adapter is gone", None, at="claim")
         session.commit()
         return None
-    _start(session, run, None, by="worker")
+    _start(session, run, target, manifest, None, by="worker")
     session.commit()
     return run.id
 
@@ -284,17 +295,30 @@ def execute_run(session: Session, run_id: str, *, actor: User | None = None, run
     if run is None:  # pragma: no cover - the running row was committed before execution
         raise RuntimeError(f"run {run_id} does not exist")
     eng_id = run.engagement_id
+    credential: str | None = None
     try:
         # Inside the boundary: reloading the target or the manifest can fail too.
         target = session.get(Target, run.target_id) if run.target_id else None
         manifest = get_manifest(run.adapter)
         if target is None or manifest is None:
             raise ValueError("the target or the adapter is gone")
+        settings = get_settings()
+        # The request never carries the credential (spec 028 §7): runners and adapters may log it.
         request = build_run_request(run_id, eng_id, target.type, target.spec, run.params or {})
         target_id = target.id
-        artifacts = (runner or get_runner(manifest, get_settings())).run(request)
+        # Only this run's own target, only if run.started recorded `injected`; an unusable
+        # credential fails the run instead of running without one.
+        credential = target_credentials.load_for_run(session, run, target, settings)
+        active = runner or get_runner(manifest, settings)
+        if credential is None:
+            artifacts = active.run(request)
+        else:
+            artifacts = active.run(request, credential=credential)
+    except CredentialError as exc:
+        return _fail(session, eng_id, run_id, f"target credential unusable: {exc.detail}", actor)
     except Exception as exc:  # third-party tool execution: every failure is recorded, never lost
-        return _fail(session, eng_id, run_id, f"adapter failed: {exc}", actor)
+        # The runner redacts what the adapter returned; this covers any other text on the way out.
+        return _fail(session, eng_id, run_id, redact(f"adapter failed: {exc}", credential), actor)
 
     try:
         result = _persist_results(session, eng_id, run_id, target_id, artifacts)
@@ -313,7 +337,8 @@ def execute_run(session: Session, run_id: str, *, actor: User | None = None, run
     except (SQLAlchemyError, ValueError, LookupError, TypeError, OSError) as exc:
         # Bad adapter output (schema/validation), evidence storage (spec 014: no key, a conflicting
         # object, an object-store error), or a database error.
-        return _fail(session, eng_id, run_id, f"recording results failed: {exc}", actor)
+        error = redact(f"recording results failed: {exc}", credential)
+        return _fail(session, eng_id, run_id, error, actor)
 
     session.refresh(run)
     return run
@@ -341,6 +366,18 @@ def recover_stale_runs(session: Session, *, older_than: dt.timedelta) -> int:
     return len(stale)
 
 
+_ERROR_CHARS, _ERROR_HEAD = 500, 140
+
+
+def _brief(error: str) -> str:
+    """An error cut to the recorded length, keeping its start and its end. A tool's last lines say
+    why it stopped (a 401 from the target, for instance); its first lines only say that it began."""
+    if len(error) <= _ERROR_CHARS:
+        return error
+    gap = " … "
+    return error[:_ERROR_HEAD] + gap + error[-(_ERROR_CHARS - _ERROR_HEAD - len(gap)) :]
+
+
 def _fail(session: Session, engagement_id: str, run_id: str, error: str, actor: User | None) -> Run:
     """Record a failed run in a fresh transaction (the current one may be unusable)."""
     session.rollback()
@@ -349,13 +386,13 @@ def _fail(session: Session, engagement_id: str, run_id: str, error: str, actor: 
         raise RuntimeError(f"run {run_id} vanished before its failure could be recorded")
     run.state = "failed"
     run.ended_at = _now()
-    run.reject_reason = error[:500]
+    run.reject_reason = brief = _brief(error)
     audit.record(
         session,
         action="run.failed",
         actor=actor,
         engagement_id=engagement_id,
-        detail={"run_id": run_id, "error": error[:500]},
+        detail={"run_id": run_id, "error": brief},
     )
     session.commit()
     session.refresh(run)

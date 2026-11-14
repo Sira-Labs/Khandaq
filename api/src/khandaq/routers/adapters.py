@@ -25,6 +25,7 @@ def list_adapters(_user: User = Depends(current_user)) -> list[AdapterOut]:
             frameworks=m.frameworks,
             builtin=m.builtin,
             paces_requests=m.paces_requests,
+            accepts_credential=m.accepts_credential,
         )
         for m in all_manifests()
     ]

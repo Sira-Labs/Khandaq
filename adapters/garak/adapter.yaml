@@ -23,3 +23,6 @@ resources:
 # garak sends one request at a time but cannot hold a requests-per-minute limit, so an engagement
 # whose rules of engagement cap the rate refuses it (spec 027).
 paces_requests: false
+# garak consumes KHANDAQ_TARGET_CREDENTIAL as its generator's API key (spec 028); a target's
+# credential is injected only into adapters that declare this.
+accepts_credential: true

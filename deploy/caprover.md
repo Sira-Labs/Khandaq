@@ -92,6 +92,7 @@ called `khandaq`.
   | `KHANDAQ_OBJECT_STORE_ENDPOINT` | `http://srv-captain--khandaq-rustfs:9000` |
   | `KHANDAQ_OBJECT_STORE_ACCESS_KEY_ID` / `_SECRET_ACCESS_KEY` | the bucket-scoped key (section 4) |
   | `KHANDAQ_EVIDENCE_KEY` | the envelope-encryption key for evidence (ADR-0006); **production-only** |
+  | `KHANDAQ_CREDENTIAL_KEY` | optional: enables stored target credentials (spec 028). `openssl rand -base64 32`, at least 32 characters, **the same on `khandaq-api` and `khandaq-worker`**, and not the evidence key. Unset = off. Rotate by setting a new key and moving the old one to `KHANDAQ_CREDENTIAL_PREVIOUS_KEYS` on both apps; losing it loses only the stored credentials (owners enter them again), never evidence |
   | `KHANDAQ_PUBLIC_URL` | the public origin: `https://khandaq.siralabs.org` (staging `https://khandaq-stg.siralabs.org`) — the web app's domain, exactly |
   | `KHANDAQ_OIDC_ISSUER` | the realm, e.g. `https://<keycloak>/realms/khandaq` |
   | `KHANDAQ_OIDC_CLIENT_ID` | `khandaq-api` (the default; the realm's client, not this app's name) |

@@ -319,3 +319,58 @@ def test_main_emits_nothing_on_stdout_when_the_run_fails(tmp_path, monkeypatch):
 def test_main_without_a_request_fails(tmp_path, monkeypatch):
     monkeypatch.delenv("KHANDAQ_RUN_REQUEST", raising=False)
     assert wrap.main(tmp_path / "absent.json", tmp_path, tmp_path / "scratch", io.BytesIO()) != 0
+
+
+# --- target credential (spec 028) -----------------------------------------------------------------
+
+KEY = "synthetic-garak-target-key-0123456789"  # synthetic
+
+
+def _run_keyed(tmp_path, garak, capsys):
+    evidence, scratch = tmp_path / "evidence", tmp_path / "scratch"
+    evidence.mkdir()
+    scratch.mkdir()
+    request = _req()
+    environ = {
+        "KHANDAQ_RUN_REQUEST": json.dumps(request),
+        "KHANDAQ_TARGET_CREDENTIAL": KEY,
+        "PATH": "/usr/bin",
+    }
+    code = wrap.run(request, evidence=evidence, scratch=scratch, environ=environ, runner=garak)
+    return code, evidence, scratch, capsys.readouterr()
+
+
+def test_the_credential_becomes_the_generator_api_key_and_the_placeholder_is_the_fallback(
+    tmp_path, capsys
+):
+    garak = FakeGarak()
+    code, _, _, _ = _run_keyed(tmp_path, garak, capsys)
+    assert code == 0
+    [(_, kwargs)] = garak.calls
+    env = kwargs["env"]
+    assert env["OPENAICOMPATIBLE_API_KEY"] == KEY
+    # garak gets the key as its API key only: not under the name Khandaq injected it with.
+    assert "KHANDAQ_TARGET_CREDENTIAL" not in env
+    assert [name for name, value in env.items() if value == KEY] == ["OPENAICOMPATIBLE_API_KEY"]
+
+    # No credential, or an empty one: the placeholder, exactly as before spec 028.
+    assert wrap.garak_env({"PATH": "/usr/bin"}, tmp_path)["OPENAICOMPATIBLE_API_KEY"] == (
+        wrap.PLACEHOLDER_KEY
+    )
+    empty = wrap.garak_env({"KHANDAQ_TARGET_CREDENTIAL": ""}, tmp_path)
+    assert empty["OPENAICOMPATIBLE_API_KEY"] == wrap.PLACEHOLDER_KEY
+
+
+def test_the_credential_is_in_no_command_argument_option_file_or_output(tmp_path, capsys):
+    garak = FakeGarak()
+    code, evidence, scratch, captured = _run_keyed(tmp_path, garak, capsys)
+    assert code == 0
+    [(command, _)] = garak.calls
+    assert all(KEY not in str(arg) for arg in command)
+    assert KEY not in (scratch / "generator.json").read_text()
+    assert KEY not in captured.out and KEY not in captured.err
+    for path in evidence.iterdir():
+        assert KEY.encode() not in path.read_bytes(), path.name
+    out = io.BytesIO()
+    wrap.write_tar(evidence, out)
+    assert KEY.encode() not in out.getvalue()

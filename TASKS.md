@@ -261,6 +261,69 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
       torch is the CUDA build and no model runs in the container: 10.4 GB → 2.8 GB on disk
       (3.4 GB → 0.6 GB to pull); the manual e2e run was repeated with the new image.
 
+### Sprint 7 — credentials, then the remaining adapters run (R2)
+
+- [x] S7-1 — spec 028 per-run target credentials (ADR-0019; nightly run of 2026-11-14 under
+      ADR-0018): one write-only secret per target, envelope-encrypted under a separate
+      `KHANDAQ_CREDENTIAL_KEY` (off when unset); owner-only `PUT`/`DELETE …/targets/{id}/credential`,
+      no read route, `has_credential` on targets, `credential_ref` nulled (migration 0012) and
+      refused; the worker hands the key of the run's own target to an adapter that declares
+      `accepts_credential` (garak) through the 0600 env file; `DockerRunner` redacts it from
+      findings, evidence and errors before hashing; closing an engagement deletes its credentials;
+      console key status and Set/Replace/Remove. 501 api tests, 135 adapter contract tests, 70 web
+      tests. Manual e2e on 2026-11-14 (local daemon, garak 0.17.0, the bundled demo target started
+      with `DEMO_REQUIRED_API_KEY`): no key stored → the target answers 401 and the run fails; key
+      stored → the run succeeds with one high finding (`promptinject.HijackHateHumans`, 256/256),
+      two sealed evidence files and a verifying ledger; a wrong key → failed run; the key was in no
+      audit row, run row, finding, evidence object, report or log. Decisions: the five open points
+      were taken at their stricter values (ADR-0019); `run.started` records `injected`/`none`/
+      `not_accepted` at claim and execution loads the key only if it says `injected`, so a
+      credential removed in between fails the run instead of running without it; redaction also
+      covers a JSON-escaped solidus and happens before error text is cut; plain `ws`, IP literals
+      and targets without a URL are refused like plain `http` to a dotted host; the `PUT` body is
+      read untyped and `credential_ref` is refused in the route, because a validation error would
+      echo the value; a failed run's recorded error now keeps its last lines (the 401 was cut off);
+      the demo target gained the optional required key for the e2e. An independent review before
+      merge (CodeRabbit was over its hourly limit) led to: credential changes and close take the
+      engagement lock (a `PUT` could commit behind a concurrent close); redaction of
+      percent-encoded unreserved characters and JSON `\u00XX` escapes; no credential for a target
+      named by address; target-create validation moved into the route (the framework's 422 echoed
+      a pasted `credential_ref`). `scope.py`, `audit.py` and the
+      ledger are untouched.
+      **Owner:** set `KHANDAQ_CREDENTIAL_KEY` (and keep it backed up) on staging api + worker to
+      switch the feature on; it blocks testing hosted endpoints that need a key; default: stays off.
+      **Owner:** ADR-0019 is Accepted by the implementer under ADR-0018 — say so if any of the five
+      values should be looser; default: they stand.
+- [ ] S7-2 — spec 029 PyRIT runs in the sandbox (to write, spec-027 pattern). Next story. Note
+      from `docs/roadmap/handover.md` §6: an earlier session could not write the PyRIT and
+      promptfoo invoke functions; if that still holds, the story is blocked for the owner and the
+      run takes S7-4.
+- [ ] S7-3 — spec 030 promptfoo runs in the sandbox (to write).
+- [ ] S7-4 — spec 031 mcp-scanner runs in the sandbox (to write); each of 029–031 adds
+      `accepts_credential` for its adapter.
+
+### Dependency maintenance (nightly runs, ADR-0018)
+
+- 2026-11-14: merged Dependabot #67 (serde_json 1.0.154), #73 (python-minor group: fastapi 0.162,
+  sqlalchemy 2.1.6, alembic, boto3, pydantic-settings, pytest, ruff, mypy), #49 (docker/
+  metadata-action 6), #52 (docker/setup-buildx-action 4). Grouped the five `web/` dev bumps
+  (typescript 7, vitest 5, jsdom 30, jest-dom 7, plugin-react 5; Dependabot #53/#55/#57/#58/#59
+  closed) into #75 with the `vite/client` declaration TypeScript 7 needs, and the three stale
+  actions bumps (#47/#50/#51) into one PR. None of them had failed for a reason: nobody had merged
+  them, and only #57 was red.
+- [ ] Python 3.15 base image for the api (Dependabot #72, 3.12-slim → 3.15-slim): CI tests on
+      3.12 only and never builds the image, so green checks say nothing about it. Needs the CI
+      Python and the image moved together and the wheels (psycopg, cryptography, pydantic-core,
+      the maturin build) checked on 3.15 first. Left open.
+- [ ] sha2 0.10 → 0.11 (Dependabot #69): green, but it is the hash under the evidence ledger and
+      the fingerprint. **Owner:** sign off (ADR-0018 keeps reviewer sign-off for ledger changes);
+      it blocks nothing; default: stays open.
+- [ ] psycopg `<3.3` → `<3.4` (Dependabot #56): checks date from 5 October; revalidate against the
+      current lockfile, then merge.
+- [ ] **Owner:** Dependabot cannot label its PRs: the labels `dependencies`, `area: core`,
+      `area: api`, `area: web`, `area: ci`, `area: deploy` named in `.github/dependabot.yml` do not
+      exist. Create them, or say that they should be dropped from the file; default: unlabelled.
+
 ## Owner / external dependencies (not software; do not block sprints on these)
 
 - [ ] Confirm the public name/domain: GitHub `Sira-Labs/Khandaq` is taken (good); check PyPI name and a

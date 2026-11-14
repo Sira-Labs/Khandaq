@@ -49,6 +49,10 @@ class Settings(BaseSettings):
     # from it. Retired keys (comma-separated) still decrypt the objects written under them.
     evidence_key: str = ""
     evidence_previous_keys: str = ""
+    # Target-credential envelope key (spec 028, ADR-0019): separate from the evidence key, so that
+    # leaking or rotating one never exposes or breaks the other. Unset = the feature is off.
+    credential_key: str = ""
+    credential_previous_keys: str = ""
 
     # Object store for evidence (spec 014): s3://<bucket>[/<prefix>]; empty = evidence_dir.
     object_store_url: str = ""
@@ -150,6 +154,7 @@ class Settings(BaseSettings):
                 "KHANDAQ_EVIDENCE_PREVIOUS_KEYS entries must be at least "
                 f"{MIN_KEY_CHARS} characters"
             )
+        problems.extend(self._credential_key_problems())
         try:
             parse_store_url(self.object_store_url)
         except ValueError as exc:
@@ -189,6 +194,26 @@ class Settings(BaseSettings):
             raise RuntimeError(
                 "Refusing to start in prod with insecure configuration: " + "; ".join(problems)
             )
+
+    def _credential_key_problems(self) -> list[str]:
+        """What production refuses about the target-credential key (spec 028). Unset is fine: the
+        feature is off."""
+        if not self.credential_key:
+            return []
+        problems = []
+        if self.credential_key in _PLACEHOLDERS:
+            problems.append("KHANDAQ_CREDENTIAL_KEY must be a real value, or unset")
+        elif len(self.credential_key) < MIN_KEY_CHARS:
+            problems.append(f"KHANDAQ_CREDENTIAL_KEY must be at least {MIN_KEY_CHARS} characters")
+        if self.credential_key == self.evidence_key:
+            problems.append("KHANDAQ_CREDENTIAL_KEY must differ from KHANDAQ_EVIDENCE_KEY")
+        retired = [k.strip() for k in self.credential_previous_keys.split(",") if k.strip()]
+        if any(len(k) < MIN_KEY_CHARS for k in retired):
+            problems.append(
+                "KHANDAQ_CREDENTIAL_PREVIOUS_KEYS entries must be at least "
+                f"{MIN_KEY_CHARS} characters"
+            )
+        return problems
 
     def _check_email_alerts(self) -> SmtpTarget | None:
         """Email alert settings that are wrong in any environment (spec 022 §4)."""

@@ -31,16 +31,22 @@ class EngagementOut(BaseModel):
 class TargetCreate(BaseModel):
     type: TargetType
     spec: dict[str, Any]
-    credential_ref: str | None = None
 
 
 class TargetOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
     id: str
     engagement_id: str
     type: str
     spec: dict[str, Any]
-    credential_ref: str | None
+    # Whether a write-only credential is stored (spec 028). The value itself is never returned.
+    has_credential: bool = False
+    credential_updated_at: dt.datetime | None = None
+
+
+class CredentialOut(BaseModel):
+    has_credential: bool
+    version: int
+    updated_at: dt.datetime
 
 
 class ScopeIn(BaseModel):
@@ -88,6 +94,7 @@ class AdapterOut(BaseModel):
     frameworks: list[str]
     builtin: bool
     paces_requests: bool
+    accepts_credential: bool
 
 
 class RunCreate(BaseModel):
