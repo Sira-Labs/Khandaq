@@ -53,6 +53,26 @@ What does **not** change:
 - Spec first, tests, `make lint` and `make test` before each commit, semantic commits and the PR
   template apply as before.
 
+## Amendment of 2026-11-15 (the owner's rules for the scheduled run)
+
+The scheduled run's protocol was tightened after the first runs asked the owner too much. Where it
+differs from the text above, this section applies.
+
+- **What a run decides itself:** everything that can be undone inside this repository, such as
+  dependencies, CI and test infrastructure, CodeRabbit configuration, specs and technical design.
+  Such things are never listed as waiting on the owner.
+- **What stays with the owner:** the non-negotiables; secrets, accounts, tokens and repository
+  settings; servers, domains and anything that costs money; licences and legal questions; product
+  direction the plan does not answer; any production deployment and a major release. Each is one
+  `Owner:` line in `TASKS.md` (what is needed, what it blocks, the default assumed).
+- **Reporting:** a weekly report collects the `Owner:` lines; a run sends no mail itself.
+- **Review:** after every push the run asks CodeRabbit for a review on the PR instead of waiting
+  for the automatic one, fixes every finding and resolves the threads before merging.
+- **Runs:** Sunday, Tuesday and Thursday nights.
+
+Unchanged: the exception above for changes to how the scope lock, the audit log or the evidence
+ledger work, and every limit under "What does not change".
+
 ## Alternatives considered
 
 | Option | Pros | Cons | Why not |
