@@ -270,7 +270,7 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
       refused; the worker hands the key of the run's own target to an adapter that declares
       `accepts_credential` (garak) through the 0600 env file; `DockerRunner` redacts it from
       findings, evidence and errors before hashing; closing an engagement deletes its credentials;
-      console key status and Set/Replace/Remove. 490 api tests, 137 adapter contract tests, 70 web
+      console key status and Set/Replace/Remove. 490 api tests, 135 adapter contract tests, 70 web
       tests. Manual e2e on 2026-11-14 (local daemon, garak 0.17.0, the bundled demo target started
       with `DEMO_REQUIRED_API_KEY`): no key stored → the target answers 401 and the run fails; key
       stored → the run succeeds with one high finding (`promptinject.HijackHateHumans`, 256/256),
