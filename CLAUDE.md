@@ -40,6 +40,14 @@ raise it — those are the product.
 6. A story in `docs/roadmap/sprints.md` gets its spec (copy `docs/specs/000-template.md`) before
    any code; a spec that turns out wrong is edited in the same PR, with the reason.
 
+**Unattended nightly runs (ADR-0018, owner decision of 2026-11-14).** Step 2's wait is waived:
+plan, then implement; a deviation from a spec or an ADR needs a new ADR in the same PR. The run
+opens its PRs ready for review, enables auto-merge (or merges once every required check is green
+and every thread is resolved), takes one story per run, and writes an `Owner:` line in `TASKS.md`
+instead of stalling. A PR that changes the scope lock, the audit log or the evidence ledger is
+never self-merged: it waits for the owner's sign-off. The non-negotiable section above is
+unchanged and absolute.
+
 ## Layout
 - `core/` Rust workspace: `khandaq-core` (findings model, canonicalisation, fingerprint/dedup,
   severity, framework mapping, hash-chained ledger), `khandaq-cli` (`khandaq` binary),

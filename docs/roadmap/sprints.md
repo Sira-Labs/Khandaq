@@ -5,6 +5,11 @@ sprint's last PR merges, its stories are ordered by priority, and its dates are 
 happen. One branch per sprint (`sprint/NN-topic`), one PR per spec, CodeRabbit review, merge by the
 owner, release from `main` deploys to CapRover staging (ADR-0010).*
 
+*Working agreement since 2026-11-14 (ADR-0018): unattended nightly runs take one story each in
+priority order, implement without waiting for plan approval, and merge their own PRs once CI is
+green and review threads are resolved. Anything only the owner can give is an `Owner:` line in
+`TASKS.md`, never a stall. The authorised-use rules in `CLAUDE.md` are unchanged.*
+
 Definition of done for every story: tests (Rust unit/property, pytest, adapter contract-test, or
 vitest), lint clean, docs touched (relevant `docs/`, README, `deploy/README.md`), the
 authorised-use invariants preserved with their tests, and — for user-facing stories — a screenshot or

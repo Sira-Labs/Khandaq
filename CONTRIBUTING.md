@@ -69,6 +69,10 @@ An adapter is the only sanctioned way to add a tool. It must:
 5. CI must be green (`rust core`, `python bindings`, `python api`, `adapters`, `web`). Review
    threads must be resolved before merge. Merge with a merge commit or squash; rebase-merge is off.
 
+Unattended nightly runs follow the same workflow and merge their own green PRs, except changes to
+the scope lock, the audit log or the evidence ledger, which keep the reviewer sign-off; their
+rules and limits are in ADR-0018.
+
 ## Licence
 
 By contributing you agree your work is licensed under Apache-2.0 (ADR-0002).
