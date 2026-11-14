@@ -7,6 +7,9 @@ id, decrypted only at launch, injected as an ephemeral environment value for the
 never written to logs, URLs, audit entries, findings or evidence"). Packages: `api/`, `adapters/garak/`,
 `web/`, `deploy/`, `docs/`.
 
+Design decisions: ADR-0019 (the five points the draft left for the owner, taken at their proposed,
+stricter values under ADR-0018).
+
 ## Goal
 
 Until now only endpoints that need no key, or accept any key, could be tested: garak runs with a
@@ -128,6 +131,29 @@ logged, or included in a report. I can replace it when it rotates and remove it 
    in-scope host (spec 012). The key of target A is never loaded for a run of target B.
 9. **No existing behaviour changes without a key.** Targets with no credential, adapters that do not
    accept one, and deployments without the setting behave exactly as after spec 027.
+
+## Changes while implementing (2026-11-14)
+
+- **`run.started` is written at claim, the key is loaded at execution.** The entry records
+  `injected` when a credential exists and the adapter accepts one; execution loads the key only if
+  the entry says `injected`, and a credential removed in between fails the run (Behaviour 6 only
+  covered the undecryptable case). Reason: the audit entry must not claim an injection that did not
+  happen, or miss one that did.
+- **Redaction also matches a JSON-escaped solidus** (`\/`) and any mix of raw and percent-encoded
+  characters, and error text is redacted before it is cut to length. Reason: a serialiser that
+  escapes `/`, or a cut through the key, would otherwise leave it readable.
+- **Plain `ws`, IP literals and targets without a URL** are refused like plain `http` to a dotted
+  host. Reason: the same exposure; a target without a URL cannot be run in the sandbox at all.
+- **The Docker runner refuses a credential for an adapter that does not declare
+  `accepts_credential`**, in addition to the worker not passing one.
+- **Outside production a credential key under 32 characters is a 503 on `PUT`** (the feature is
+  unusable) instead of a start-up refusal, as for the evidence key.
+- **The request body of `PUT …/credential` is read untyped and `credential_ref` is refused in the
+  route**, because a framework validation error would echo the submitted value.
+- **The bundled demo target takes an optional `DEMO_REQUIRED_API_KEY`**, so the manual e2e has a
+  local endpoint that requires a bearer key. Unset, it behaves as before.
+- Web tests live in `web/src/__tests__/target-credential.test.tsx`; the redaction, runner and
+  settings tests are in the files named below, with a few more cases than listed.
 
 ## Acceptance criteria
 

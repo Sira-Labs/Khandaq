@@ -36,6 +36,17 @@ per run via the host Docker socket (shape A in `caprover.md`); only use this on 
   **Back it up separately; losing it makes evidence unreadable** (the ledger still verifies, but the
   bytes cannot be decrypted). To rotate, set the new key and move the old one to
   `KHANDAQ_EVIDENCE_PREVIOUS_KEYS`; stored objects are never re-encrypted.
+- `KHANDAQ_CREDENTIAL_KEY` (optional) — the envelope key for **target credentials** (spec 028,
+  ADR-0019): the API key an engagement owner stores for an in-scope target, so runs and campaigns
+  can test endpoints that need one. Unset, the feature is off and nothing else changes. To enable
+  it, set at least 32 characters (`openssl rand -base64 32`), identical on the api and the worker
+  and different from the evidence key; production refuses a placeholder, a shorter key, or the
+  evidence key. Stored keys are write-only (no route reads one back), reach only the sandboxed
+  adapter of a run against that target, are replaced by `[REDACTED:target-credential]` in findings,
+  evidence and errors, and are deleted when the engagement closes. To rotate, set the new key and
+  move the old one to `KHANDAQ_CREDENTIAL_PREVIOUS_KEYS`; a credential is re-encrypted under the
+  new key when its owner next replaces it. Losing the key loses only the stored credentials, which
+  owners enter again (runs against those targets fail until they do); it never affects evidence.
 - object-store credentials (RustFS root + a bucket-scoped key). Evidence is stored encrypted and
   write-once in `KHANDAQ_OBJECT_STORE_URL` (`s3://bucket[/prefix]`); with an empty URL it stays in the
   worker's evidence volume, which the API cannot read on a multi-host deployment.
