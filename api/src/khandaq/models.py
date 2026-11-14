@@ -26,6 +26,7 @@ from sqlalchemy import (
     ForeignKeyConstraint,
     Index,
     Integer,
+    LargeBinary,
     SmallInteger,
     Text,
     UniqueConstraint,
@@ -145,6 +146,33 @@ class Target(Base):
             "type in ('llm_endpoint','agent','mcp_server','model_artifact','dataset')",
             name="ck_targets_type",
         ),
+        # Lets a credential's composite foreign key pin it to its target's own engagement.
+        UniqueConstraint("id", "engagement_id", name="uq_targets_id_engagement"),
+    )
+
+
+class TargetCredential(Base):
+    """One write-only secret per target (spec 028, ADR-0006): an ADR-0016 envelope, never
+    plaintext. Deleted outright when cleared or when its engagement closes."""
+
+    __tablename__ = "target_credentials"
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=lambda: new_id("tcr"))
+    target_id: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    engagement_id: Mapped[str] = mapped_column(Text, nullable=False)
+    ciphertext: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
+    created_at: Mapped[dt.datetime] = _created_at()
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    set_by_user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["target_id", "engagement_id"],
+            ["targets.id", "targets.engagement_id"],
+            name="fk_target_credentials_target_engagement",
+        ),
+        CheckConstraint("version >= 1", name="ck_target_credentials_version"),
     )
 
 

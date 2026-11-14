@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import audit, campaigns, scope
+from .. import audit, campaigns, scope, target_credentials
 from ..adapters import get_manifest
 from ..deps import (
     EngagementAccess,
@@ -20,7 +20,15 @@ from ..deps import (
     get_session,
     require_engagement_role,
 )
-from ..models import AuditLog, Engagement, EngagementMember, Scope, Target, User
+from ..models import (
+    AuditLog,
+    Engagement,
+    EngagementMember,
+    Scope,
+    Target,
+    TargetCredential,
+    User,
+)
 from ..runs import adapter_refusal
 from ..schemas import (
     ActivateIn,
@@ -41,6 +49,18 @@ router = APIRouter(prefix="/api/engagements", tags=["engagements"])
 
 def _now() -> dt.datetime:
     return dt.datetime.now(dt.UTC)
+
+
+def target_out(target: Target, credential: TargetCredential | None = None) -> TargetOut:
+    """A target as the API shows it: whether a credential is stored, never the credential."""
+    return TargetOut(
+        id=target.id,
+        engagement_id=target.engagement_id,
+        type=target.type,
+        spec=target.spec,
+        has_credential=credential is not None,
+        credential_updated_at=credential.updated_at if credential is not None else None,
+    )
 
 
 @router.post("", response_model=EngagementOut, status_code=201)
@@ -91,11 +111,12 @@ def get_engagement(access: EngagementAccess = Depends(require_engagement_role())
 
 
 @router.get("/{engagement_id}/targets", response_model=list[TargetOut])
-def list_targets(access: EngagementAccess = Depends(require_engagement_role())) -> list[Target]:
+def list_targets(access: EngagementAccess = Depends(require_engagement_role())) -> list[TargetOut]:
     rows = access.session.scalars(
         select(Target).where(Target.engagement_id == access.engagement.id)
     ).all()
-    return list(rows)
+    credentials = target_credentials.by_target(access.session, access.engagement.id)
+    return [target_out(t, credentials.get(t.id)) for t in rows]
 
 
 @router.get("/{engagement_id}/scope", response_model=ScopeOut | None)
@@ -119,7 +140,13 @@ def list_members(access: EngagementAccess = Depends(require_engagement_role())) 
 def add_target(
     body: TargetCreate,
     access: EngagementAccess = Depends(require_engagement_role("owner")),
-) -> Target:
+) -> TargetOut:
+    if "credential_ref" in body.model_fields_set:
+        # Refused rather than kept or silently dropped: someone may have pasted a secret (spec 028).
+        raise HTTPException(
+            422,
+            "credential_ref is no longer accepted; send the key to the target's credential route",
+        )
     if access.engagement.state != "draft":
         raise HTTPException(409, "targets can only be added while the engagement is in draft")
     problem = scope.validate_target(body.type, body.spec)
@@ -129,7 +156,6 @@ def add_target(
         engagement_id=access.engagement.id,
         type=body.type,
         spec=body.spec,
-        credential_ref=body.credential_ref,
     )
     access.session.add(target)
     audit.record(
@@ -141,7 +167,7 @@ def add_target(
     )
     access.session.commit()
     access.session.refresh(target)
-    return target
+    return target_out(target)
 
 
 @router.put("/{engagement_id}/scope", response_model=ScopeOut)
@@ -246,6 +272,8 @@ def close(access: EngagementAccess = Depends(require_engagement_role("owner"))) 
     audit.record(session, action="engagement.closed", actor=access.user, engagement_id=eng.id)
     # Its campaigns stop with it, in the same transaction (spec 016 §5).
     campaigns.disable_for_closed_engagement(session, eng.id, actor=access.user)
+    # So do its target credentials: a closed engagement holds no live secret (spec 028 §5).
+    target_credentials.clear_for_closed_engagement(session, eng.id, actor=access.user)
     session.commit()
     session.refresh(eng)
     return eng

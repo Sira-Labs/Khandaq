@@ -36,6 +36,7 @@ from dataclasses import dataclass
 from typing import IO, Protocol
 
 from .. import egress_forwarder
+from ..credential_values import CREDENTIAL_ENV, redact, redact_bytes
 from ..scope import ScopeError, network_endpoint
 from ..settings import Settings
 from .manifest import AdapterManifest
@@ -166,9 +167,24 @@ def _kind(name: str) -> str:
     return "artefact"
 
 
-def artifacts_from_output(files: dict[str, bytes], request: dict) -> dict:
+def redact_output(files: dict[str, bytes], credential: str | None) -> tuple[dict[str, bytes], set]:
+    """The adapter's files with the run's credential replaced, and the names that changed.
+
+    Runs before anything is parsed or hashed (spec 028 §7): the ledger seals the redacted bytes and
+    the unredacted ones are never stored. A target that echoes its caller's key is a finding in
+    itself; the finding survives, the key does not.
+    """
+    if not credential:
+        return files, set()
+    clean = {name: redact_bytes(content, credential) for name, content in files.items()}
+    return clean, {name for name, content in clean.items() if content != files[name]}
+
+
+def artifacts_from_output(
+    files: dict[str, bytes], request: dict, redacted: frozenset[str] | set[str] = frozenset()
+) -> dict:
     """Turn the adapter's files into the runner result: findings, and every other file as evidence
-    with a hash computed here."""
+    with a hash computed here. ``redacted`` names the files a credential was removed from."""
     if FINDINGS_FILE not in files:
         raise RunnerError(f"adapter output has no {FINDINGS_FILE}")
     findings = []
@@ -189,7 +205,7 @@ def artifacts_from_output(files: dict[str, bytes], request: dict) -> dict:
             "object_key": f"{request['engagement_id']}/{request['run_id']}/{name}",
             "sha256": "sha256:" + hashlib.sha256(content).hexdigest(),
             "bytes": len(content),
-            "redacted": False,
+            "redacted": name in redacted,
             "content": content,
         }
         for name, content in sorted(files.items())
@@ -310,7 +326,7 @@ class DockerRunner:
             f"/evidence:rw,noexec,nosuid,size={output_mb}m,mode=1777",
             "--env",
             "HOME=/tmp",
-            # The request (target details, later an ephemeral credential) goes through a 0600 file
+            # The request and, for a keyed target, its credential (spec 028) go through a 0600 file
             # the CLI reads itself, so it never appears on a command line visible in `ps`.
             "--env-file",
             env_file,
@@ -319,7 +335,19 @@ class DockerRunner:
 
     # --- execution --------------------------------------------------------------------------------
 
-    def run(self, request: dict) -> dict:
+    def run(self, request: dict, credential: str | None = None) -> dict:
+        """Execute the run. ``credential`` (spec 028) reaches the adapter through the env file only
+        and is redacted from every file and error message that comes back."""
+        try:
+            return self._run(request, credential)
+        except RunnerError as exc:
+            if not credential:
+                raise
+            # `from None`: the original message, which may hold the credential, must not travel
+            # on as a chained exception into a traceback or a log line.
+            raise RunnerError(redact(str(exc), credential)) from None
+
+    def _run(self, request: dict, credential: str | None) -> dict:
         run_id = request["run_id"]
         host, port, address = self.endpoint(request)
         network, forwarder, adapter = f"khq-net-{run_id}", f"khq-fwd-{run_id}", f"khq-run-{run_id}"
@@ -328,6 +356,11 @@ class DockerRunner:
         line = "KHANDAQ_RUN_REQUEST=" + json.dumps(request, separators=(",", ":")) + "\n"
         if len(line.encode("utf-8")) > MAX_REQUEST_BYTES:
             raise RunnerError(f"the run request exceeds {MAX_REQUEST_BYTES} bytes")
+        if credential:
+            if not self.manifest.accepts_credential:
+                raise RunnerError(f"adapter {self.manifest.name} does not accept a credential")
+            # A second line of the same 0600 file: never the request JSON, never a docker argument.
+            line += f"{CREDENTIAL_ENV}={credential}\n"
         fd, env_file = tempfile.mkstemp(prefix="khq-env-", text=True)  # created 0600
         try:
             with os.fdopen(fd, "w") as f:
@@ -348,9 +381,12 @@ class DockerRunner:
             os.unlink(env_file)
             self._cleanup(network, forwarder, adapter)
         if result.returncode != 0:
-            tail = result.stderr.decode("utf-8", "replace")[-_STDERR_TAIL:]
-            raise RunnerError(f"adapter exited with {result.returncode}: {tail}")
-        return artifacts_from_output(read_output(result.stdout), request)
+            # Redact before cutting the tail: a cut through the credential would leave a part of it
+            # that no longer matches.
+            stderr = redact(result.stderr.decode("utf-8", "replace"), credential)
+            raise RunnerError(f"adapter exited with {result.returncode}: {stderr[-_STDERR_TAIL:]}")
+        files, redacted = redact_output(read_output(result.stdout), credential)
+        return artifacts_from_output(files, request, redacted)
 
     def _ok(self, args: list[str], what: str) -> CliResult:
         result = self.cli(args, timeout=120)

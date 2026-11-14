@@ -18,6 +18,7 @@ from .routers import (
     alerts,
     auth,
     campaigns,
+    credentials,
     deployment,
     engagements,
     evidence,
@@ -62,6 +63,7 @@ def create_app() -> FastAPI:
     app.include_router(auth.router)
     app.include_router(deployment.router)
     app.include_router(engagements.router)
+    app.include_router(credentials.router)
     app.include_router(ledger.router)
     app.include_router(evidence.router)
     app.include_router(runs.router)

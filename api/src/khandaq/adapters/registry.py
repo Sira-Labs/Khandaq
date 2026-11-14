@@ -36,6 +36,7 @@ GARAK = AdapterManifest(
     image="ghcr.io/sira-labs/khandaq-adapter-garak:0.17.0",
     entrypoint="/usr/local/bin/wrap.py",
     resources={"cpu": "1", "memory": "2Gi"},
+    accepts_credential=True,
 )
 
 _REGISTRY = {m.name: m for m in (ECHO, GARAK)}
