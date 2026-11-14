@@ -17,3 +17,8 @@ severity_table:
 resources:
   cpu: "1"
   memory: 1Gi
+# A scan is a handful of requests, but the tool cannot hold a requests-per-minute limit, so an
+# engagement whose rules of engagement cap the rate refuses it (spec 027).
+paces_requests: false
+# The target's credential becomes the scanner's --bearer-token (specs 028, 031).
+accepts_credential: true

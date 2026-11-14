@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
+import subprocess
+import sys
+import tarfile
 from pathlib import Path
 
 import jsonschema
@@ -189,35 +193,250 @@ def test_a_partial_entry_keeps_its_findings():
     assert f["severity"] == "medium"
 
 
-def _request(tmp_path: Path, spec: dict | None = None) -> Path:
-    req = tmp_path / "run-request.json"
-    target = {"type": "mcp_server", "spec": spec or {"url": "https://tools.acme.test/mcp"}}
-    req.write_text(json.dumps({"engagement_id": "e", "run_id": "r", "target": target}))
-    return req
+# --- running the scanner (spec 031) -----------------------------------------------------------------
+
+TARGET = {"type": "mcp_server", "spec": {"url": "https://tools.acme.test/mcp"}}
+KEY = "synthetic-mcp-server-key-0123456789"  # synthetic
+CLEAN = {
+    "server_url": "https://tools.acme.test/mcp",
+    "scan_results": [_item({"yara_analyzer": _entry("SAFE", [], 0)})],
+}
 
 
-def test_main_fails_closed_without_a_report(tmp_path):
-    assert wrap.main(_request(tmp_path), tmp_path) != 0
-    assert not (tmp_path / "findings.jsonl").exists()
+# The recorded fixture includes items the tool could not scan (the parser's fail-closed cases). A
+# run needs a report in which everything was scanned: the fixture without those items.
+_MISSED = set(wrap.unscanned_items(json.dumps(FIXTURE)))
+COMPLETE = {
+    **FIXTURE,
+    "scan_results": [
+        item
+        for index, item in enumerate(FIXTURE["scan_results"])
+        if "{} {!r}".format(*wrap._item_label(item, index)) not in _MISSED
+    ],
+}
 
 
-@pytest.mark.parametrize("text", ["", "{}", '{"scan_results": []}'])
-def test_main_fails_closed_on_an_untrustworthy_report(tmp_path, text):
-    (tmp_path / wrap.REPORT_NAME).write_text(text)
-    assert wrap.main(_request(tmp_path), tmp_path) != 0
-    assert not (tmp_path / "findings.jsonl").exists()
+def _req(target=TARGET, params=None) -> dict:
+    return {"engagement_id": "e", "run_id": "r", "target": target, "params": params or {}}
 
 
-def test_main_writes_findings_for_a_complete_report(tmp_path):
-    (tmp_path / wrap.REPORT_NAME).write_text(json.dumps(FIXTURE))
-    assert wrap.main(_request(tmp_path), tmp_path) == 0
-    lines = (tmp_path / "findings.jsonl").read_text().splitlines()
-    assert len(lines) == 6
-    assert {json.loads(line)["target_ref"] for line in lines} == {"https://tools.acme.test/mcp"}
+class FakeScanner:
+    """Stands in for ``subprocess.run``: records the call and answers as mcp-scanner 4.8.5 does for
+    a raw ``remote`` scan, with the report on stdout."""
+
+    def __init__(self, report=COMPLETE, returncode=0):
+        self.report, self.returncode, self.calls = report, returncode, []
+
+    def __call__(self, command, **kwargs):
+        self.calls.append((command, kwargs))
+        out = self.report if isinstance(self.report, bytes) else json.dumps(self.report).encode()
+        return subprocess.CompletedProcess(command, self.returncode, stdout=out)
 
 
-def test_main_names_an_agent_target_by_host(tmp_path):
-    (tmp_path / wrap.REPORT_NAME).write_text(json.dumps(FIXTURE))
-    assert wrap.main(_request(tmp_path, {"host": "agent.acme.test"}), tmp_path) == 0
-    first = json.loads((tmp_path / "findings.jsonl").read_text().splitlines()[0])
-    assert first["target_ref"] == "agent.acme.test"
+def _run(tmp_path, request, scanner, environ=None):
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    environ = {"KHANDAQ_RUN_REQUEST": json.dumps(request), "PATH": "/usr/bin", **(environ or {})}
+    return wrap.run(request, evidence=evidence, environ=environ, runner=scanner), evidence
+
+
+def test_the_built_command_scans_the_in_scope_server_with_yara_only(tmp_path):
+    scanner = FakeScanner()
+    code, _ = _run(tmp_path, _req(), scanner)
+    assert code == 0
+    [(command, kwargs)] = scanner.calls
+    assert command == [
+        "mcp-scanner",
+        "--analyzers", "yara",
+        "--format", "raw",
+        "remote",
+        "--server-url", "https://tools.acme.test/mcp",  # the authorised URL, unchanged
+    ]  # fmt: skip
+    assert kwargs["stdout"] is subprocess.PIPE  # the raw report
+    assert kwargs["stderr"] is sys.stderr  # this process's stdout carries only the evidence tar
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        {"type": "llm_endpoint", "spec": {"url": "https://gw.acme.test/v1/chat/completions"}},
+        {"type": "agent", "spec": {"host": "agent.acme.test"}},
+        {"type": "mcp_server", "spec": {}},
+        {"type": "mcp_server", "spec": {"url": "tools.acme.test/mcp"}},
+        {"type": "mcp_server", "spec": {"url": "ftp://tools.acme.test/mcp"}},
+        {"type": "mcp_server", "spec": {"url": "https://tools.acme.test/mcp#other"}},
+        {"type": "mcp_server", "spec": {"url": ["https://tools.acme.test/mcp"]}},
+    ],
+)
+def test_unusable_targets_are_refused_before_the_scanner_runs(tmp_path, target):
+    scanner = FakeScanner()
+    code, evidence = _run(tmp_path, _req(target), scanner)
+    assert code != 0 and scanner.calls == []
+    assert list(evidence.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    "analyzers", [["api"], ["yara", "llm"], "yara,virustotal", [], "", ["YARA"], {"yara": True}]
+)
+def test_other_analyzers_are_refused_before_the_scanner_runs(tmp_path, analyzers):
+    scanner = FakeScanner()
+    code, _ = _run(tmp_path, _req(params={"analyzers": analyzers}), scanner)
+    assert code != 0 and scanner.calls == []
+
+
+@pytest.mark.parametrize("analyzers", [["yara"], "yara", " yara ,"])
+def test_asking_for_yara_explicitly_is_accepted(tmp_path, analyzers):
+    scanner = FakeScanner()
+    code, _ = _run(tmp_path, _req(params={"analyzers": analyzers}), scanner)
+    assert code == 0 and len(scanner.calls) == 1
+
+
+def test_the_scanner_environment_carries_no_request_credential_or_analyzer_setting(tmp_path):
+    scanner = FakeScanner()
+    environ = {
+        "KHANDAQ_TARGET_CREDENTIAL": KEY,
+        "MCP_SCANNER_API_KEY": "synthetic-not-a-real-key",
+        "MCP_SCANNER_LLM_API_KEY": "synthetic-not-a-real-key",
+        "MCP_SCANNER_ENDPOINT": "https://elsewhere.test",
+        "VIRUSTOTAL_API_KEY": "synthetic-not-a-real-key",
+        "HOME": "/tmp",
+    }
+    code, _ = _run(tmp_path, _req(), scanner, environ)
+    assert code == 0
+    [(_, kwargs)] = scanner.calls
+    assert sorted(kwargs["env"]) == ["HOME", "PATH"]
+
+
+def test_a_successful_scan_writes_the_report_and_findings_citing_it(tmp_path):
+    raw = json.dumps(COMPLETE, indent=2).encode()
+    code, evidence = _run(tmp_path, _req(), FakeScanner(raw))
+    assert code == 0
+    assert sorted(p.name for p in evidence.iterdir()) == ["findings.jsonl", wrap.REPORT_NAME]
+    assert (evidence / wrap.REPORT_NAME).read_bytes() == raw  # the tool's report, byte for byte
+    findings = [json.loads(line) for line in (evidence / "findings.jsonl").read_text().splitlines()]
+    assert len(findings) == len(_parse(COMPLETE)) > 0
+    assert {f["target_ref"] for f in findings} == {"https://tools.acme.test/mcp"}
+    for f in findings:
+        assert f.pop("_evidence_local") == [wrap.REPORT_NAME]
+        jsonschema.validate(f, SCHEMA)
+
+
+def test_a_clean_scan_succeeds_with_no_findings(tmp_path):
+    code, evidence = _run(tmp_path, _req(), FakeScanner(CLEAN))
+    assert code == 0
+    assert (evidence / "findings.jsonl").read_text() == ""
+    assert (evidence / wrap.REPORT_NAME).is_file()
+
+
+@pytest.mark.parametrize(
+    "scanner",
+    [
+        FakeScanner(returncode=1),
+        FakeScanner(b""),
+        FakeScanner(b"   \n"),
+        FakeScanner(b"=== MCP Scanner Results ===\nnot the raw format"),
+        FakeScanner({}),
+        FakeScanner({"scan_results": []}),
+        FakeScanner(b"\xff\xfe not utf-8"),
+    ],
+    ids=["exit-1", "no-output", "blank", "summary-format", "no-results", "nothing-scanned", "binary"],
+)
+def test_a_failed_or_untrustworthy_scan_writes_no_findings(tmp_path, scanner):
+    code, evidence = _run(tmp_path, _req(), scanner)
+    assert code != 0
+    assert list(evidence.iterdir()) == []  # never an empty "clean" result, and no report either
+
+
+@pytest.mark.parametrize(
+    "missed",
+    [
+        _item({"yara_analyzer": _entry("UNKNOWN", [], 0, status="error")}, tool_name="broken"),
+        _item({"yara_analyzer": _entry("SAFE", [], 0)}, tool_name="broken", status="failed"),
+        _item({"yara_analyzer": _entry("SAFE", [], 0)}, tool_name="broken", status="skipped"),
+    ],
+    ids=["analyzer-errored", "item-failed", "item-skipped"],
+)
+@pytest.mark.parametrize(
+    "scanned",
+    [
+        _item({"yara_analyzer": _entry("SAFE", [], 0)}),
+        _item({"yara_analyzer": _entry("HIGH", ["TOOL POISONING"])}),
+    ],
+    ids=["beside-a-safe-tool", "beside-a-flagged-tool"],
+)
+def test_a_partial_scan_is_a_failed_run_not_a_clean_one(
+    tmp_path, monkeypatch, capsys, scanned, missed
+):
+    report = {"server_url": "https://tools.acme.test/mcp", "scan_results": [scanned, missed]}
+    wrap.parse_report(json.dumps(report), engagement_id="e", run_id="r", target_ref="t")  # spec 025
+    code, evidence = _run(tmp_path, _req(), FakeScanner(report))
+    assert code != 0
+    assert list(evidence.iterdir()) == []
+    assert "'broken'" in capsys.readouterr().err  # the run says which item was missed
+
+    # And through the entrypoint: no tar for a partial scan.
+    monkeypatch.setenv("KHANDAQ_RUN_REQUEST", json.dumps(_req()))
+    monkeypatch.setattr(wrap.subprocess, "run", FakeScanner(report))
+    out = io.BytesIO()
+    assert wrap.main(tmp_path / "absent.json", evidence, out) != 0
+    assert out.getvalue() == b""
+
+
+def test_the_credential_is_the_bearer_token_and_is_in_no_output(tmp_path, capsys):
+    scanner = FakeScanner()
+    code, evidence = _run(tmp_path, _req(), scanner, {"KHANDAQ_TARGET_CREDENTIAL": KEY})
+    assert code == 0
+    [(command, kwargs)] = scanner.calls
+    assert command[-2:] == ["--bearer-token", KEY]
+    assert command.count(KEY) == 1
+    assert KEY not in kwargs["env"].values() and "KHANDAQ_TARGET_CREDENTIAL" not in kwargs["env"]
+    captured = capsys.readouterr()
+    assert KEY not in captured.out and KEY not in captured.err
+    for path in evidence.iterdir():
+        assert KEY.encode() not in path.read_bytes(), path.name
+
+    # No credential, or an empty one: no flag at all.
+    for environ in ({}, {"KHANDAQ_TARGET_CREDENTIAL": ""}):
+        plain = FakeScanner()
+        (tmp_path / "evidence" / "findings.jsonl").unlink()
+        (tmp_path / "evidence" / wrap.REPORT_NAME).unlink()
+        (tmp_path / "evidence").rmdir()
+        _run(tmp_path, _req(), plain, environ)
+        assert "--bearer-token" not in plain.calls[0][0]
+
+
+def test_main_reads_the_request_from_the_environment_and_emits_a_tar(tmp_path, monkeypatch):
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    monkeypatch.setenv("KHANDAQ_RUN_REQUEST", json.dumps(_req()))
+    monkeypatch.setattr(wrap.subprocess, "run", FakeScanner())
+    out = io.BytesIO()
+    assert wrap.main(tmp_path / "absent.json", evidence, out) == 0
+    with tarfile.open(fileobj=io.BytesIO(out.getvalue()), mode="r:") as tar:
+        assert sorted(tar.getnames()) == ["findings.jsonl", wrap.REPORT_NAME]
+
+
+def test_main_emits_nothing_on_stdout_when_the_run_fails(tmp_path, monkeypatch):
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    monkeypatch.setenv("KHANDAQ_RUN_REQUEST", json.dumps(_req()))
+    monkeypatch.setattr(wrap.subprocess, "run", FakeScanner(returncode=1))
+    out = io.BytesIO()
+    assert wrap.main(tmp_path / "absent.json", evidence, out) != 0
+    assert out.getvalue() == b""
+
+
+@pytest.mark.parametrize("raw", [None, "not json", "[]", '{"engagement_id": "e"}'])
+def test_main_without_a_usable_request_fails(tmp_path, monkeypatch, raw):
+    if raw is None:
+        monkeypatch.delenv("KHANDAQ_RUN_REQUEST", raising=False)
+    else:
+        monkeypatch.setenv("KHANDAQ_RUN_REQUEST", raw)
+    assert wrap.main(tmp_path / "absent.json", tmp_path, io.BytesIO()) != 0
+
+
+def test_the_recorded_fixture_is_itself_a_partial_scan(tmp_path):
+    # It has items the tool failed on, so as a run's report it is refused, while the parser reads it.
+    assert _MISSED and len(COMPLETE["scan_results"]) < len(FIXTURE["scan_results"])
+    code, evidence = _run(tmp_path, _req(), FakeScanner(FIXTURE))
+    assert code != 0 and list(evidence.iterdir()) == []

@@ -294,13 +294,39 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
       switch the feature on; it blocks testing hosted endpoints that need a key; default: stays off.
       **Owner:** ADR-0019 is Accepted by the implementer under ADR-0018 — say so if any of the five
       values should be looser; default: they stand.
-- [ ] S7-2 — spec 029 PyRIT runs in the sandbox (to write, spec-027 pattern). Next story. Note
-      from `docs/roadmap/handover.md` §6: an earlier session could not write the PyRIT and
-      promptfoo invoke functions; if that still holds, the story is blocked for the owner and the
-      run takes S7-4.
-- [ ] S7-3 — spec 030 promptfoo runs in the sandbox (to write).
-- [ ] S7-4 — spec 031 mcp-scanner runs in the sandbox (to write); each of 029–031 adds
-      `accepts_credential` for its adapter.
+- [ ] S7-2 — spec 029 PyRIT runs in the sandbox (to write, spec-027 pattern), and
+- [ ] S7-3 — spec 030 promptfoo runs in the sandbox (to write). Both blocked.
+      **Owner:** `docs/roadmap/handover.md` §6 records that writing these two invoke functions was
+      stopped by a safety control of the coding assistant, and that it was not worked around.
+      Nightly runs leave that control alone. Needed: a human writes the two wrappers (parser,
+      manifest, Dockerfile, fixtures and tests exist; `adapters/garak/wrap.py` and
+      `adapters/mcp-scanner/wrap.py` show the contract), or the block is cleared with the vendor.
+      It blocks PyRIT and promptfoo runs only; default: they stay parser-only.
+- [x] S7-4 — spec 031 mcp-scanner runs in the sandbox (second run of 2026-11-14, UTC): the wrapper follows
+      the spec 012 contract (request from the environment, the scanner's own
+      `mcp-scanner --analyzers yara --format raw remote --server-url <url>`, raw report as
+      evidence, tar on stdout, fail closed); `mcp-scanner` is registered (drift-tested against
+      `adapter.yaml`) with `paces_requests: false` and `accepts_credential: true`, so
+      `GET /api/adapters` and the run launcher offer it. 505 api tests, 171 adapter contract
+      tests. Manual e2e on 2026-11-14 (local daemon, the pinned 4.8.5 image, a local scratch MCP
+      server with one benign and one deliberately poisoned tool description, all synthetic): the
+      run succeeded with three high findings for the poisoned tool (prompt injection, data
+      exfiltration, credential harvesting), the sealed raw report and a verifying ledger; against
+      the same server requiring a bearer key the run failed without a stored key and succeeded
+      with one (`run.started` `injected`), and the key was in no record. Decisions: the raw report
+      is read from the scanner's stdout, because 4.8.5 ignores `--output` for a raw `remote` scan
+      (found on the real tool); YARA is the only analyzer and any other request fails the run,
+      because the others send tool descriptions to a third party; the credential is the
+      scanner's `--bearer-token`, its only interface for one, so it is a process argument inside
+      the run's container (never a `docker` argument); only `mcp_server` targets are scanned (the
+      spec 025 `agent`-by-host case has no URL to scan); `MCP_SCANNER_*` and `VIRUSTOTAL_*`
+      settings are stripped from the scanner's environment. A partial scan (an item failed, skipped, or with every analyzer errored)
+      fails the run, stricter than the spec 025 parser (review). Known limit of the pinned tool:
+      4.8.5 does not follow `tools/list` pagination, so on a paginating server only the first
+      page is scanned and the report does not say so (review; spec 031). Follow-ups: a scanner
+      version that paginates; a bundled demo MCP target
+      for `make demo`; the scanner's prompts/resources/instructions scans (no raw report in
+      4.8.5); refusing an adapter that does not fit the target type before the run is queued.
 
 ### Dependency maintenance (nightly runs, ADR-0018)
 
@@ -311,15 +337,13 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
   closed) into #75 with the `vite/client` declaration TypeScript 7 needs, and the three stale
   actions bumps (#47/#50/#51) into one PR. None of them had failed for a reason: nobody had merged
   them, and only #57 was red.
-- [ ] Python 3.15 base image for the api (Dependabot #72, 3.12-slim → 3.15-slim): CI tests on
-      3.12 only and never builds the image, so green checks say nothing about it. Needs the CI
-      Python and the image moved together and the wheels (psycopg, cryptography, pydantic-core,
-      the maturin build) checked on 3.15 first. Left open.
-- [ ] sha2 0.10 → 0.11 (Dependabot #69): green, but it is the hash under the evidence ledger and
-      the fingerprint. **Owner:** sign off (ADR-0018 keeps reviewer sign-off for ledger changes);
-      it blocks nothing; default: stays open.
-- [ ] psycopg `<3.3` → `<3.4` (Dependabot #56): checks date from 5 October; revalidate against the
-      current lockfile, then merge.
+- 2026-11-14: psycopg 3.3.9 (range `<3.4`) and sha2 0.11.1 taken on one branch (Dependabot #56 and
+  #69 closed). sha2 is the hash under the ledger and the fingerprint: the core's fixed-digest
+  tests, the binding tests and the API's `hashlib` cross-checks pass, so no sealed hash changes.
+- [ ] Python 3.15 base image for the api (Dependabot #72, 3.12-slim → 3.15-slim): the
+      `khandaq-core` wheel does not build on 3.15 with PyO3 0.26 (tried 2026-11-14), CI tests on
+      3.12 only and never builds the image. Needs a PyO3 bump, then CI and the image moved
+      together. Left open.
 - [ ] **Owner:** Dependabot cannot label its PRs: the labels `dependencies`, `area: core`,
       `area: api`, `area: web`, `area: ci`, `area: deploy` named in `.github/dependabot.yml` do not
       exist. Create them, or say that they should be dropped from the file; default: unlabelled.

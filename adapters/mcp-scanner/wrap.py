@@ -1,18 +1,26 @@
 #!/usr/bin/env python3
-"""Cisco mcp-scanner adapter wrapper (spec 025).
+"""Cisco mcp-scanner adapter wrapper (specs 025 and 031).
 
-Khandaq orchestrates mcp-scanner (Cisco, Apache-2.0); it does not reimplement it (ADR-0001).
-``mcp-scanner --format raw`` writes one JSON report per MCP server; this wrapper's parser turns
-each threat an analyzer reported on a tool, prompt or resource into a canonical finding. The parser
-is contract-tested against a recorded fixture.
+Khandaq orchestrates mcp-scanner (Cisco, Apache-2.0); it does not reimplement it (ADR-0001). Inside
+the run sandbox (spec 012) this wrapper reads the scope-checked run request, runs the pinned
+scanner's own ``remote`` scan with its bundled YARA rules against the one in-scope MCP server, and
+turns each threat an analyzer reported on a tool into a canonical finding. It adds no rules or
+detection logic of its own. The parser is contract-tested against a recorded fixture.
+
+Only the server the control plane passed is ever used; the sandbox's network reaches no other host.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
+import subprocess
 import sys
+import tarfile
 from pathlib import Path
+from typing import IO
+from urllib.parse import urlsplit
 
 VERSION = "4.8.5"
 PHASE = "07-agentic-mcp"
@@ -149,36 +157,186 @@ def parse_report(
     return findings
 
 
+# --- running mcp-scanner (spec 031) ---------------------------------------------------------------
+
+SCANNER = "mcp-scanner"
+# The only analyzer that works on what the scan itself fetched. The others send the server's tool
+# descriptions to a third party (Cisco AI Defense, an LLM, VirusTotal): the sandbox has no route
+# there, and an engagement has not authorised it.
+ANALYZER = "yara"
+FINDINGS_NAME = "findings.jsonl"
+CREDENTIAL_ENV = "KHANDAQ_TARGET_CREDENTIAL"
+# Settings of the scanner that could switch on another analyzer or point it elsewhere.
+_SCANNER_SETTINGS = ("MCP_SCANNER_", "VIRUSTOTAL_")
+
+
+class RequestError(ValueError):
+    """The run request cannot be turned into a scan; the run fails before the scanner starts."""
+
+
+def load_request(environ: dict[str, str], fallback: Path) -> dict:
+    """The run request from ``KHANDAQ_RUN_REQUEST`` (the sandbox contract), else from a file."""
+    raw = environ.get("KHANDAQ_RUN_REQUEST")
+    if raw is None:
+        if not fallback.is_file():
+            raise RequestError("no run request: KHANDAQ_RUN_REQUEST is not set")
+        raw = fallback.read_text()
+    try:
+        request = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RequestError(f"the run request is not JSON: {exc}") from exc
+    if not isinstance(request, dict) or not isinstance(request.get("target"), dict):
+        raise RequestError("the run request has no target")
+    return request
+
+
+def server_url(target: dict) -> str:
+    """The MCP server's URL, unchanged: the request the scanner makes is the URL the scope lock
+    authorised (an ``mcp_server`` target is matched by its exact URL)."""
+    if target.get("type") != "mcp_server":
+        raise RequestError(f"mcp-scanner scans an MCP server, not a {target.get('type')!r}")
+    url = (target.get("spec") or {}).get("url")
+    parts = urlsplit(url) if isinstance(url, str) else None
+    if parts is None or parts.scheme not in ("http", "https") or not parts.hostname:
+        raise RequestError("the target needs an absolute http(s) URL")
+    if parts.fragment:
+        raise RequestError("the target URL must not carry a fragment")
+    return url
+
+
+def check_analyzers(params: dict) -> None:
+    """Only the YARA analyzer runs; a request for any other fails the run instead of being dropped."""
+    wanted = params.get("analyzers")
+    if wanted is None:
+        return
+    if isinstance(wanted, str):
+        wanted = [a.strip() for a in wanted.split(",") if a.strip()]
+    if wanted != [ANALYZER]:
+        raise RequestError(f"only the {ANALYZER!r} analyzer runs in the sandbox, got {wanted!r}")
+
+
+def scanner_command(url: str, credential: str | None = None) -> list[str]:
+    """The mcp-scanner CLI invocation: its own ``remote`` scan, YARA only, raw report on stdout.
+
+    A target credential (spec 028) is the scanner's ``--bearer-token``, the tool's only interface
+    for one: an argument of a process inside this run's container, never of ``docker``.
+    """
+    command = [SCANNER, "--analyzers", ANALYZER, "--format", "raw", "remote", "--server-url", url]
+    if credential:
+        command += ["--bearer-token", credential]
+    return command
+
+
+def scanner_env(environ: dict[str, str]) -> dict[str, str]:
+    """The scanner's environment: without the run request, the credential variable, or any setting
+    that could enable another analyzer."""
+    return {
+        k: v
+        for k, v in environ.items()
+        if k not in ("KHANDAQ_RUN_REQUEST", CREDENTIAL_ENV) and not k.startswith(_SCANNER_SETTINGS)
+    }
+
+
+def write_tar(evidence: Path, out: IO[bytes]) -> None:
+    """The sandbox output contract (spec 012): one uncompressed tar of ``evidence`` on stdout."""
+    with tarfile.open(fileobj=out, mode="w|") as tar:
+        for path in sorted(evidence.iterdir()):
+            tar.add(path, arcname=path.name)
+
+
+def run(request: dict, *, evidence: Path, environ: dict[str, str], runner=None) -> int:
+    """Scan the request's MCP server and write the raw report and ``findings.jsonl`` into
+    ``evidence``.
+
+    Returns non-zero, with no findings file, on any failure: a scan that produced no trustworthy
+    report must surface as a failed run, never as a run with zero findings.
+    """
+    try:
+        url = server_url(request["target"])
+        check_analyzers(request.get("params") or {})
+    except RequestError as exc:
+        print(f"mcp-scanner adapter: {exc}", file=sys.stderr)
+        return 2
+    command = scanner_command(url, environ.get(CREDENTIAL_ENV) or None)
+    print(f"mcp-scanner adapter: scanning with mcp-scanner {VERSION} ({ANALYZER})", file=sys.stderr)
+    # The raw report is the scanner's stdout; its console output goes to stderr, because this
+    # process's stdout carries only the evidence tar.
+    result = (runner or subprocess.run)(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=sys.stderr,
+        env=scanner_env(environ),
+        check=False,
+    )
+    report = result.stdout or b""
+    if result.returncode != 0 or not report.strip():
+        print(
+            f"mcp-scanner adapter: the scanner exited with {result.returncode} and "
+            f"{len(report)} bytes of report",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        findings = parse_report(
+            report.decode("utf-8"),
+            engagement_id=request["engagement_id"],
+            run_id=request["run_id"],
+            target_ref=_target_ref(request["target"]),
+        )
+        missed = unscanned_items(report.decode("utf-8"))
+    except (ReportError, UnicodeDecodeError) as exc:
+        print(f"mcp-scanner adapter: refusing an untrustworthy report: {exc}", file=sys.stderr)
+        return 2
+    if missed:
+        # A partial scan is a failed run: its findings would read as the whole picture, and a
+        # report with nothing flagged would read as clean although an item was never checked.
+        print(
+            f"mcp-scanner adapter: {len(missed)} item(s) were not scanned: {', '.join(missed[:10])}",
+            file=sys.stderr,
+        )
+        return 2
+    (evidence / REPORT_NAME).write_bytes(report)
+    for finding in findings:
+        finding["_evidence_local"] = [REPORT_NAME]
+    (evidence / FINDINGS_NAME).write_text("".join(json.dumps(f) + "\n" for f in findings))
+    return 0
+
+
+def unscanned_items(report_text: str) -> list[str]:
+    """The items of a report the parser accepted that no analyzer actually covered: failed or
+    skipped by the tool, or with every analyzer entry errored. The parser keeps them out of the
+    findings (spec 025); a run must not pass them off as clean (spec 031)."""
+    missed = []
+    for index, item in enumerate(json.loads(report_text)["scan_results"]):
+        entries = item["findings"]
+        errored = sum(1 for entry in entries.values() if entry.get("status") == "error")
+        if item.get("status") in NOT_SCANNED or errored >= len(entries):
+            item_type, name = _item_label(item, index)
+            missed.append(f"{item_type} {name!r}")
+    return missed
+
+
 def _target_ref(target: dict) -> str:
     spec = target.get("spec") or {}
     return str(spec.get("url") or spec.get("host") or "target")
 
 
-def main(request_path: Path = Path("/run-request.json"), evidence: Path = Path("/evidence")) -> int:
-    """Translate the mcp-scanner report in ``evidence`` into ``findings.jsonl``.
-
-    Exits non-zero, and writes no findings file, when the report is missing, incomplete or
-    unreadable: a scan that produced no trustworthy report must surface as a failed run, never as a
-    run with zero findings. Invoking mcp-scanner itself inside the run sandbox lands with the other
-    adapters (spec 012); until then the report must already be present.
-    """
-    request = json.loads(request_path.read_text())
-    report = evidence / REPORT_NAME
-    if not report.is_file():
-        print(f"mcp-scanner adapter: {report} is missing; mcp-scanner did not run", file=sys.stderr)
-        return 2
+def main(
+    request_path: Path = Path("/run-request.json"),
+    evidence: Path = Path("/evidence"),
+    out: IO[bytes] | None = None,
+) -> int:
+    """Sandbox entrypoint: run the scan, then emit the evidence tar on stdout (only on success)."""
+    environ = dict(os.environ)
     try:
-        findings = parse_report(
-            report.read_text(),
-            engagement_id=request["engagement_id"],
-            run_id=request["run_id"],
-            target_ref=_target_ref(request.get("target") or {}),
-        )
-    except ReportError as exc:
-        print(f"mcp-scanner adapter: refusing untrustworthy report: {exc}", file=sys.stderr)
+        request = load_request(environ, request_path)
+    except RequestError as exc:
+        print(f"mcp-scanner adapter: {exc}", file=sys.stderr)
         return 2
-    (evidence / "findings.jsonl").write_text("".join(json.dumps(f) + "\n" for f in findings))
-    return 0
+    code = run(request, evidence=evidence, environ=environ)
+    if code == 0:
+        write_tar(evidence, out or sys.stdout.buffer)
+    return code
 
 
 if __name__ == "__main__":
