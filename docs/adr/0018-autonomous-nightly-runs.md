@@ -53,7 +53,7 @@ What does **not** change:
 - Spec first, tests, `make lint` and `make test` before each commit, semantic commits and the PR
   template apply as before.
 
-## Amendment of 2026-11-15 (the owner's rules for the scheduled run)
+## Amendment of 2026-11-14 (the owner's rules for the scheduled run)
 
 The scheduled run's protocol was tightened after the first runs asked the owner too much. Where it
 differs from the text above, this section applies.

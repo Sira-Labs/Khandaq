@@ -25,7 +25,7 @@ sealed, verifiable evidence → exported report → scheduled campaigns with reg
 real OIDC on CapRover staging.
 
 Adapters: `garak` runs its real tool in the spec-012 sandbox (spec 027, e2e-verified 2026-10-08).
-`mcp-scanner` runs its real tool in the sandbox too (spec 031, e2e-verified 2026-11-15), and target
+`mcp-scanner` runs its real tool in the sandbox too (spec 031, e2e-verified 2026-11-14), and target
 credentials are in (spec 028, ADR-0019). `pyrit` and `promptfoo` have parsers, fixtures and passing
 contract tests, but their sandbox-execution wrappers are **not written**: specs 029 and 030 are
 blocked for the owner (`TASKS.md`, `handover.md` §6). Next unblocked work is sprint 8.

@@ -283,14 +283,37 @@ def run(request: dict, *, evidence: Path, environ: dict[str, str], runner=None) 
             run_id=request["run_id"],
             target_ref=_target_ref(request["target"]),
         )
+        missed = unscanned_items(report.decode("utf-8"))
     except (ReportError, UnicodeDecodeError) as exc:
         print(f"mcp-scanner adapter: refusing an untrustworthy report: {exc}", file=sys.stderr)
+        return 2
+    if missed:
+        # A partial scan is a failed run: its findings would read as the whole picture, and a
+        # report with nothing flagged would read as clean although an item was never checked.
+        print(
+            f"mcp-scanner adapter: {len(missed)} item(s) were not scanned: {', '.join(missed[:10])}",
+            file=sys.stderr,
+        )
         return 2
     (evidence / REPORT_NAME).write_bytes(report)
     for finding in findings:
         finding["_evidence_local"] = [REPORT_NAME]
     (evidence / FINDINGS_NAME).write_text("".join(json.dumps(f) + "\n" for f in findings))
     return 0
+
+
+def unscanned_items(report_text: str) -> list[str]:
+    """The items of a report the parser accepted that no analyzer actually covered: failed or
+    skipped by the tool, or with every analyzer entry errored. The parser keeps them out of the
+    findings (spec 025); a run must not pass them off as clean (spec 031)."""
+    missed = []
+    for index, item in enumerate(json.loads(report_text)["scan_results"]):
+        entries = item["findings"]
+        errored = sum(1 for entry in entries.values() if entry.get("status") == "error")
+        if item.get("status") in NOT_SCANNED or errored >= len(entries):
+            item_type, name = _item_label(item, index)
+            missed.append(f"{item_type} {name!r}")
+    return missed
 
 
 def _target_ref(target: dict) -> str:

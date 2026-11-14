@@ -66,6 +66,10 @@ run, and read which tools the scanner flagged, with its own report attached as e
 5. **Fail closed.** A non-zero exit, an empty report, or a report the spec-025 parser refuses
    (not JSON, nothing scanned, inconsistent counts) fails the run. No findings file and no tar are
    written: a scan that produced nothing trustworthy is a failed run, not zero findings.
+   The same holds for a **partial scan**: if the report lists any item the tool failed or skipped,
+   or one on which every analyzer errored, the run fails and names the items on stderr. The
+   spec-025 parser still accepts such a report (it only refuses one in which nothing was scanned);
+   the wrapper is stricter, because the findings of a partial scan would read as the whole picture.
 6. **Clean scan.** A report in which every tool was scanned and none was flagged is a succeeded
    run with zero findings and the report as evidence.
 7. **Rate cap.** mcp-scanner cannot hold a requests-per-minute limit (`paces_requests: false`), so
@@ -101,6 +105,7 @@ scanner process:
 - `test_a_successful_scan_writes_the_report_and_findings_citing_it`;
 - `test_a_clean_scan_succeeds_with_no_findings`;
 - `test_a_failed_or_untrustworthy_scan_writes_no_findings`;
+- `test_a_partial_scan_is_a_failed_run_not_a_clean_one`;
 - `test_the_credential_is_the_bearer_token_and_is_in_no_output`;
 - `test_main_reads_the_request_from_the_environment_and_emits_a_tar`;
 - `test_main_emits_nothing_on_stdout_when_the_run_fails`.
@@ -112,6 +117,14 @@ API (`api/tests/test_adapter_registry.py`):
 
 Security: the egress e2e of spec 012 is unchanged and still passes; the wrapper passes no host but
 the target's URL to the scanner.
+
+## Known limit of the pinned tool
+
+mcp-scanner 4.8.5 calls `tools/list` once and does not follow `nextCursor`. On an MCP server that
+paginates its tool list, tools on later pages are not scanned, and the raw report does not say so:
+the wrapper cannot detect it, and enumerating pages itself would be scanning logic, which an
+adapter must not carry (ADR-0001). A run against such a server covers the first page only. It is
+fixed by a scanner version that paginates, taken as a deliberate pin bump with the contract test.
 
 ## Out of scope
 

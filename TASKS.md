@@ -302,13 +302,13 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
       manifest, Dockerfile, fixtures and tests exist; `adapters/garak/wrap.py` and
       `adapters/mcp-scanner/wrap.py` show the contract), or the block is cleared with the vendor.
       It blocks PyRIT and promptfoo runs only; default: they stay parser-only.
-- [x] S7-4 — spec 031 mcp-scanner runs in the sandbox (run of 2026-11-15): the wrapper follows
+- [x] S7-4 — spec 031 mcp-scanner runs in the sandbox (second run of 2026-11-14, UTC): the wrapper follows
       the spec 012 contract (request from the environment, the scanner's own
       `mcp-scanner --analyzers yara --format raw remote --server-url <url>`, raw report as
       evidence, tar on stdout, fail closed); `mcp-scanner` is registered (drift-tested against
       `adapter.yaml`) with `paces_requests: false` and `accepts_credential: true`, so
-      `GET /api/adapters` and the run launcher offer it. 505 api tests, 164 adapter contract
-      tests. Manual e2e on 2026-11-15 (local daemon, the pinned 4.8.5 image, a local scratch MCP
+      `GET /api/adapters` and the run launcher offer it. 505 api tests, 171 adapter contract
+      tests. Manual e2e on 2026-11-14 (local daemon, the pinned 4.8.5 image, a local scratch MCP
       server with one benign and one deliberately poisoned tool description, all synthetic): the
       run succeeded with three high findings for the poisoned tool (prompt injection, data
       exfiltration, credential harvesting), the sealed raw report and a verifying ledger; against
@@ -320,7 +320,11 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
       scanner's `--bearer-token`, its only interface for one, so it is a process argument inside
       the run's container (never a `docker` argument); only `mcp_server` targets are scanned (the
       spec 025 `agent`-by-host case has no URL to scan); `MCP_SCANNER_*` and `VIRUSTOTAL_*`
-      settings are stripped from the scanner's environment. Follow-ups: a bundled demo MCP target
+      settings are stripped from the scanner's environment. A partial scan (an item failed, skipped, or with every analyzer errored)
+      fails the run, stricter than the spec 025 parser (review). Known limit of the pinned tool:
+      4.8.5 does not follow `tools/list` pagination, so on a paginating server only the first
+      page is scanned and the report does not say so (review; spec 031). Follow-ups: a scanner
+      version that paginates; a bundled demo MCP target
       for `make demo`; the scanner's prompts/resources/instructions scans (no raw report in
       4.8.5); refusing an adapter that does not fit the target type before the run is queued.
 
@@ -333,11 +337,11 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
   closed) into #75 with the `vite/client` declaration TypeScript 7 needs, and the three stale
   actions bumps (#47/#50/#51) into one PR. None of them had failed for a reason: nobody had merged
   them, and only #57 was red.
-- 2026-11-15: psycopg 3.3.9 (range `<3.4`) and sha2 0.11.1 taken on one branch (Dependabot #56 and
+- 2026-11-14: psycopg 3.3.9 (range `<3.4`) and sha2 0.11.1 taken on one branch (Dependabot #56 and
   #69 closed). sha2 is the hash under the ledger and the fingerprint: the core's fixed-digest
   tests, the binding tests and the API's `hashlib` cross-checks pass, so no sealed hash changes.
 - [ ] Python 3.15 base image for the api (Dependabot #72, 3.12-slim → 3.15-slim): the
-      `khandaq-core` wheel does not build on 3.15 with PyO3 0.26 (tried 2026-11-15), CI tests on
+      `khandaq-core` wheel does not build on 3.15 with PyO3 0.26 (tried 2026-11-14), CI tests on
       3.12 only and never builds the image. Needs a PyO3 bump, then CI and the image moved
       together. Left open.
 - [ ] **Owner:** Dependabot cannot label its PRs: the labels `dependencies`, `area: core`,

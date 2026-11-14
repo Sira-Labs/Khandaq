@@ -174,7 +174,7 @@ feature is off until the key is set on the api and the worker.
 - Spec 029 — PyRIT runs in the sandbox (PyRIT 1.1.0 Python API; built-in rate limiter, so it can set
   `paces_requests: true`).
 - Spec 030 — promptfoo runs in the sandbox.
-- Spec 031 — mcp-scanner runs in the sandbox: **done** (2026-11-15).
+- Spec 031 — mcp-scanner runs in the sandbox: **done** (2026-11-14).
 
 **Platform items offered but not yet specced (each needs a spec first, per the session protocol):**
 - A requests-per-minute limiter for garak (a pacing forwarder), so capped engagements can run garak

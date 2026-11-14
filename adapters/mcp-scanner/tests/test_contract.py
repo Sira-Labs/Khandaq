@@ -203,6 +203,19 @@ CLEAN = {
 }
 
 
+# The recorded fixture includes items the tool could not scan (the parser's fail-closed cases). A
+# run needs a report in which everything was scanned: the fixture without those items.
+_MISSED = set(wrap.unscanned_items(json.dumps(FIXTURE)))
+COMPLETE = {
+    **FIXTURE,
+    "scan_results": [
+        item
+        for index, item in enumerate(FIXTURE["scan_results"])
+        if "{} {!r}".format(*wrap._item_label(item, index)) not in _MISSED
+    ],
+}
+
+
 def _req(target=TARGET, params=None) -> dict:
     return {"engagement_id": "e", "run_id": "r", "target": target, "params": params or {}}
 
@@ -211,7 +224,7 @@ class FakeScanner:
     """Stands in for ``subprocess.run``: records the call and answers as mcp-scanner 4.8.5 does for
     a raw ``remote`` scan, with the report on stdout."""
 
-    def __init__(self, report=FIXTURE, returncode=0):
+    def __init__(self, report=COMPLETE, returncode=0):
         self.report, self.returncode, self.calls = report, returncode, []
 
     def __call__(self, command, **kwargs):
@@ -295,13 +308,13 @@ def test_the_scanner_environment_carries_no_request_credential_or_analyzer_setti
 
 
 def test_a_successful_scan_writes_the_report_and_findings_citing_it(tmp_path):
-    raw = json.dumps(FIXTURE, indent=2).encode()
+    raw = json.dumps(COMPLETE, indent=2).encode()
     code, evidence = _run(tmp_path, _req(), FakeScanner(raw))
     assert code == 0
     assert sorted(p.name for p in evidence.iterdir()) == ["findings.jsonl", wrap.REPORT_NAME]
     assert (evidence / wrap.REPORT_NAME).read_bytes() == raw  # the tool's report, byte for byte
     findings = [json.loads(line) for line in (evidence / "findings.jsonl").read_text().splitlines()]
-    assert len(findings) == 6
+    assert len(findings) == len(_parse(COMPLETE)) > 0
     assert {f["target_ref"] for f in findings} == {"https://tools.acme.test/mcp"}
     for f in findings:
         assert f.pop("_evidence_local") == [wrap.REPORT_NAME]
@@ -332,6 +345,41 @@ def test_a_failed_or_untrustworthy_scan_writes_no_findings(tmp_path, scanner):
     code, evidence = _run(tmp_path, _req(), scanner)
     assert code != 0
     assert list(evidence.iterdir()) == []  # never an empty "clean" result, and no report either
+
+
+@pytest.mark.parametrize(
+    "missed",
+    [
+        _item({"yara_analyzer": _entry("UNKNOWN", [], 0, status="error")}, tool_name="broken"),
+        _item({"yara_analyzer": _entry("SAFE", [], 0)}, tool_name="broken", status="failed"),
+        _item({"yara_analyzer": _entry("SAFE", [], 0)}, tool_name="broken", status="skipped"),
+    ],
+    ids=["analyzer-errored", "item-failed", "item-skipped"],
+)
+@pytest.mark.parametrize(
+    "scanned",
+    [
+        _item({"yara_analyzer": _entry("SAFE", [], 0)}),
+        _item({"yara_analyzer": _entry("HIGH", ["TOOL POISONING"])}),
+    ],
+    ids=["beside-a-safe-tool", "beside-a-flagged-tool"],
+)
+def test_a_partial_scan_is_a_failed_run_not_a_clean_one(
+    tmp_path, monkeypatch, capsys, scanned, missed
+):
+    report = {"server_url": "https://tools.acme.test/mcp", "scan_results": [scanned, missed]}
+    wrap.parse_report(json.dumps(report), engagement_id="e", run_id="r", target_ref="t")  # spec 025
+    code, evidence = _run(tmp_path, _req(), FakeScanner(report))
+    assert code != 0
+    assert list(evidence.iterdir()) == []
+    assert "'broken'" in capsys.readouterr().err  # the run says which item was missed
+
+    # And through the entrypoint: no tar for a partial scan.
+    monkeypatch.setenv("KHANDAQ_RUN_REQUEST", json.dumps(_req()))
+    monkeypatch.setattr(wrap.subprocess, "run", FakeScanner(report))
+    out = io.BytesIO()
+    assert wrap.main(tmp_path / "absent.json", evidence, out) != 0
+    assert out.getvalue() == b""
 
 
 def test_the_credential_is_the_bearer_token_and_is_in_no_output(tmp_path, capsys):
@@ -385,3 +433,10 @@ def test_main_without_a_usable_request_fails(tmp_path, monkeypatch, raw):
     else:
         monkeypatch.setenv("KHANDAQ_RUN_REQUEST", raw)
     assert wrap.main(tmp_path / "absent.json", tmp_path, io.BytesIO()) != 0
+
+
+def test_the_recorded_fixture_is_itself_a_partial_scan(tmp_path):
+    # It has items the tool failed on, so as a run's report it is refused, while the parser reads it.
+    assert _MISSED and len(COMPLETE["scan_results"]) < len(FIXTURE["scan_results"])
+    code, evidence = _run(tmp_path, _req(), FakeScanner(FIXTURE))
+    assert code != 0 and list(evidence.iterdir()) == []
