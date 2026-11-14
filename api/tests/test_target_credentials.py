@@ -758,3 +758,14 @@ def test_updated_at_moves_when_a_credential_is_replaced(env):
         if t["id"] == tid
     ]
     assert dt.datetime.fromisoformat(target["credential_updated_at"]) == second
+
+
+def test_a_long_failure_keeps_its_last_lines_where_the_cause_is():
+    from khandaq.runs import _brief
+
+    stderr = "garak adapter: running garak\n" + "progress line\n" * 200 + "HTTP 401 from the target"
+    brief = _brief(f"adapter failed: adapter exited with 2: {stderr}")
+    assert len(brief) == 500
+    assert brief.startswith("adapter failed: adapter exited with 2: garak adapter")
+    assert brief.endswith("HTTP 401 from the target")
+    assert _brief("short") == "short"

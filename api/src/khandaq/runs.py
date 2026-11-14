@@ -366,6 +366,18 @@ def recover_stale_runs(session: Session, *, older_than: dt.timedelta) -> int:
     return len(stale)
 
 
+_ERROR_CHARS, _ERROR_HEAD = 500, 140
+
+
+def _brief(error: str) -> str:
+    """An error cut to the recorded length, keeping its start and its end. A tool's last lines say
+    why it stopped (a 401 from the target, for instance); its first lines only say that it began."""
+    if len(error) <= _ERROR_CHARS:
+        return error
+    gap = " … "
+    return error[:_ERROR_HEAD] + gap + error[-(_ERROR_CHARS - _ERROR_HEAD - len(gap)) :]
+
+
 def _fail(session: Session, engagement_id: str, run_id: str, error: str, actor: User | None) -> Run:
     """Record a failed run in a fresh transaction (the current one may be unusable)."""
     session.rollback()
@@ -374,13 +386,13 @@ def _fail(session: Session, engagement_id: str, run_id: str, error: str, actor: 
         raise RuntimeError(f"run {run_id} vanished before its failure could be recorded")
     run.state = "failed"
     run.ended_at = _now()
-    run.reject_reason = error[:500]
+    run.reject_reason = brief = _brief(error)
     audit.record(
         session,
         action="run.failed",
         actor=actor,
         engagement_id=engagement_id,
-        detail={"run_id": run_id, "error": error[:500]},
+        detail={"run_id": run_id, "error": brief},
     )
     session.commit()
     session.refresh(run)
