@@ -157,25 +157,25 @@ logged, or included in a report. I can replace it when it rotates and remove it 
 
 ## Acceptance criteria
 
-- [ ] A key can be set, replaced and cleared by the owner only; the stored form is an ADR-0016
+- [x] A key can be set, replaced and cleared by the owner only; the stored form is an ADR-0016
       envelope and no route, log line, audit detail or response ever contains the value.
-- [ ] `KHANDAQ_CREDENTIAL_KEY` unset leaves everything unchanged and `PUT` is a 503; production refuses a
+- [x] `KHANDAQ_CREDENTIAL_KEY` unset leaves everything unchanged and `PUT` is a 503; production refuses a
       placeholder, a short key, and a key equal to the evidence key.
-- [ ] Value validation (length, character set) and the plain-HTTP rule are enforced at set time and
+- [x] Value validation (length, character set) and the plain-HTTP rule are enforced at set time and
       again at injection.
-- [ ] A garak run against a keyed target sends that key (and not the placeholder) as the generator's
+- [x] A garak run against a keyed target sends that key (and not the placeholder) as the generator's
       API key; the same run against an unkeyed target still sends the placeholder.
-- [ ] The key appears in no `docker` argument, no `KHANDAQ_RUN_REQUEST`, no generator option file;
+- [x] The key appears in no `docker` argument, no `KHANDAQ_RUN_REQUEST`, no generator option file;
       it is in the env file only, and the file is gone afterwards.
-- [ ] A target that echoes the key leaves it in no evidence file, finding, run error or audit entry;
+- [x] A target that echoes the key leaves it in no evidence file, finding, run error or audit entry;
       the evidence is marked `redacted` and its sealed hash matches the redacted bytes.
-- [ ] Closing an engagement deletes its credentials, audited per target.
-- [ ] `run.started` records `injected` / `none` / `not_accepted`; an undecryptable key fails the run.
-- [ ] The console shows key status, sets, replaces and removes a key with a password field, and never
+- [x] Closing an engagement deletes its credentials, audited per target.
+- [x] `run.started` records `injected` / `none` / `not_accepted`; an undecryptable key fails the run.
+- [x] The console shows key status, sets, replaces and removes a key with a password field, and never
       renders, stores or caches the value.
-- [ ] Manual e2e: garak against a target that requires a bearer key succeeds with the key set and
+- [x] Manual e2e: garak against a target that requires a bearer key succeeds with the key set and
       fails (401, failed run) without it; the result is recorded in `TASKS.md`.
-- [ ] Deployment docs cover the key, rotation, and the cost of losing it.
+- [x] Deployment docs cover the key, rotation, and the cost of losing it.
 
 ## Test cases
 

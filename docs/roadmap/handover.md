@@ -164,12 +164,11 @@ the reason is the above, not a code defect.
 
 See `docs/roadmap/sprints.md` for the full sprint plan and forecast. In priority order from here:
 
-**In progress — spec 028, per-run target credentials** (`docs/specs/028-target-credentials.md`,
-written, awaiting owner approval before any code): one write-only, envelope-encrypted secret per
-target under its own `KHANDAQ_CREDENTIAL_KEY`, injected into the sandboxed adapter as a single env
-var for the run, redacted from all evidence and records. It unblocks testing hosted endpoints that
-need an API key (today only no-key or any-key targets work). It needs only plumbing, no attack
-content.
+**Done — spec 028, per-run target credentials** (`docs/specs/028-target-credentials.md`,
+ADR-0019, implemented 2026-11-14 by a nightly run under ADR-0018): one write-only,
+envelope-encrypted secret per target under its own `KHANDAQ_CREDENTIAL_KEY`, injected into the
+sandboxed adapter as a single env var for the run, redacted from all evidence and records. The
+feature is off until the key is set on the api and the worker.
 
 **Then finish adapter execution (spec-027 pattern, one spec each):**
 - Spec 029 — PyRIT runs in the sandbox (PyRIT 1.1.0 Python API; built-in rate limiter, so it can set
@@ -213,6 +212,7 @@ From `TASKS.md` and the Proposed ADRs — these block nothing in code but need a
 - When a spec's acceptance criteria are met, tick them in the spec, mark it done in `TASKS.md`, and
   add one line per non-obvious decision.
 - No secrets in code, config, fixtures or tests — env vars only; synthetic data only.
-- Develop and push on `claude/kind-planck-xd0el7`. Don't open a PR unless asked.
+- Unattended nightly runs follow ADR-0018: one story per run, PRs opened and merged by the run
+  once CI is green, `Owner:` lines in `TASKS.md` instead of waiting.
 </content>
 </invoke>
