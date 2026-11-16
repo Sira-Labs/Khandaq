@@ -112,3 +112,278 @@ def test_it_runs_from_its_source_alone_as_the_container_does():
             upstream.close()
 
     assert asyncio.run(scenario(_free_port())) == b"pong:ping"
+
+
+# --- pacing (spec 032) ----------------------------------------------------------------------------
+
+
+class _FakeTime:
+    """A clock the pacer's sleeps advance, so spacing is asserted without waiting."""
+
+    def __init__(self) -> None:
+        self.now = 100.0
+        self.slept: list[float] = []
+
+    def clock(self) -> float:
+        return self.now
+
+    async def sleep(self, seconds: float) -> None:
+        self.slept.append(seconds)
+        self.now += seconds
+
+
+def test_pacer_spaces_turns():
+    time = _FakeTime()
+    pacer = fwd.Pacer(120, clock=time.clock, sleep=time.sleep)  # one turn per 0.5 s
+
+    async def scenario() -> None:
+        await pacer.wait_turn()  # the first turn is not delayed
+        await pacer.wait_turn()
+        time.now += 5  # an idle spell earns no burst
+        await pacer.wait_turn()
+        await pacer.wait_turn()
+
+    asyncio.run(scenario())
+    assert time.slept == [0.5, 0.5]
+
+
+def test_pacer_shares_slots():
+    """Connections waiting at the same moment get different slots, one interval apart."""
+    slept: list[float] = []
+
+    async def sleep(seconds: float) -> None:
+        slept.append(seconds)
+
+    pacer = fwd.Pacer(60, clock=lambda: 0.0, sleep=sleep)
+
+    async def scenario() -> None:
+        await asyncio.gather(*(pacer.wait_turn() for _ in range(4)))
+
+    asyncio.run(scenario())
+    assert slept == [1.0, 2.0, 3.0]
+
+
+@pytest.mark.parametrize("bad", ["0", "-1", "nan", "inf", "fast"])
+def test_pace_argument_must_be_positive(bad):
+    with pytest.raises(ValueError):
+        fwd.parse_pace(bad)
+    assert fwd.parse_pace("0.5") == 0.5
+
+
+class _CountingPacer(fwd.Pacer):
+    def __init__(self) -> None:
+        super().__init__(60)
+        self.turns = 0
+
+    async def wait_turn(self) -> None:
+        self.turns += 1
+
+
+async def _http_server() -> asyncio.Server:
+    """Answers every request line with one response, keeping the connection open."""
+
+    async def handle(reader, writer):
+        while await reader.readline():
+            while (await reader.readline()) not in (b"\r\n", b""):
+                pass
+            writer.write(b"HTTP/1.1 204 No Content\r\n\r\n")
+            await writer.drain()
+        writer.close()
+
+    return await asyncio.start_server(handle, "127.0.0.1", 0)
+
+
+async def _paced(upstream: asyncio.Server, pacer: fwd.Pacer | None, client) -> object:
+    """Run ``client(port)`` against a relay to ``upstream`` that uses ``pacer``."""
+    up = ("127.0.0.1", upstream.sockets[0].getsockname()[1])
+    relay = await asyncio.start_server(lambda r, w: fwd._relay(r, w, up, pacer), "127.0.0.1", 0)
+    try:
+        return await client(relay.sockets[0].getsockname()[1])
+    finally:
+        relay.close()
+        upstream.close()
+
+
+async def _request(reader, writer, parts: list[bytes]) -> bytes:
+    for part in parts:  # one request, possibly written in several pieces
+        writer.write(part)
+        await writer.drain()
+    return await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 5)
+
+
+def test_paced_relay_counts_one_turn_per_request():
+    pacer = _CountingPacer()
+
+    async def client(port: int) -> None:
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        await _request(reader, writer, [b"GET /a HTTP/1.1\r\n", b"Host: t\r\n", b"\r\n"])
+        await _request(reader, writer, [b"GET /b HTTP/1.1\r\nHost: t\r\n\r\n"])
+        other_reader, other_writer = await asyncio.open_connection("127.0.0.1", port)
+        await _request(other_reader, other_writer, [b"GET /c HTTP/1.1\r\nHost: t\r\n\r\n"])
+        writer.close()
+        other_writer.close()
+
+    async def scenario() -> None:
+        await _paced(await _http_server(), pacer, client)
+
+    asyncio.run(scenario())
+    assert pacer.turns == 3  # three requests on two connections, whatever the write sizes
+
+
+def test_unpaced_relay_is_unchanged():
+    """Without a pace nothing is inspected: even an HTTP/2 preface is relayed as bytes."""
+
+    async def client(port: int) -> bytes:
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        writer.write(fwd._H2_PREFACE)
+        await writer.drain()
+        reply = await asyncio.wait_for(reader.read(100), 5)
+        writer.close()
+        return reply
+
+    async def scenario() -> object:
+        return await _paced(await _pong_server(), None, client)
+
+    assert asyncio.run(scenario()) == b"pong:" + fwd._H2_PREFACE
+
+
+def _client_hello(alpn: list[str] | None) -> bytes:
+    """The ClientHello record Python's own TLS stack sends for this ALPN offer."""
+    import ssl
+
+    context = ssl.create_default_context()
+    if alpn is not None:
+        context.set_alpn_protocols(alpn)
+    incoming, outgoing = ssl.MemoryBIO(), ssl.MemoryBIO()
+    tls = context.wrap_bio(incoming, outgoing, server_hostname="target.test")
+    with pytest.raises(ssl.SSLWantReadError):
+        tls.do_handshake()
+    return outgoing.read()
+
+
+def test_client_hello_alpn():
+    assert fwd.client_hello_alpn(_client_hello(["http/1.1"])) == [b"http/1.1"]
+    assert fwd.client_hello_alpn(_client_hello(["h2", "http/1.1"])) == [b"h2", b"http/1.1"]
+    assert fwd.client_hello_alpn(_client_hello(None)) == []
+
+
+def _with_extension(record: bytes, kind: int) -> bytes:
+    """``record`` with one empty extension of ``kind`` appended, all lengths corrected."""
+    hello = bytearray(record[9:])
+    at = 34
+    at += 1 + hello[at]
+    at += 2 + int.from_bytes(hello[at : at + 2], "big")
+    at += 1 + hello[at]
+    size = int.from_bytes(hello[at : at + 2], "big") + 4
+    hello[at : at + 2] = size.to_bytes(2, "big")
+    hello += kind.to_bytes(2, "big") + b"\x00\x00"
+    body = b"\x01" + len(hello).to_bytes(3, "big") + bytes(hello)
+    return record[:3] + len(body).to_bytes(2, "big") + body
+
+
+def test_client_hello_that_cannot_be_judged_is_refused():
+    record = _client_hello(["http/1.1"])
+    for broken in (
+        record[:40],  # truncated
+        record[:5] + b"\x02" + record[6:],  # a ServerHello, not a ClientHello
+        record[:8] + bytes([record[8] + 1]) + record[9:],  # claims to continue in another record
+        _with_extension(record, 0xFE0D),  # Encrypted Client Hello
+    ):
+        with pytest.raises(fwd.RefusedProtocol):
+            fwd.client_hello_alpn(broken)
+    assert fwd.client_hello_alpn(_with_extension(record, 0xFFAA)) == [b"http/1.1"]
+
+
+def _refused(opening: bytes) -> tuple[bytes, int]:
+    """What a client that opens with ``opening`` gets back, and how many connections the target
+    saw."""
+    seen = 0
+
+    async def handle(reader, writer):
+        nonlocal seen
+        seen += 1
+        writer.close()
+
+    async def client(port: int) -> bytes:
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        writer.write(opening)
+        await writer.drain()
+        reply = await asyncio.wait_for(reader.read(100), 5)
+        writer.close()
+        return reply
+
+    async def scenario() -> object:
+        upstream = await asyncio.start_server(handle, "127.0.0.1", 0)
+        return await _paced(upstream, _CountingPacer(), client)
+
+    return asyncio.run(scenario()), seen  # type: ignore[return-value]
+
+
+def test_paced_relay_refuses_h2_client_hello():
+    assert _refused(_client_hello(["h2", "http/1.1"])) == (b"", 0)
+
+
+def test_paced_relay_refuses_h2_preface():
+    assert _refused(fwd._H2_PREFACE) == (b"", 0)
+
+
+def test_paced_relay_passes_an_http11_client_hello():
+    hello = _client_hello(["http/1.1"])
+
+    async def client(port: int) -> bytes:
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        writer.write(hello[:3])  # the record arrives in pieces
+        await writer.drain()
+        await asyncio.sleep(0.05)
+        writer.write(hello[3:])
+        await writer.drain()
+        reply = await asyncio.wait_for(reader.readexactly(5 + 100), 5)
+        writer.close()
+        return reply
+
+    async def scenario() -> object:
+        return await _paced(await _pong_server(), _CountingPacer(), client)
+
+    assert asyncio.run(scenario()) == b"pong:" + hello[:100]
+
+
+def test_paced_forwarder_holds_the_rate_end_to_end():
+    """The real process, paced at 600/min: four requests take at least three 0.1 s intervals."""
+
+    async def scenario(listen: int) -> float:
+        upstream = await _http_server()
+        up_port = upstream.sockets[0].getsockname()[1]
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-I",
+            "-c",
+            fwd.source(),
+            "--listen-port",
+            str(listen),
+            "--connect",
+            f"127.0.0.1:{up_port}",
+            "--pace-per-minute",
+            "600",
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            for _ in range(100):
+                try:
+                    reader, writer = await asyncio.open_connection("127.0.0.1", listen)
+                    break
+                except OSError:
+                    await asyncio.sleep(0.05)
+            else:
+                raise AssertionError("forwarder never listened")
+            loop = asyncio.get_running_loop()
+            started = loop.time()
+            for _ in range(4):
+                await _request(reader, writer, [b"GET / HTTP/1.1\r\nHost: t\r\n\r\n"])
+            writer.close()
+            return loop.time() - started
+        finally:
+            proc.terminate()
+            await proc.wait()
+            upstream.close()
+
+    assert asyncio.run(scenario(_free_port())) >= 0.3
