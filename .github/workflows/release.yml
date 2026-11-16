@@ -75,7 +75,7 @@ jobs:
             type=raw,value=${{ steps.manifest.outputs.tag || 'unused' }},enable=${{ steps.manifest.outputs.tag != '' && github.ref == 'refs/heads/main' }}
             type=ref,event=tag
             type=sha,format=short
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.file }}
