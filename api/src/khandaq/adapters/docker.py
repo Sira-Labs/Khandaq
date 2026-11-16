@@ -275,10 +275,30 @@ class DockerRunner:
         checked = [check_address(a) for a in addresses]  # any forbidden address refuses the run
         return host, port, checked[0]
 
-    def forwarder_args(self, name: str, port: int, address: str, labels: list[str]) -> list[str]:
+    def pace(self, request: dict) -> float | None:
+        """The requests-per-minute rate the forwarder holds for this run, or ``None`` (spec 032).
+
+        A ``forwarder_paced`` adapter with a declared ``rate_per_minute`` is paced. A rate the
+        forwarder cannot hold refuses the run: nothing falls back to an unpaced forwarder.
+        """
+        rate = (request.get("params") or {}).get("rate_per_minute")
+        if not self.manifest.forwarder_paced or rate is None:
+            return None
+        problem = RunnerError(f"the run cannot be paced at {str(rate)[:40]!r} requests per minute")
+        if isinstance(rate, bool) or not isinstance(rate, (int, float)):
+            raise problem
+        try:
+            return egress_forwarder.parse_pace(repr(float(rate)))
+        except (ValueError, OverflowError) as exc:
+            raise problem from exc
+
+    def forwarder_args(
+        self, name: str, port: int, address: str, labels: list[str], pace: float | None = None
+    ) -> list[str]:
         if not self.settings.forwarder_image:
             raise RunnerError("KHANDAQ_FORWARDER_IMAGE is not set; container runs are disabled")
         connect = f"[{address}]:{port}" if ":" in address else f"{address}:{port}"
+        pacing = [] if pace is None else ["--pace-per-minute", repr(pace)]
         return [
             "run",
             "--detach",
@@ -300,6 +320,7 @@ class DockerRunner:
             str(port),
             "--connect",
             connect,
+            *pacing,
         ]
 
     def adapter_args(self, name: str, network: str, env_file: str, labels: list[str]) -> list[str]:
@@ -350,6 +371,7 @@ class DockerRunner:
     def _run(self, request: dict, credential: str | None) -> dict:
         run_id = request["run_id"]
         host, port, address = self.endpoint(request)
+        pace = self.pace(request)  # before anything starts: an unusable pace refuses the run
         network, forwarder, adapter = f"khq-net-{run_id}", f"khq-fwd-{run_id}", f"khq-run-{run_id}"
         labels = ["--label", f"khandaq.run={run_id}"]
         # Compact JSON has no raw newline, so it is one env-file line.
@@ -371,7 +393,7 @@ class DockerRunner:
                 credential,
             )
             self._ok(
-                self.forwarder_args(forwarder, port, address, labels),
+                self.forwarder_args(forwarder, port, address, labels, pace),
                 "start the forwarder",
                 credential,
             )

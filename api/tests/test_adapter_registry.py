@@ -1,4 +1,5 @@
-"""The adapter registry, the adapter list and the request-rate refusal (spec 027).
+"""The adapter registry, the adapter list, the request-rate refusal (spec 027) and forwarder
+pacing (spec 032).
 
 The unit tests need nothing; the integration tests need PostgreSQL (KHANDAQ_TEST_DATABASE_URL) and
 skip otherwise.
@@ -41,6 +42,7 @@ def test_container_manifests_match_their_adapter_yaml(manifest):
     assert manifest.severity_table == disk["severity_table"]
     assert manifest.resources == disk["resources"]
     assert manifest.paces_requests == disk.get("paces_requests", False)
+    assert manifest.forwarder_paced == disk.get("forwarder_paced", False)
     assert manifest.accepts_credential == disk.get("accepts_credential", False)
     assert manifest.problems() == []
 
@@ -59,23 +61,43 @@ def test_mcp_scanner_is_a_registered_container_adapter():
     assert scanner.paces_requests is False and scanner.accepts_credential is True
 
 
+CAP = {"max_requests_per_minute": 60}
+
+
 @pytest.mark.parametrize(
-    ("adapter", "roe", "refused"),
+    ("adapter", "roe", "params", "refused"),
     [
-        ("garak", {"max_requests_per_minute": 60}, True),
-        ("garak", {}, False),
-        ("garak", None, False),
-        ("garak", {"max_requests_per_minute": 0}, True),  # a zero cap is still a cap
-        ("mcp-scanner", {"max_requests_per_minute": 60}, True),
-        ("mcp-scanner", {}, False),
-        ("echo", {"max_requests_per_minute": 60}, False),  # echo sends nothing to the target
+        # garak is paced by the run's forwarder at the declared rate (spec 032).
+        ("garak", CAP, {"rate_per_minute": 30}, None),
+        ("garak", CAP, {"rate_per_minute": 0.5}, None),
+        ("garak", CAP, {"rate_per_minute": 0}, "above 0"),  # nothing could be sent
+        ("garak", {"max_requests_per_minute": 0}, {"rate_per_minute": 0}, "above 0"),
+        ("garak", CAP, {}, "request-rate limit"),  # no declared rate, nothing to hold
+        ("garak", CAP, None, "request-rate limit"),
+        ("garak", {}, {}, None),
+        ("garak", None, {"rate_per_minute": 30}, None),
+        # A declared rate is kept without a cap too, so it has to be one the forwarder can hold.
+        ("garak", {}, {"rate_per_minute": 0}, "above 0"),
+        ("garak", {}, {"rate_per_minute": "30"}, "above 0"),
+        ("garak", {}, {"rate_per_minute": True}, "above 0"),
+        ("garak", {}, {"rate_per_minute": 10**400}, "above 0"),
+        # mcp-scanner is not paced by anything.
+        ("mcp-scanner", CAP, {"rate_per_minute": 30}, "request-rate limit"),
+        ("mcp-scanner", {}, {"rate_per_minute": 0}, None),
+        ("echo", CAP, {"rate_per_minute": 30}, None),  # echo sends nothing to the target
     ],
 )
-def test_adapter_refusal_for_a_rate_cap(adapter, roe, refused):
-    reason = adapter_refusal(get_manifest(adapter), roe)
-    assert (reason is not None) is refused
-    if refused:
-        assert "request-rate limit" in reason
+def test_adapter_refusal_for_a_rate_cap(adapter, roe, params, refused):
+    reason = adapter_refusal(get_manifest(adapter), roe, params)
+    if refused is None:
+        assert reason is None
+    else:
+        assert reason is not None and refused in reason
+
+
+def test_only_garak_is_paced_by_the_forwarder():
+    assert [m.name for m in all_manifests() if m.forwarder_paced] == ["garak"]
+    assert get_manifest("garak").paces_requests is False  # it still holds no rate itself
 
 
 # --- integration ---------------------------------------------------------------------------------
@@ -132,6 +154,8 @@ def test_the_adapter_list(ctx):
     assert by_name["mcp-scanner"]["version"] == "4.8.5"
     assert by_name["mcp-scanner"]["accepts_credential"] is True
     assert by_name["garak"]["builtin"] is False and by_name["garak"]["paces_requests"] is False
+    assert by_name["garak"]["forwarder_paced"] is True
+    assert by_name["mcp-scanner"]["forwarder_paced"] is False
     # The built-in echo adapter takes no credential (spec 028).
     assert by_name["garak"]["accepts_credential"] is True
     assert by_name["echo"]["accepts_credential"] is False
@@ -139,14 +163,14 @@ def test_the_adapter_list(ctx):
 
 
 @needs_db
-def test_a_capped_engagement_refuses_garak_with_an_audit_entry(ctx):
+def test_a_capped_engagement_refuses_an_unpaced_adapter_with_an_audit_entry(ctx):
     client, _ = ctx
     eng_id, target_id = _engagement(client, {"max_requests_per_minute": 60})
     params = {"rate_per_minute": 30}  # within the cap: the scope lock alone would allow it
 
     check = client.post(
         f"/api/engagements/{eng_id}/scope-check",
-        json={"target_id": target_id, "params": params, "adapter": "garak"},
+        json={"target_id": target_id, "params": params, "adapter": "mcp-scanner"},
         headers=OWNER,
     ).json()
     assert check["allowed"] is False and "request-rate limit" in check["reason"]
@@ -159,19 +183,19 @@ def test_a_capped_engagement_refuses_garak_with_an_audit_entry(ctx):
 
     run = client.post(
         f"/api/engagements/{eng_id}/runs",
-        json={"adapter": "garak", "target_id": target_id, "params": params},
+        json={"adapter": "mcp-scanner", "target_id": target_id, "params": params},
         headers=OWNER,
     ).json()
     assert run["state"] == "rejected" and "request-rate limit" in run["reject_reason"]
     audit = client.get(f"/api/engagements/{eng_id}/audit", headers=OWNER).json()
     rejected = [a for a in audit if a["action"] == "run.rejected"]
-    assert rejected and rejected[-1]["detail"]["adapter"] == "garak"
+    assert rejected and rejected[-1]["detail"]["adapter"] == "mcp-scanner"
 
     campaign = client.post(
         f"/api/engagements/{eng_id}/campaigns",
         json={
             "name": "nightly",
-            "adapter": "garak",
+            "adapter": "mcp-scanner",
             "target_id": target_id,
             "params": params,
             "interval_minutes": 1440,
@@ -182,7 +206,7 @@ def test_a_capped_engagement_refuses_garak_with_an_audit_entry(ctx):
 
 
 @needs_db
-def test_garak_queues_without_a_cap_and_is_rechecked_at_claim(ctx):
+def test_an_unpaced_adapter_queues_without_a_cap_and_is_rechecked_at_claim(ctx):
     from khandaq import runs
     from khandaq.models import Run, Scope
 
@@ -191,7 +215,7 @@ def test_garak_queues_without_a_cap_and_is_rechecked_at_claim(ctx):
     run = client.post(
         f"/api/engagements/{eng_id}/runs",
         # A declared rate, so the claim's scope re-check passes and the adapter check decides.
-        json={"adapter": "garak", "target_id": target_id, "params": {"rate_per_minute": 30}},
+        json={"adapter": "mcp-scanner", "target_id": target_id, "params": {"rate_per_minute": 30}},
         headers=OWNER,
     ).json()
     assert run["state"] == "queued"
@@ -206,3 +230,166 @@ def test_garak_queues_without_a_cap_and_is_rechecked_at_claim(ctx):
     with Session(eng) as s:
         claimed = s.scalars(select(Run).where(Run.id == run["id"])).one()
         assert claimed.state == "rejected" and "request-rate limit" in claimed.reject_reason
+
+
+# --- forwarder pacing (spec 032) ------------------------------------------------------------------
+
+
+def _garak_run(client, eng_id: str, target_id: str, rate: object) -> dict:
+    return client.post(
+        f"/api/engagements/{eng_id}/runs",
+        json={"adapter": "garak", "target_id": target_id, "params": {"rate_per_minute": rate}},
+        headers=OWNER,
+    ).json()
+
+
+def _state(eng, run_id: str) -> str:
+    from khandaq.models import Run
+
+    with Session(eng) as s:
+        return s.scalars(select(Run.state).where(Run.id == run_id)).one()
+
+
+def _finish(eng, run_id: str) -> None:
+    """End a running run the way a recorded outcome would, without executing an adapter."""
+    from khandaq.models import Run
+
+    with Session(eng) as s:
+        s.get(Run, run_id).state = "failed"
+        s.commit()
+
+
+def _claim(eng) -> str | None:
+    from khandaq import runs
+
+    with Session(eng) as s:
+        return runs.claim_next_run(s)
+
+
+@needs_db
+def test_a_capped_engagement_runs_garak_paced_and_audits_the_rate(ctx):
+    client, eng = ctx
+    eng_id, target_id = _engagement(client, {"max_requests_per_minute": 60})
+
+    check = client.post(
+        f"/api/engagements/{eng_id}/scope-check",
+        json={"target_id": target_id, "params": {"rate_per_minute": 30}, "adapter": "garak"},
+        headers=OWNER,
+    ).json()
+    assert check == {"allowed": True, "reason": None}
+
+    campaign = client.post(
+        f"/api/engagements/{eng_id}/campaigns",
+        json={
+            "name": "nightly",
+            "adapter": "garak",
+            "target_id": target_id,
+            "params": {"rate_per_minute": 30},
+            "interval_minutes": 1440,
+            "enabled": False,
+        },
+        headers=OWNER,
+    )
+    assert campaign.status_code in (200, 201), campaign.text
+
+    run = _garak_run(client, eng_id, target_id, 30)
+    assert run["state"] == "queued"
+    assert _claim(eng) == run["id"]
+    audit = client.get(f"/api/engagements/{eng_id}/audit", headers=OWNER).json()
+    [started] = [a for a in audit if a["action"] == "run.started"]
+    assert started["detail"]["run_id"] == run["id"]
+    assert started["detail"]["paced_per_minute"] == 30
+    _finish(eng, run["id"])
+
+
+@needs_db
+def test_the_scope_lock_still_decides_before_pacing(ctx):
+    """Pacing allows nothing the scope lock refuses: no rate, a rate above the cap, a zero rate."""
+    client, _ = ctx
+    eng_id, target_id = _engagement(client, {"max_requests_per_minute": 60})
+    for params, why in (
+        ({}, "set rate_per_minute"),
+        ({"rate_per_minute": 61}, "exceeds the limit"),
+        ({"rate_per_minute": 0}, "above 0"),
+    ):
+        run = client.post(
+            f"/api/engagements/{eng_id}/runs",
+            json={"adapter": "garak", "target_id": target_id, "params": params},
+            headers=OWNER,
+        ).json()
+        assert run["state"] == "rejected" and why in run["reject_reason"], run
+    audit = client.get(f"/api/engagements/{eng_id}/audit", headers=OWNER).json()
+    assert [a["action"] for a in audit].count("run.rejected") == 3
+
+
+@needs_db
+def test_an_unpaced_run_records_no_pace(ctx):
+    client, eng = ctx
+    eng_id, target_id = _engagement(client, {})
+    run = client.post(
+        f"/api/engagements/{eng_id}/runs",
+        json={"adapter": "garak", "target_id": target_id, "params": {}},
+        headers=OWNER,
+    ).json()
+    assert _claim(eng) == run["id"]
+    audit = client.get(f"/api/engagements/{eng_id}/audit", headers=OWNER).json()
+    [started] = [a for a in audit if a["action"] == "run.started"]
+    assert "paced_per_minute" not in started["detail"]
+    _finish(eng, run["id"])
+
+
+@needs_db
+def test_paced_runs_of_a_capped_engagement_run_one_at_a_time(ctx):
+    client, eng = ctx
+    capped, capped_target = _engagement(client, {"max_requests_per_minute": 60})
+    other, other_target = _engagement(client, {"max_requests_per_minute": 60})
+    first = _garak_run(client, capped, capped_target, 60)
+    second = _garak_run(client, capped, capped_target, 60)
+    elsewhere = _garak_run(client, other, other_target, 60)
+
+    assert _claim(eng) == first["id"]
+    # The second run of the same engagement waits; the queue behind it is not blocked.
+    assert _claim(eng) == elsewhere["id"]
+    assert _claim(eng) is None
+    assert _state(eng, second["id"]) == "queued"  # waiting, not rejected
+
+    _finish(eng, first["id"])
+    assert _claim(eng) == second["id"]
+    _finish(eng, second["id"])
+    _finish(eng, elsewhere["id"])
+
+
+@needs_db
+def test_two_workers_cannot_both_start_a_paced_run(ctx, monkeypatch):
+    """Two workers can each pick one of two queued runs before either has started, so the query's
+    own filter sees nothing running. The check under the engagement lock still lets only one
+    start."""
+    from sqlalchemy import false
+
+    from khandaq import runs
+
+    client, eng = ctx
+    eng_id, target_id = _engagement(client, {"max_requests_per_minute": 60})
+    first = _garak_run(client, eng_id, target_id, 60)
+    second = _garak_run(client, eng_id, target_id, 60)
+
+    # As the second worker saw it: the filter in the query did not hold its run back.
+    monkeypatch.setattr(runs, "_waits_for_paced_run", lambda paced: false())
+    assert _claim(eng) == first["id"]
+    assert _claim(eng) is None
+    assert _state(eng, second["id"]) == "queued"  # waiting, not rejected, and not started
+    _finish(eng, first["id"])
+    assert _claim(eng) == second["id"]
+    _finish(eng, second["id"])
+
+
+@needs_db
+def test_uncapped_paced_runs_are_not_held_back(ctx):
+    client, eng = ctx
+    eng_id, target_id = _engagement(client, {})
+    first = _garak_run(client, eng_id, target_id, 60)
+    second = _garak_run(client, eng_id, target_id, 60)
+    assert _claim(eng) == first["id"]
+    assert _claim(eng) == second["id"]
+    _finish(eng, first["id"])
+    _finish(eng, second["id"])

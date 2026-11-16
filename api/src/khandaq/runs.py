@@ -24,15 +24,22 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import math
 
 import khandaq_core as kc
-from sqlalchemy import select, text
+from sqlalchemy import and_, exists, not_, select, text
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 from sqlalchemy.orm.attributes import flag_modified
 
 from . import audit, target_credentials
-from .adapters import AdapterManifest, build_run_request, get_manifest, get_runner
+from .adapters import (
+    AdapterManifest,
+    all_manifests,
+    build_run_request,
+    get_manifest,
+    get_runner,
+)
 from .campaign_diff import record_diff
 from .credential_values import CredentialError, redact
 from .deps import EngagementAccess
@@ -97,18 +104,52 @@ def scope_refusal(
     return None if decision.allowed else decision.reason
 
 
-def adapter_refusal(manifest: AdapterManifest, roe: dict | None) -> str | None:
-    """Why this adapter cannot honour the engagement's rules of engagement, or ``None`` (spec 027).
+def forwarder_pace(manifest: AdapterManifest, params: dict | None) -> object | None:
+    """The declared ``rate_per_minute`` the run's egress forwarder will hold, or ``None`` when the
+    run is not paced by it (spec 032 §4). Not yet validated: see ``usable_pace``."""
+    if not manifest.forwarder_paced:
+        return None
+    return (params or {}).get("rate_per_minute")
+
+
+def usable_pace(value: object) -> bool:
+    """Whether the forwarder can pace at this rate: a finite number above 0."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(value) and value > 0
+    except OverflowError:  # a huge JSON integer cannot become a float
+        return False
+
+
+def _capped(roe: dict | None) -> bool:
+    return (roe or {}).get("max_requests_per_minute") is not None
+
+
+def adapter_refusal(
+    manifest: AdapterManifest, roe: dict | None, params: dict | None = None
+) -> str | None:
+    """Why this adapter cannot honour the engagement's rules of engagement, or ``None``
+    (specs 027 and 032).
 
     The scope lock checks the requested ``rate_per_minute`` against the cap; this checks that the
-    adapter can actually hold a rate. One that cannot is refused rather than trusted to stay under.
+    rate will actually be held: by the adapter itself (``paces_requests``) or by the run's egress
+    forwarder (``forwarder_paced``). An adapter with neither is refused rather than trusted to
+    stay under the cap.
     """
-    if (roe or {}).get("max_requests_per_minute") is not None and not manifest.paces_requests:
+    pace = forwarder_pace(manifest, params)
+    if pace is not None and not usable_pace(pace):
+        # Also without a cap: a declared rate is kept, and this one cannot be.
         return (
-            f"adapter '{manifest.name}' cannot hold the rules of engagement's request-rate limit;"
-            " use an adapter that paces its requests, or an engagement without a rate limit"
+            f"adapter '{manifest.name}' is paced by the run's forwarder, which needs a"
+            f" rate_per_minute above 0, got {pace!r}: a rate of 0/min lets the run send nothing"
         )
-    return None
+    if not _capped(roe) or manifest.paces_requests or pace is not None:
+        return None
+    return (
+        f"adapter '{manifest.name}' cannot hold the rules of engagement's request-rate limit;"
+        " use an adapter that paces its requests, or an engagement without a rate limit"
+    )
 
 
 def run_refusal(
@@ -123,7 +164,7 @@ def run_refusal(
     if reason is not None:
         return reason
     scope_row = session.get(Scope, engagement.id)
-    return adapter_refusal(manifest, scope_row.roe if scope_row is not None else None)
+    return adapter_refusal(manifest, scope_row.roe if scope_row is not None else None, params)
 
 
 def _reject(session: Session, run: Run, reason: str, actor: User | None, **detail) -> None:
@@ -151,6 +192,9 @@ def _start(
     run.state = "running"
     run.started_at = _now()
     detail["credential"] = target_credentials.planned_use(session, target, manifest)
+    pace = forwarder_pace(manifest, run.params)
+    if pace is not None:
+        detail["paced_per_minute"] = pace  # the rate the run's forwarder holds (spec 032)
     audit.record(
         session,
         action="run.started",
@@ -260,10 +304,15 @@ def claim_next_run(session: Session) -> str | None:
     Returns the id of a run that is now ``running`` (committed), or ``None`` when the queue is
     empty or the claimed run was rejected. ``SKIP LOCKED`` makes concurrent workers take
     different runs.
+
+    A forwarder-paced run of an engagement with a rate cap waits (stays ``queued``) while another
+    such run of that engagement is running: each forwarder holds its own run's rate, so two side
+    by side would exceed the engagement's cap together (spec 032 §6).
     """
+    paced = [m.name for m in all_manifests() if m.forwarder_paced]
     run = session.scalars(
         select(Run)
-        .where(Run.state == "queued")
+        .where(Run.state == "queued", not_(_waits_for_paced_run(paced)))
         .order_by(Run.created_at, Run.id)
         .with_for_update(skip_locked=True)
         .limit(1)
@@ -284,9 +333,41 @@ def claim_next_run(session: Session) -> str | None:
         _reject(session, run, reason or "the target or the adapter is gone", None, at="claim")
         session.commit()
         return None
+    scope_row = session.get(Scope, engagement.id)
+    if manifest.forwarder_paced and scope_row is not None and _capped(scope_row.roe):
+        # The query above skips a run that has to wait, but two workers can each pick one of two
+        # queued runs at the same moment. Under the engagement lock only the first starts.
+        lock_engagement(session, engagement.id)
+        if session.scalar(select(_other_paced_run_is_running(run.engagement_id, run.id, paced))):
+            session.rollback()  # stays queued; taken once the running one has ended
+            return None
     _start(session, run, target, manifest, None, by="worker")
     session.commit()
     return run.id
+
+
+def _other_paced_run_is_running(engagement_id, run_id, paced: list[str]):
+    other = aliased(Run)
+    return exists().where(
+        other.engagement_id == engagement_id,
+        other.id != run_id,
+        other.state == "running",
+        other.adapter.in_(paced),
+    )
+
+
+def _waits_for_paced_run(paced: list[str]):
+    """SQL condition: this queued run is forwarder-paced, its engagement has a rate cap, and
+    another forwarder-paced run of that engagement is running."""
+    capped = exists().where(
+        Scope.engagement_id == Run.engagement_id,
+        Scope.roe["max_requests_per_minute"].astext.is_not(None),
+    )
+    return and_(
+        Run.adapter.in_(paced),
+        capped,
+        _other_paced_run_is_running(Run.engagement_id, Run.id, paced),
+    )
 
 
 def execute_run(session: Session, run_id: str, *, actor: User | None = None, runner=None) -> Run:

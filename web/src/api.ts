@@ -216,6 +216,8 @@ export interface Adapter {
   frameworks: string[];
   builtin: boolean;
   paces_requests: boolean;
+  /** True when the run's forwarder holds a declared `rate_per_minute` for it (spec 032). */
+  forwarder_paced?: boolean;
   /** True for an adapter that uses a target's stored credential (spec 028). */
   accepts_credential?: boolean;
 }

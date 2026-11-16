@@ -20,9 +20,12 @@ severity_table:
 resources:
   cpu: "1"
   memory: 2Gi
-# garak sends one request at a time but cannot hold a requests-per-minute limit, so an engagement
-# whose rules of engagement cap the rate refuses it (spec 027).
+# garak cannot hold a requests-per-minute limit itself (spec 027) ...
 paces_requests: false
+# ... but it speaks plain HTTP/1.1 (openai client over httpx, HTTP/2 off, no pipelining), so the
+# per-run egress forwarder holds the rate for it and a capped engagement can run it (spec 032).
+# Re-check this when the pinned version moves.
+forwarder_paced: true
 # garak consumes KHANDAQ_TARGET_CREDENTIAL as its generator's API key (spec 028); a target's
 # credential is injected only into adapters that declare this.
 accepts_credential: true

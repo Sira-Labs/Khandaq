@@ -7,6 +7,7 @@ containment test lives in ``tests/e2e``.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import io
 import json
@@ -430,3 +431,43 @@ def test_a_setup_error_is_redacted_before_it_is_cut_and_cleanup_logs_are_redacte
     assert KEY not in caplog.text and "[REDACTED:target-credential]" in caplog.text
     # A container that could not be removed still holds the key: that is an error, not a warning.
     assert any(r.levelname == "ERROR" and "cleanup" in r.message for r in caplog.records)
+
+
+# --- pacing (spec 032) ----------------------------------------------------------------------------
+
+PACED = dataclasses.replace(MANIFEST, forwarder_paced=True)
+
+
+def _paced_request(rate: object) -> dict:
+    request = _request()
+    request["params"] = {"rate_per_minute": rate}
+    return request
+
+
+def _forwarder(manifest: AdapterManifest, request: dict) -> list[str]:
+    cli = FakeCli(CliResult(0, GOOD_OUTPUT, b""))
+    DockerRunner(manifest, SETTINGS, cli=cli, resolver=lambda host, port: ["203.0.113.7"]).run(
+        request
+    )
+    return cli.find("run", "--detach")
+
+
+@pytest.mark.parametrize(("rate", "flag"), [(60, "60.0"), (0.5, "0.5")])
+def test_forwarder_is_paced_for_a_paced_adapter(rate, flag):
+    fwd = _forwarder(PACED, _paced_request(rate))
+    assert _value(fwd, "--pace-per-minute") == flag
+    assert fwd[fwd.index("--connect") + 1] == "203.0.113.7:443"  # still the one checked address
+
+
+def test_forwarder_is_not_paced_without_a_rate_or_flag():
+    assert "--pace-per-minute" not in _forwarder(PACED, _request())
+    assert "--pace-per-minute" not in _forwarder(MANIFEST, _paced_request(60))
+
+
+@pytest.mark.parametrize("rate", [0, -1, "60", True, float("inf"), 10**400])
+def test_unusable_pace_refuses_the_run(rate):
+    cli = FakeCli(CliResult(0, GOOD_OUTPUT, b""))
+    runner = DockerRunner(PACED, SETTINGS, cli=cli, resolver=lambda host, port: ["203.0.113.7"])
+    with pytest.raises(RunnerError, match="cannot be paced"):
+        runner.run(_paced_request(rate))
+    assert cli.calls == []  # nothing started, and nothing fell back to an unpaced forwarder
