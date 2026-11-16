@@ -53,7 +53,7 @@ sandbox.
 | Adapter | Pinned version | Parser + contract test | Runs in the sandbox | Notes |
 |---|---|---|---|---|
 | `echo` | — (in-process) | ✅ | ✅ | Sends nothing to the target; demo/tests; `paces_requests: true`. |
-| `garak` | 0.17.0 | ✅ | ✅ (spec 027) | Manual e2e verified 2026-10-08 against the bundled vulnerable target. |
+| `garak` | 0.17.0 | ✅ | ✅ (spec 027) | Manual e2e verified 2026-10-08 against the bundled vulnerable target. Under a rate cap the run's forwarder paces it (spec 032, `forwarder_paced: true`). |
 | `pyrit` | 1.1.0 | ✅ | ❌ **pending** | Sandbox-execution wrapper not completed — see §6. |
 | `promptfoo` | 0.118.0 | ✅ | ❌ **pending** | Sandbox-execution wrapper not completed — see §6. |
 | `mcp-scanner` | 4.8.5 | ✅ | ❌ **pending** | Sandbox-execution wrapper not yet written (own spec, per spec 027 "out of scope"). |
@@ -177,8 +177,8 @@ feature is off until the key is set on the api and the worker.
 - Spec 031 — mcp-scanner runs in the sandbox: **done** (2026-11-14).
 
 **Platform items offered but not yet specced (each needs a spec first, per the session protocol):**
-- A requests-per-minute limiter for garak (a pacing forwarder), so capped engagements can run garak
-  instead of refusing it.
+- A requests-per-minute limiter for garak (a pacing forwarder): **specced and implemented as
+  spec 032** (2026-11-16); the PR waits for the owner's sign-off (ADR-0018).
 - Findings view grouped by probe family in the console.
 - Digest-pinned adapter images (pin by sha256, not just tag).
 - Auto staging deploy after merge.

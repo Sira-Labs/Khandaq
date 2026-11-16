@@ -328,6 +328,36 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
       for `make demo`; the scanner's prompts/resources/instructions scans (no raw report in
       4.8.5); refusing an adapter that does not fit the target type before the run is queued.
 
+### Sprint 8 — pacing, then ART
+
+- [~] S8-1 — spec 032 a pacing forwarder lets capped engagements run garak (nightly run of
+      2026-11-16, UTC): implemented, tested and e2e-verified; the PR is open and **not merged**.
+      The per-run egress forwarder takes `--pace-per-minute` and lets one *turn* through per
+      `60 / rate` seconds (a turn: the first bytes a client sends on a connection, or after the
+      target has answered), shared by all connections of the run. New manifest flag
+      `forwarder_paced` (garak: true; mcp-scanner: false). `adapter_refusal` lets a capped
+      engagement run a `forwarder_paced` adapter with a declared rate above 0; `run.started`
+      records `paced_per_minute`. 544 api tests. Manual e2e on 2026-11-16 (pinned garak 0.17.0
+      image, bundled demo target, all synthetic): 256 requests, closest two 99 ms apart at
+      600/min against 3 ms unpaced. Decisions: the forwarder counts turns instead of requests,
+      because it must not terminate TLS (ADR-0009), and over-counts rather than under-counts (a
+      TLS handshake costs up to three turns); with pacing on it refuses a ClientHello that offers
+      anything but `http/1.1` (or carries ECH, or cannot be parsed) and the HTTP/2 preface,
+      because several requests in one turn would slip through; no burst, so a quiet spell earns
+      nothing; while an engagement has a cap only one `forwarder_paced` run of it runs at a time
+      (the next stays `queued`, checked under the engagement lock), because each forwarder holds
+      only its own run's rate; a declared rate is paced without a cap too; an unusable rate
+      refuses the run instead of falling back to an unpaced forwarder; `paces_requests` keeps its
+      meaning and stays false for garak. Known limits (in the spec): pipelining inside TLS cannot
+      be seen, so the flag is set per pinned tool version; very low rates can run into garak's
+      request timeout. `scope.py`, `audit.py` and the ledger are untouched; the scope lock's
+      rate rule decides first, as before. Follow-ups: pacing for mcp-scanner (its client holds
+      event streams); a console hint that a capped garak run is paced and slower.
+      **Owner:** review and merge the spec 032 PR. It changes how the rules of engagement's rate
+      cap is enforced (a refusal becomes a paced run), so under ADR-0018 a nightly run does not
+      merge it. It blocks garak on capped engagements; default: stays refused until merged.
+- [ ] S8-2 — spec 033 ART adapter (phase 05) + `model_artifact`/`dataset` target types (to write).
+
 ### Dependency maintenance (nightly runs, ADR-0018)
 
 - 2026-11-14: merged Dependabot #67 (serde_json 1.0.154), #73 (python-minor group: fastapi 0.162,
