@@ -340,6 +340,9 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
 - 2026-11-14: psycopg 3.3.9 (range `<3.4`) and sha2 0.11.1 taken on one branch (Dependabot #56 and
   #69 closed). sha2 is the hash under the ledger and the fingerprint: the core's fixed-digest
   tests, the binding tests and the API's `hashlib` cross-checks pass, so no sealed hash changes.
+- 2026-11-16: merged Dependabot #80 (docker/build-push-action 7), #81 (python-minor group) and
+  #82 (npm-minor group); vite 8.3.8 and jsdom 31 taken on one branch (Dependabot #83 and #84
+  closed; both rewrite the lockfile). No source change was needed for vite 8.
 - [ ] Python 3.15 base image for the api (Dependabot #72, 3.12-slim → 3.15-slim): the
       `khandaq-core` wheel does not build on 3.15 with PyO3 0.26 (tried 2026-11-14), CI tests on
       3.12 only and never builds the image. Needs a PyO3 bump, then CI and the image moved
