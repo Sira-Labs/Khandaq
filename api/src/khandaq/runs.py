@@ -310,9 +310,29 @@ def claim_next_run(session: Session) -> str | None:
     by side would exceed the engagement's cap together (spec 032 §6).
     """
     paced = [m.name for m in all_manifests() if m.forwarder_paced]
+    held_back: list[str] = []  # runs another worker's paced run got in front of, this call
+    while len(held_back) <= _MAX_HELD_BACK:
+        claimed = _claim_one(session, paced, held_back)
+        if claimed is not _HELD_BACK:
+            return claimed
+    return None
+
+
+_HELD_BACK = "held back"
+_MAX_HELD_BACK = 20
+
+
+def _claim_one(session: Session, paced: list[str], held_back: list[str]) -> str | None:
+    """One attempt of ``claim_next_run``. Returns ``_HELD_BACK`` (and notes the run) when the
+    oldest claimable run has to wait after all, so the caller goes on to the next one instead of
+    reporting an empty queue."""
     run = session.scalars(
         select(Run)
-        .where(Run.state == "queued", not_(_waits_for_paced_run(paced)))
+        .where(
+            Run.state == "queued",
+            Run.id.not_in(held_back),
+            not_(_waits_for_paced_run(paced)),
+        )
         .order_by(Run.created_at, Run.id)
         .with_for_update(skip_locked=True)
         .limit(1)
@@ -338,9 +358,11 @@ def claim_next_run(session: Session) -> str | None:
         # The query above skips a run that has to wait, but two workers can each pick one of two
         # queued runs at the same moment. Under the engagement lock only the first starts.
         lock_engagement(session, engagement.id)
-        if session.scalar(select(_other_paced_run_is_running(run.engagement_id, run.id, paced))):
+        run_id = run.id
+        if session.scalar(select(_other_paced_run_is_running(run.engagement_id, run_id, paced))):
             session.rollback()  # stays queued; taken once the running one has ended
-            return None
+            held_back.append(run_id)
+            return _HELD_BACK
     _start(session, run, target, manifest, None, by="worker")
     session.commit()
     return run.id

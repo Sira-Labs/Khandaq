@@ -54,11 +54,16 @@ with `rate_per_minute: 60` and the run goes through, slower, without exceeding w
    `60 / rate` seconds apart, shared by all connections of the run, with no burst: in any
    60-second window that starts at a slot, at most `rate` turns (rounded up) are let through.
    Bytes within a turn and everything the target sends are relayed without delay.
+   - The forwarder connects to the target only when a connection's first slot has come, so the
+     target sees nothing of a waiting connection, not even a TCP handshake.
+   - A client that closes while its turn waits (a timeout, then a retry) has that request
+     dropped: the slot is used up, but the target is not sent a request nobody waits for.
 3. **Tripwires, fail closed.** Pacing by turns is only sound for HTTP/1.1. With pacing on, the
    forwarder closes a connection before relaying a byte when:
    - a TLS ClientHello offers any ALPN protocol other than `http/1.1`, carries an Encrypted Client
      Hello extension, spans more than one TLS record, or cannot be parsed;
-   - a plaintext connection opens with the HTTP/2 preface.
+   - a plaintext connection opens with the HTTP/2 preface;
+   - a connection does not show its opening bytes within 30 seconds.
 
    The adapter then sees a connection error and the run fails (spec 027 §2). A client that offers
    no ALPN at all cannot negotiate HTTP/2 and is relayed.
@@ -104,6 +109,14 @@ with `rate_per_minute: 60` and the run goes through, slower, without exceeding w
   minute) garak may time out and retry; each retry is paced too, so the cap holds, but the run can
   hit `KHANDAQ_ADAPTER_TIMEOUT_SECONDS` and fail.
 
+- One paced run at a time relies on the run's recorded state. A worker that dies mid-run leaves
+  its containers behind (spec 012 has no orphan cleanup yet); once the stale run is marked failed,
+  the next paced run could start beside a forwarder that is still relaying. Removing a lost
+  run's containers is a follow-up in `TASKS.md`.
+- A cap that is added or lowered while a run is running does not slow that run (true of every
+  rule of engagement since spec 002: they are checked at creation and at the claim).
+- The tripwires look at a connection's opening only; a later protocol upgrade is not seen.
+
 ## Acceptance criteria
 
 - [x] `--pace-per-minute` spaces turns `60 / rate` seconds apart across all connections; without
@@ -129,7 +142,10 @@ Unit (`api/tests/test_egress_forwarder.py`): `test_pacer_spaces_turns`, `test_pa
 `test_unpaced_relay_is_unchanged`, `test_client_hello_alpn`,
 `test_client_hello_that_cannot_be_judged_is_refused`, `test_paced_relay_refuses_h2_client_hello`,
 `test_paced_relay_refuses_h2_preface`, `test_paced_relay_passes_an_http11_client_hello`,
-`test_paced_forwarder_holds_the_rate_end_to_end` (the real process, from its source alone).
+`test_paced_forwarder_holds_the_rate_end_to_end` (the real process, from its source alone),
+`test_the_target_sees_nothing_of_a_connection_before_its_slot`,
+`test_a_request_abandoned_while_waiting_is_not_delivered`,
+`test_a_paced_connection_that_never_shows_its_opening_is_dropped`.
 Unit (`api/tests/test_docker_runner.py`): `test_forwarder_is_paced_for_a_paced_adapter`,
 `test_forwarder_is_not_paced_without_a_rate_or_flag`, `test_unusable_pace_refuses_the_run`.
 Unit and integration (`api/tests/test_adapter_registry.py`): `test_adapter_refusal_for_a_rate_cap`
@@ -148,7 +164,7 @@ Manual e2e on 2026-11-16 (local daemon, the pinned garak 0.17.0 image, the bundl
 all synthetic; a scratch recorder in front of the target noted when each request arrived):
 
 - without a cap and without a rate: 256 requests in about 18 s, the closest two 3 ms apart;
-- cap 600/min, rate 600/min: the same 256 requests, the closest two 99 ms apart (the slot is
+- cap 600/min, rate 600/min: the same 256 requests, the closest two 97 to 99 ms apart over two runs (the slot is
   100 ms; the difference is the recorder's own scheduling), run succeeded, same finding, ledger
   verifies, `run.started` has `paced_per_minute: 600`.
 

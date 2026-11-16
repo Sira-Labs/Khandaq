@@ -284,7 +284,8 @@ def _with_extension(record: bytes, kind: int) -> bytes:
 def test_client_hello_that_cannot_be_judged_is_refused():
     record = _client_hello(["http/1.1"])
     for broken in (
-        record[:40],  # truncated
+        record[:40],  # cut off: the message claims more than the record holds
+        record[:3] + (40).to_bytes(2, "big") + b"\x01" + (36).to_bytes(3, "big") + record[9:45],
         record[:5] + b"\x02" + record[6:],  # a ServerHello, not a ClientHello
         record[:8] + bytes([record[8] + 1]) + record[9:],  # claims to continue in another record
         _with_extension(record, 0xFE0D),  # Encrypted Client Hello
@@ -387,3 +388,84 @@ def test_paced_forwarder_holds_the_rate_end_to_end():
             upstream.close()
 
     assert asyncio.run(scenario(_free_port())) >= 0.3
+
+
+class _GatedPacer(fwd.Pacer):
+    """Every turn waits until the test opens the gate."""
+
+    def __init__(self) -> None:
+        super().__init__(60)
+        self.gate = asyncio.Event()
+        self.waiting = 0
+
+    async def wait_turn(self) -> None:
+        self.waiting += 1
+        await self.gate.wait()
+
+
+def test_the_target_sees_nothing_of_a_connection_before_its_slot():
+    """Not even a TCP connection: the forwarder connects to the target once the slot has come."""
+    seen: list[bytes] = []
+
+    async def handle(reader, writer):
+        seen.append(b"connected")
+        seen.append(await reader.read(100))
+        writer.write(b"HTTP/1.1 204 No Content\r\n\r\n")
+        await writer.drain()
+        writer.close()
+
+    pacer = _GatedPacer()
+
+    async def client(port: int) -> tuple[list[bytes], bytes]:
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        writer.write(b"GET / HTTP/1.1\r\nHost: t\r\n\r\n")
+        await writer.drain()
+        while not pacer.waiting:
+            await asyncio.sleep(0.01)
+        await asyncio.sleep(0.05)
+        before = list(seen)
+        pacer.gate.set()
+        reply = await asyncio.wait_for(reader.read(100), 5)
+        writer.close()
+        return before, reply
+
+    async def scenario() -> object:
+        return await _paced(await asyncio.start_server(handle, "127.0.0.1", 0), pacer, client)
+
+    before, reply = asyncio.run(scenario())  # type: ignore[misc]
+    assert before == [] and reply.startswith(b"HTTP/1.1 204")
+    assert seen == [b"connected", b"GET / HTTP/1.1\r\nHost: t\r\n\r\n"]
+
+
+def test_a_request_abandoned_while_waiting_is_not_delivered():
+    """A client that timed out and went away must not have its request reach the target later."""
+    seen: list[bytes] = []
+
+    async def handle(reader, writer):
+        seen.append(await reader.read(100))
+        writer.close()
+
+    pacer = _GatedPacer()
+
+    async def client(port: int) -> None:
+        _, writer = await asyncio.open_connection("127.0.0.1", port)
+        writer.write(b"GET /gone HTTP/1.1\r\nHost: t\r\n\r\n")
+        await writer.drain()
+        while not pacer.waiting:
+            await asyncio.sleep(0.01)
+        writer.close()
+        await writer.wait_closed()
+        await asyncio.sleep(0.05)
+        pacer.gate.set()
+        await asyncio.sleep(0.1)
+
+    async def scenario() -> None:
+        await _paced(await asyncio.start_server(handle, "127.0.0.1", 0), pacer, client)
+
+    asyncio.run(scenario())
+    assert seen == [] and pacer.waiting == 1  # the slot was used up, the request was dropped
+
+
+def test_a_paced_connection_that_never_shows_its_opening_is_dropped(monkeypatch):
+    monkeypatch.setattr(fwd, "_OPENING_SECONDS", 0.1)
+    assert _refused(b"\x16") == (b"", 0)  # one byte of a TLS record, then silence

@@ -304,7 +304,8 @@ def test_a_capped_engagement_runs_garak_paced_and_audits_the_rate(ctx):
 
 @needs_db
 def test_the_scope_lock_still_decides_before_pacing(ctx):
-    """Pacing allows nothing the scope lock refuses: no rate, a rate above the cap, a zero rate."""
+    """Pacing allows nothing the scope lock refuses (no rate, a rate above the cap); a zero rate,
+    which the scope lock accepts, is refused by the adapter check."""
     client, _ = ctx
     eng_id, target_id = _engagement(client, {"max_requests_per_minute": 60})
     for params, why in (
@@ -376,8 +377,13 @@ def test_two_workers_cannot_both_start_a_paced_run(ctx, monkeypatch):
     # As the second worker saw it: the filter in the query did not hold its run back.
     monkeypatch.setattr(runs, "_waits_for_paced_run", lambda paced: false())
     assert _claim(eng) == first["id"]
+    # A run of another engagement, queued behind the one that has to wait, is not hidden by it.
+    other, other_target = _engagement(client, {"max_requests_per_minute": 60})
+    elsewhere = _garak_run(client, other, other_target, 60)
+    assert _claim(eng) == elsewhere["id"]
     assert _claim(eng) is None
     assert _state(eng, second["id"]) == "queued"  # waiting, not rejected, and not started
+    _finish(eng, elsewhere["id"])
     _finish(eng, first["id"])
     assert _claim(eng) == second["id"]
     _finish(eng, second["id"])

@@ -337,7 +337,7 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
       target has answered), shared by all connections of the run. New manifest flag
       `forwarder_paced` (garak: true; mcp-scanner: false). `adapter_refusal` lets a capped
       engagement run a `forwarder_paced` adapter with a declared rate above 0; `run.started`
-      records `paced_per_minute`. 544 api tests. Manual e2e on 2026-11-16 (pinned garak 0.17.0
+      records `paced_per_minute`. 547 api tests. Manual e2e on 2026-11-16 (pinned garak 0.17.0
       image, bundled demo target, all synthetic): 256 requests, closest two 99 ms apart at
       600/min against 3 ms unpaced. Decisions: the forwarder counts turns instead of requests,
       because it must not terminate TLS (ADR-0009), and over-counts rather than under-counts (a
@@ -351,8 +351,13 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
       meaning and stays false for garak. Known limits (in the spec): pipelining inside TLS cannot
       be seen, so the flag is set per pinned tool version; very low rates can run into garak's
       request timeout. `scope.py`, `audit.py` and the ledger are untouched; the scope lock's
-      rate rule decides first, as before. Follow-ups: pacing for mcp-scanner (its client holds
-      event streams); a console hint that a capped garak run is paced and slower.
+      rate rule decides first, as before. An independent review before the PR was left for the owner (CodeRabbit was
+      over its hourly limit) led to: the target is connected to only at the slot; a request
+      whose client gave up while waiting is dropped; a 30 s limit on a paced connection's
+      opening; a run held back at the claim no longer reads as an empty queue. Follow-ups:
+      pacing for mcp-scanner (its client holds event streams); a console hint that a capped
+      garak run is paced and slower; remove the containers of a run whose worker was lost (until
+      then a forwarder left behind could relay beside the next paced run).
       **Owner:** review and merge the spec 032 PR. It changes how the rules of engagement's rate
       cap is enforced (a refusal becomes a paced run), so under ADR-0018 a nightly run does not
       merge it. It blocks garak on capped engagements; default: stays refused until merged.

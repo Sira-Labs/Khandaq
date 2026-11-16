@@ -41,6 +41,8 @@ _TLS_RECORD_HEADER, _TLS_MAX_RECORD = 5, 16384
 _EXT_ALPN, _EXT_ECH = 16, 0xFE0D
 _HTTP1 = b"http/1.1"
 _H2_PREFACE = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
+# How long a paced connection may take to show its opening bytes before it is dropped.
+_OPENING_SECONDS = 30.0
 
 
 def parse_address(value: str) -> tuple[str, int]:
@@ -212,18 +214,26 @@ async def _relay(
     pacer: Pacer | None = None,
 ) -> None:
     first = b""
+    turns = _Turns()
     if pacer is not None:
         try:
-            first = await _first_bytes(client_reader)
+            first = await asyncio.wait_for(_first_bytes(client_reader), _OPENING_SECONDS)
         except RefusedProtocol as exc:
             log.warning("connection refused, pacing would not hold: %s", exc)
             client_writer.close()
             return
-        except (ConnectionError, asyncio.IncompleteReadError):
+        except (TimeoutError, ConnectionError, asyncio.IncompleteReadError):
             client_writer.close()
             return
         if not first:
             client_writer.close()
+            return
+        # The connection's first turn is taken before the target is even connected to, so the
+        # target sees nothing of this connection, not even a TCP handshake, ahead of its slot.
+        turns.open = True
+        await pacer.wait_turn()
+        if client_reader.at_eof():
+            client_writer.close()  # the client gave up while waiting: deliver nothing
             return
     try:
         up_reader, up_writer = await asyncio.open_connection(*upstream)
@@ -231,13 +241,16 @@ async def _relay(
         log.warning("upstream %s:%d unreachable: %s", upstream[0], upstream[1], exc)
         client_writer.close()
         return
-    turns = _Turns()
 
     async def take_turn() -> None:
         # The first client bytes since the target last spoke start a turn and wait for its slot.
         if pacer is not None and not turns.open:
             turns.open = True
             await pacer.wait_turn()
+            if client_reader.at_eof():
+                # The client gave up while waiting (a timeout, then a retry on a new connection):
+                # a request nobody waits for is not sent to the target.
+                raise ConnectionAbortedError("the client closed while waiting for its slot")
 
     def target_spoke() -> None:
         turns.open = False
