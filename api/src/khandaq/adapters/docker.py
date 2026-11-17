@@ -469,8 +469,12 @@ class DockerRunner:
                     stdout_limit=self.settings.adapter_output_limit_mb * 1024 * 1024,
                 )
             finally:
-                os.unlink(env_file)
-                removed = _remove(self.cli, run_id, credential)
+                try:
+                    os.unlink(env_file)
+                finally:
+                    # Even if the env file could not be deleted: whether the run's containers
+                    # are gone decides what may be recorded about the run.
+                    removed = _remove(self.cli, run_id, credential)
         except Exception:
             if not removed:
                 # `from None`: the run's own error may hold the credential, and what matters now

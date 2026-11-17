@@ -475,6 +475,32 @@ def test_a_run_whose_containers_cannot_be_removed_ends_in_leftovers(start, stuck
     assert cli.cleaned_up()  # all three removals were still tried
 
 
+@pytest.mark.parametrize("rm_fails", [True, False])
+def test_the_containers_are_removed_even_if_the_env_file_cannot_be_deleted(monkeypatch, rm_fails):
+    """After a timeout the adapter may live on. A failure to delete the env file must not skip
+    the removal, nor hide that the removal failed."""
+    from khandaq.adapters import docker
+
+    class Cli(FakeCli):
+        def __call__(self, args, *, timeout=None, stdout_limit=None):
+            if args[0] == "rm" and rm_fails:
+                self.calls.append(list(args))
+                return CliResult(1, b"", b"permission denied")
+            return super().__call__(args, timeout=timeout, stdout_limit=stdout_limit)
+
+    real_unlink = os.unlink
+
+    def unlink(path):
+        real_unlink(path)  # the file does go; the call still reports an error
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr(docker.os, "unlink", unlink)
+    cli = Cli(RunnerError("adapter did not finish within 600s"))
+    with pytest.raises(LeftoversError if rm_fails else OSError):
+        _runner(cli).run(_request())
+    assert cli.cleaned_up()  # all three removals were tried
+
+
 # --- pacing (spec 032) ----------------------------------------------------------------------------
 
 PACED = dataclasses.replace(MANIFEST, forwarder_paced=True)
