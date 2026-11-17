@@ -22,6 +22,7 @@ from khandaq.adapters.docker import (
     RunnerError,
     check_address,
     read_output,
+    remove_run_leftovers,
 )
 from khandaq.adapters.manifest import AdapterManifest
 from khandaq.settings import Settings
@@ -471,3 +472,56 @@ def test_unusable_pace_refuses_the_run(rate):
     with pytest.raises(RunnerError, match="cannot be paced"):
         runner.run(_paced_request(rate))
     assert cli.calls == []  # nothing started, and nothing fell back to an unpaced forwarder
+
+
+# --- leftovers of a lost run (spec 032) -----------------------------------------------------------
+
+
+class ScriptedCli:
+    """Answers ``rm`` and ``network rm`` with scripted results."""
+
+    def __init__(self, rm: CliResult | Exception, network: CliResult | Exception) -> None:
+        self.answers = {"rm": rm, "network": network}
+        self.calls: list[list[str]] = []
+
+    def __call__(self, args, *, timeout=None, stdout_limit=None):
+        self.calls.append(list(args))
+        answer = self.answers[args[0]]
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+
+OK = CliResult(0, b"", b"")
+
+
+def test_leftovers_of_a_lost_run_are_removed():
+    cli = ScriptedCli(OK, OK)
+    assert remove_run_leftovers("run_abc", cli) is True
+    assert cli.calls == [
+        ["rm", "--force", "khq-run-run_abc", "khq-fwd-run_abc"],
+        ["network", "rm", "khq-net-run_abc"],
+    ]
+
+
+def test_leftovers_that_are_already_gone_count_as_removed():
+    cli = ScriptedCli(
+        CliResult(1, b"", b"Error response from daemon: No such container: khq-run-run_abc"),
+        CliResult(1, b"", b"Error response from daemon: network khq-net-run_abc not found"),
+    )
+    assert remove_run_leftovers("run_abc", cli) is True
+
+
+@pytest.mark.parametrize(
+    ("rm", "network"),
+    [
+        (CliResult(1, b"", b"permission denied"), OK),
+        (OK, CliResult(1, b"", b"network has active endpoints")),
+        (RunnerError("adapter did not finish within 60s"), OK),
+        (FileNotFoundError("docker"), FileNotFoundError("docker")),
+    ],
+)
+def test_leftovers_that_cannot_be_removed_are_reported(rm, network):
+    cli = ScriptedCli(rm, network)
+    assert remove_run_leftovers("run_abc", cli) is False
+    assert len(cli.calls) == 2  # the network is still tried after a failed container removal

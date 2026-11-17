@@ -50,9 +50,13 @@ with `rate_per_minute: 60` and the run goes through, slower, without exceeding w
    request starts a turn. A turn that is not a request (the parts of a TLS handshake, a request
    body continued after an early response) is counted too: the count is never below the number of
    requests.
-2. **Pacing.** The forwarder holds the first bytes of a turn until the turn's slot. Slots are
-   `60 / rate` seconds apart, shared by all connections of the run, with no burst: in any
-   60-second window that starts at a slot, at most `rate` turns (rounded up) are let through.
+2. **Pacing.** The forwarder holds the first bytes of a turn until the turn's slot. Turns are let
+   through one at a time, at least `60 / rate` seconds after the one before, shared by all
+   connections of the run, with no burst: in any 60-second window that starts at a turn, at most
+   `rate` turns (rounded up) are let through. The distance counts from when a turn was really let
+   through, so wakeups that come late and together cannot bunch turns. The first turn of a run
+   is not let through before one interval after the forwarder started, which keeps the distance
+   to the last request of the engagement's previous run.
    Bytes within a turn and everything the target sends are relayed without delay.
    - The forwarder connects to the target only when a connection's first slot has come, so the
      target sees nothing of a waiting connection, not even a TCP handshake.
@@ -89,10 +93,13 @@ with `rate_per_minute: 60` and the run goes through, slower, without exceeding w
    (it is not rejected) and is taken once the first has ended. The check is made under the
    engagement lock, so two workers cannot both start one. Other engagements, runs without a cap
    and built-in adapters are not held back.
-7. **A paced run that cannot be paced fails.** If the runner is asked to pace with a rate that is
+7. **A lost run is cleaned up before it is failed.** `recover_stale_runs` removes the lost run's
+   adapter and forwarder containers and its network (an object already gone counts as removed)
+   and only then records `run.failed`. If the removal fails the run stays `running`.
+8. **A paced run that cannot be paced fails.** If the runner is asked to pace with a rate that is
    not a finite number above 0, it raises before any container starts; nothing falls back to an
    unpaced forwarder.
-8. **Invariants.** The forwarder's destination is still the one address the worker resolved and
+9. **Invariants.** The forwarder's destination is still the one address the worker resolved and
    checked; pacing adds no way to reach anything else. No run that the scope lock refuses is
    allowed by this spec. Every paced start is in the audit log with its rate.
 
@@ -110,9 +117,10 @@ with `rate_per_minute: 60` and the run goes through, slower, without exceeding w
   hit `KHANDAQ_ADAPTER_TIMEOUT_SECONDS` and fail.
 
 - One paced run at a time relies on the run's recorded state. A worker that dies mid-run leaves
-  its containers behind (spec 012 has no orphan cleanup yet); once the stale run is marked failed,
-  the next paced run could start beside a forwarder that is still relaying. Removing a lost
-  run's containers is a follow-up in `TASKS.md`.
+  its containers behind, so recovery at the next worker start removes the lost run's containers
+  and network before it marks the run failed, and leaves it `running` (still holding the next
+  paced run back) when that removal fails. Until a worker starts again the lost run stays
+  `running` and nothing paced starts beside it.
 - A cap that is added or lowered while a run is running does not slow that run (true of every
   rule of engagement since spec 002: they are checked at creation and at the claim).
 - The tripwires look at a connection's opening only; a later protocol upgrade is not seen.
@@ -138,6 +146,8 @@ with `rate_per_minute: 60` and the run goes through, slower, without exceeding w
 ## Test cases
 
 Unit (`api/tests/test_egress_forwarder.py`): `test_pacer_spaces_turns`, `test_pacer_shares_slots`,
+`test_pacer_keeps_the_interval_after_a_stall`, `test_pacer_wakes_early_and_still_waits_out_the_slot`,
+`test_the_first_turn_waits_for_the_first_slot`,
 `test_pace_argument_must_be_positive`, `test_paced_relay_counts_one_turn_per_request`,
 `test_unpaced_relay_is_unchanged`, `test_client_hello_alpn`,
 `test_client_hello_that_cannot_be_judged_is_refused`, `test_paced_relay_refuses_h2_client_hello`,
@@ -147,13 +157,18 @@ Unit (`api/tests/test_egress_forwarder.py`): `test_pacer_spaces_turns`, `test_pa
 `test_a_request_abandoned_while_waiting_is_not_delivered`,
 `test_a_paced_connection_that_never_shows_its_opening_is_dropped`.
 Unit (`api/tests/test_docker_runner.py`): `test_forwarder_is_paced_for_a_paced_adapter`,
-`test_forwarder_is_not_paced_without_a_rate_or_flag`, `test_unusable_pace_refuses_the_run`.
+`test_forwarder_is_not_paced_without_a_rate_or_flag`, `test_unusable_pace_refuses_the_run`,
+`test_leftovers_of_a_lost_run_are_removed`, `test_leftovers_that_are_already_gone_count_as_removed`,
+`test_leftovers_that_cannot_be_removed_are_reported`.
+Integration (`api/tests/test_worker.py`):
+`test_a_lost_run_whose_containers_cannot_be_removed_stays_running`.
 Unit and integration (`api/tests/test_adapter_registry.py`): `test_adapter_refusal_for_a_rate_cap`
 (the table), `test_only_garak_is_paced_by_the_forwarder`,
 `test_a_capped_engagement_runs_garak_paced_and_audits_the_rate` (pre-flight, campaign, create,
 claim, audit), `test_an_unpaced_run_records_no_pace`,
 `test_paced_runs_of_a_capped_engagement_run_one_at_a_time`,
-`test_two_workers_cannot_both_start_a_paced_run`, `test_uncapped_paced_runs_are_not_held_back`;
+`test_two_workers_cannot_both_start_a_paced_run` (the recheck),
+`test_the_engagement_lock_makes_a_second_worker_wait_for_the_first` (two sessions, real lock), `test_uncapped_paced_runs_are_not_held_back`;
 the spec 027 refusal tests now use mcp-scanner, which is still refused.
 Security: `test_the_scope_lock_still_decides_before_pacing` (no rate, a rate above the cap and a
 zero rate are still rejected and audited for garak); the scope lock's own tests are untouched.
@@ -164,8 +179,9 @@ Manual e2e on 2026-11-16 (local daemon, the pinned garak 0.17.0 image, the bundl
 all synthetic; a scratch recorder in front of the target noted when each request arrived):
 
 - without a cap and without a rate: 256 requests in about 18 s, the closest two 3 ms apart;
-- cap 600/min, rate 600/min: the same 256 requests, the closest two 97 to 99 ms apart over two runs (the slot is
-  100 ms; the difference is the recorder's own scheduling), run succeeded, same finding, ledger
+- cap 600/min, rate 600/min: the same 256 requests, the closest two 100.1 ms apart (the
+  slot is 100 ms; before the interval counted from the real release, earlier runs measured 97
+  to 99 ms), run succeeded, same finding, ledger
   verifies, `run.started` has `paced_per_minute: 600`.
 
 The ClientHello that the image's `openai` 2.54.0 / `httpx` 0.28.1 client sends was captured and

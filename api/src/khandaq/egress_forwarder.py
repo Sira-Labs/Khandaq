@@ -69,23 +69,34 @@ def parse_pace(value: str) -> float:
 class Pacer:
     """Hands out slots ``60 / per_minute`` seconds apart, shared by every connection of the run.
 
-    No burst: a slot is never earlier than one interval after the one before it, so at most
-    ``per_minute`` turns (rounded up) fall into any 60 seconds that start at a slot.
+    No burst: a turn is never let through earlier than one interval after the one before it, so
+    at most ``per_minute`` turns (rounded up) fall into any 60 seconds that start at a turn.
+    ``first_slot`` is the earliest time of the very first turn: the forwarder sets it one interval
+    after its own start, so the first request of a run keeps its distance from the last request of
+    the run before it.
     """
 
-    def __init__(self, per_minute: float, clock=None, sleep=asyncio.sleep) -> None:
+    def __init__(
+        self, per_minute: float, clock=None, sleep=asyncio.sleep, first_slot: float = -math.inf
+    ) -> None:
         self.interval = 60.0 / per_minute
         self._clock = clock
         self._sleep = sleep
-        self._next = -math.inf
+        self._next = first_slot
+        self._lock = asyncio.Lock()
+
+    def _now(self) -> float:
+        return self._clock() if self._clock else asyncio.get_running_loop().time()
 
     async def wait_turn(self) -> None:
-        now = self._clock() if self._clock else asyncio.get_running_loop().time()
-        slot = max(now, self._next)
-        # Reserved before the first await, so two waiting connections never share a slot.
-        self._next = slot + self.interval
-        if slot > now:
-            await self._sleep(slot - now)
+        # One waiter at a time, and the next slot counts from when this one was really let
+        # through: sleeps that end late and together (a stalled event loop) cannot bunch turns.
+        async with self._lock:
+            now = self._now()
+            while self._next > now:
+                await self._sleep(self._next - now)
+                now = self._now()
+            self._next = now + self.interval
 
 
 class RefusedProtocol(Exception):
@@ -274,7 +285,10 @@ async def serve(
 ):
     """Relay every connection on ``listen_port`` (all interfaces) to ``upstream``, until
     cancelled; with ``pace_per_minute``, one turn per ``60 / pace`` seconds (spec 032)."""
-    pacer = Pacer(pace_per_minute) if pace_per_minute is not None else None
+    pacer = None
+    if pace_per_minute is not None:
+        start = asyncio.get_running_loop().time()
+        pacer = Pacer(pace_per_minute, first_slot=start + 60.0 / pace_per_minute)
     server = await asyncio.start_server(
         lambda r, w: _relay(r, w, upstream, pacer), host=None, port=listen_port
     )

@@ -280,6 +280,43 @@ def test_runs_a_lost_worker_left_running_are_failed_at_start(env):
     assert _actions(db, run["id"])[-1] == "run.failed"
 
 
+def test_a_lost_run_whose_containers_cannot_be_removed_stays_running(env):
+    """Its forwarder may still be relaying, so the run keeps holding back the engagement's next
+    paced run (spec 032); once the leftovers are gone it is failed and audited."""
+    from khandaq.runs import recover_stale_runs
+
+    client, db, _ = env
+    eng_id, tid = _engagement(client, "stale leftovers")
+    run = _queue(client, eng_id, tid)
+    long_ago = dt.datetime.now(dt.UTC) - dt.timedelta(hours=3)
+    with db.begin() as conn:
+        conn.execute(
+            text("UPDATE runs SET state = 'running', started_at = :t WHERE id = :r"),
+            {"t": long_ago, "r": run["id"]},
+        )
+    asked: list[str] = []
+
+    def stuck(lost) -> bool:
+        asked.append(lost.id)
+        return False
+
+    with Session(db) as session:
+        recovered = recover_stale_runs(
+            session, older_than=dt.timedelta(hours=1), leftovers_removed=stuck
+        )
+    assert recovered == 0 and run["id"] in asked
+    assert _run(client, eng_id, run["id"])["state"] == "running"
+    assert "run.failed" not in _actions(db, run["id"])
+
+    with Session(db) as session:
+        recovered = recover_stale_runs(
+            session, older_than=dt.timedelta(hours=1), leftovers_removed=lambda lost: True
+        )
+    assert recovered >= 1
+    assert _run(client, eng_id, run["id"])["state"] == "failed"
+    assert _actions(db, run["id"])[-1] == "run.failed"
+
+
 def test_a_queued_run_wakes_a_listening_worker(env):
     from khandaq.worker import Notifications
 

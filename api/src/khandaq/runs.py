@@ -24,7 +24,9 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import logging
 import math
+from collections.abc import Callable
 
 import khandaq_core as kc
 from sqlalchemy import and_, exists, not_, select, text
@@ -40,6 +42,7 @@ from .adapters import (
     get_manifest,
     get_runner,
 )
+from .adapters.docker import remove_run_leftovers
 from .campaign_diff import record_diff
 from .credential_values import CredentialError, redact
 from .deps import EngagementAccess
@@ -52,6 +55,7 @@ from .scope import evaluate
 from .settings import get_settings
 
 NOTIFY_CHANNEL = "khandaq_runs"
+log = logging.getLogger("khandaq.runs")
 
 
 def _now() -> dt.datetime:
@@ -447,15 +451,41 @@ def execute_run(session: Session, run_id: str, *, actor: User | None = None, run
     return run
 
 
-def recover_stale_runs(session: Session, *, older_than: dt.timedelta) -> int:
-    """Worker start: fail runs left ``running`` longer than any run can take (a lost worker)."""
+def _leftovers_removed(run: Run) -> bool:
+    """Whether nothing of a lost container run is left on the Docker host."""
+    manifest = get_manifest(run.adapter)
+    if manifest is not None and manifest.builtin:
+        return True  # ran in-process, left nothing
+    if not get_settings().forwarder_image:
+        return True  # container runs are disabled here: this deployment started none
+    return remove_run_leftovers(run.id)
+
+
+def recover_stale_runs(
+    session: Session,
+    *,
+    older_than: dt.timedelta,
+    leftovers_removed: Callable[[Run], bool] = _leftovers_removed,
+) -> int:
+    """Worker start: fail runs left ``running`` longer than any run can take (a lost worker).
+
+    The lost worker never cleaned up, so the run's containers are removed first (spec 032): its
+    forwarder could otherwise keep relaying beside the next paced run of the engagement. A run
+    whose leftovers cannot be removed stays ``running``, which keeps holding that next run back,
+    and is tried again at the next worker start.
+    """
     cutoff = _now() - older_than
     stale = session.scalars(
         select(Run)
         .where(Run.state == "running", Run.started_at < cutoff)
         .with_for_update(skip_locked=True)
     ).all()
+    failed = 0
     for run in stale:
+        if not leftovers_removed(run):
+            log.error("run %s was lost and its containers could not be removed", run.id)
+            continue
+        failed += 1
         run.state = "failed"
         run.ended_at = _now()
         run.reject_reason = "the worker lost the run (still running past the timeout)"
@@ -466,7 +496,7 @@ def recover_stale_runs(session: Session, *, older_than: dt.timedelta) -> int:
             detail={"run_id": run.id, "error": run.reject_reason},
         )
     session.commit()
-    return len(stale)
+    return failed
 
 
 _ERROR_CHARS, _ERROR_HEAD = 500, 140

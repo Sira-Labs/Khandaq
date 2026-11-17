@@ -147,20 +147,58 @@ def test_pacer_spaces_turns():
     assert time.slept == [0.5, 0.5]
 
 
-def test_pacer_shares_slots():
-    """Connections waiting at the same moment get different slots, one interval apart."""
-    slept: list[float] = []
+def _release_times(time: _FakeTime, pacer: fwd.Pacer, waiters: int) -> list[float]:
+    released: list[float] = []
 
-    async def sleep(seconds: float) -> None:
-        slept.append(seconds)
-
-    pacer = fwd.Pacer(60, clock=lambda: 0.0, sleep=sleep)
+    async def turn() -> None:
+        await pacer.wait_turn()
+        released.append(time.now)
 
     async def scenario() -> None:
-        await asyncio.gather(*(pacer.wait_turn() for _ in range(4)))
+        await asyncio.gather(*(turn() for _ in range(waiters)))
 
     asyncio.run(scenario())
-    assert slept == [1.0, 2.0, 3.0]
+    return released
+
+
+def test_pacer_shares_slots():
+    """Connections waiting at the same moment are let through one interval apart."""
+    time = _FakeTime()
+    pacer = fwd.Pacer(60, clock=time.clock, sleep=time.sleep)
+    assert _release_times(time, pacer, 4) == [100.0, 101.0, 102.0, 103.0]
+
+
+def test_pacer_keeps_the_interval_after_a_stall():
+    """A sleep that ends late (a stalled event loop) must not let the waiters through together:
+    the next slot counts from when the last turn was really let through."""
+
+    class Stalling(_FakeTime):
+        async def sleep(self, seconds: float) -> None:
+            await super().sleep(seconds + 5)  # every wakeup is five seconds late
+
+    time = Stalling()
+    pacer = fwd.Pacer(60, clock=time.clock, sleep=time.sleep)
+    released = _release_times(time, pacer, 4)
+    assert all(b - a >= 1.0 for a, b in zip(released, released[1:], strict=False)), released
+
+
+def test_pacer_wakes_early_and_still_waits_out_the_slot():
+    class Early(_FakeTime):
+        async def sleep(self, seconds: float) -> None:
+            await super().sleep(seconds / 2)  # a sleep may return before its time
+
+    time = Early()
+    pacer = fwd.Pacer(60, clock=time.clock, sleep=time.sleep)
+    released = _release_times(time, pacer, 3)
+    assert all(b - a >= 1.0 for a, b in zip(released, released[1:], strict=False)), released
+
+
+def test_the_first_turn_waits_for_the_first_slot():
+    """The forwarder sets the first slot one interval after its start, so a run's first request
+    keeps its distance from the last request of the run before it."""
+    time = _FakeTime()
+    pacer = fwd.Pacer(60, clock=time.clock, sleep=time.sleep, first_slot=time.now + 1.0)
+    assert _release_times(time, pacer, 2) == [101.0, 102.0]
 
 
 @pytest.mark.parametrize("bad", ["0", "-1", "nan", "inf", "fast"])
@@ -387,6 +425,7 @@ def test_paced_forwarder_holds_the_rate_end_to_end():
             await proc.wait()
             upstream.close()
 
+    # Three intervals between four requests, and one before the first (the run boundary).
     assert asyncio.run(scenario(_free_port())) >= 0.3
 
 

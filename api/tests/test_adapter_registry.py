@@ -390,6 +390,47 @@ def test_two_workers_cannot_both_start_a_paced_run(ctx, monkeypatch):
 
 
 @needs_db
+def test_the_engagement_lock_makes_a_second_worker_wait_for_the_first(ctx, monkeypatch):
+    """Real contention: one worker is in mid-claim (holds the engagement lock and its run's row,
+    not yet committed) while another claims the engagement's second run. The second must wait for
+    the lock and then see the first as running; without the lock it would start its run at once."""
+    import threading
+
+    from sqlalchemy import false
+
+    from khandaq import runs
+    from khandaq.ledger import lock_engagement
+
+    client, eng = ctx
+    eng_id, target_id = _engagement(client, {"max_requests_per_minute": 60})
+    first = _garak_run(client, eng_id, target_id, 60)
+    second = _garak_run(client, eng_id, target_id, 60)
+    monkeypatch.setattr(runs, "_waits_for_paced_run", lambda paced: false())
+    result: list[str | None] = []
+
+    with Session(eng) as holder:
+        holder.execute(text("SELECT id FROM runs WHERE id = :id FOR UPDATE"), {"id": first["id"]})
+        lock_engagement(holder, eng_id)
+        other = threading.Thread(target=lambda: result.append(_claim(eng)))
+        other.start()
+        other.join(timeout=0.5)
+        waiting = other.is_alive() and result == []  # blocked on the engagement lock
+        holder.execute(
+            text("UPDATE runs SET state = 'running' WHERE id = :id"), {"id": first["id"]}
+        )
+        holder.commit()
+    other.join(timeout=10)
+    started = result[0] if result else "still claiming"
+    if started == second["id"]:  # leave no running run behind for the tests that follow
+        _finish(eng, second["id"])
+    assert waiting and started is None
+    assert _state(eng, second["id"]) == "queued"
+    _finish(eng, first["id"])
+    assert _claim(eng) == second["id"]
+    _finish(eng, second["id"])
+
+
+@needs_db
 def test_uncapped_paced_runs_are_not_held_back(ctx):
     client, eng = ctx
     eng_id, target_id = _engagement(client, {})

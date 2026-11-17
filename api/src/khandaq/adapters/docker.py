@@ -243,6 +243,38 @@ def docker_memory(value: str) -> str:
     raise ValueError(f"unsupported memory limit {value!r}")
 
 
+def _names(run_id: str) -> tuple[str, str, str]:
+    """(network, forwarder, adapter): the Docker objects of one run."""
+    return f"khq-net-{run_id}", f"khq-fwd-{run_id}", f"khq-run-{run_id}"
+
+
+_ABSENT = ("no such container", "no such network", "not found")
+
+
+def remove_run_leftovers(run_id: str, cli: DockerCli | None = None) -> bool:
+    """Remove the containers and the network a lost run may have left behind (spec 032).
+
+    A worker that died mid-run never ran its own cleanup, so the run's forwarder can still be
+    relaying. Returns ``True`` when nothing of the run is left: an object that is already gone
+    counts as removed. ``False`` means something may still be running.
+    """
+    docker = cli or SubprocessDockerCli()
+    network, forwarder, adapter = _names(run_id)
+    gone = True
+    for args in (["rm", "--force", adapter, forwarder], ["network", "rm", network]):
+        try:
+            result = docker(args, timeout=60)
+        except (RunnerError, OSError) as exc:
+            log.error("removing leftovers of run %s (%s) failed: %s", run_id, args[0], exc)
+            gone = False
+            continue
+        detail = result.stderr.decode("utf-8", "replace").strip()
+        if result.returncode != 0 and not any(text in detail.lower() for text in _ABSENT):
+            log.error("removing leftovers of run %s (%s) failed: %s", run_id, args[0], detail)
+            gone = False
+    return gone
+
+
 class DockerRunner:
     """Run a pinned adapter image in a per-run sandbox whose only exit is the in-scope target."""
 
@@ -372,7 +404,7 @@ class DockerRunner:
         run_id = request["run_id"]
         host, port, address = self.endpoint(request)
         pace = self.pace(request)  # before anything starts: an unusable pace refuses the run
-        network, forwarder, adapter = f"khq-net-{run_id}", f"khq-fwd-{run_id}", f"khq-run-{run_id}"
+        network, forwarder, adapter = _names(run_id)
         labels = ["--label", f"khandaq.run={run_id}"]
         # Compact JSON has no raw newline, so it is one env-file line.
         line = "KHANDAQ_RUN_REQUEST=" + json.dumps(request, separators=(",", ":")) + "\n"
