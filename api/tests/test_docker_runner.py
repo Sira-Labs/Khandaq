@@ -478,50 +478,55 @@ def test_unusable_pace_refuses_the_run(rate):
 
 
 class ScriptedCli:
-    """Answers ``rm`` and ``network rm`` with scripted results."""
+    """Answers each removal by the name of the object it removes."""
 
-    def __init__(self, rm: CliResult | Exception, network: CliResult | Exception) -> None:
-        self.answers = {"rm": rm, "network": network}
+    def __init__(self, **answers: CliResult | Exception) -> None:
+        self.answers = answers
         self.calls: list[list[str]] = []
 
     def __call__(self, args, *, timeout=None, stdout_limit=None):
         self.calls.append(list(args))
-        answer = self.answers[args[0]]
+        answer = self.answers.get(args[-1].split("-")[1], OK)
         if isinstance(answer, Exception):
             raise answer
         return answer
 
 
 OK = CliResult(0, b"", b"")
+ABSENT_CONTAINER = CliResult(1, b"", b"Error response from daemon: No such container: khq-x")
+ABSENT_NETWORK = CliResult(1, b"", b"Error response from daemon: network khq-net-x not found")
+REMOVALS = [
+    ["rm", "--force", "khq-run-run_abc"],
+    ["rm", "--force", "khq-fwd-run_abc"],
+    ["network", "rm", "khq-net-run_abc"],
+]
 
 
 def test_leftovers_of_a_lost_run_are_removed():
-    cli = ScriptedCli(OK, OK)
+    cli = ScriptedCli()
     assert remove_run_leftovers("run_abc", cli) is True
-    assert cli.calls == [
-        ["rm", "--force", "khq-run-run_abc", "khq-fwd-run_abc"],
-        ["network", "rm", "khq-net-run_abc"],
-    ]
+    assert cli.calls == REMOVALS  # one object per call
 
 
 def test_leftovers_that_are_already_gone_count_as_removed():
-    cli = ScriptedCli(
-        CliResult(1, b"", b"Error response from daemon: No such container: khq-run-run_abc"),
-        CliResult(1, b"", b"Error response from daemon: network khq-net-run_abc not found"),
-    )
+    cli = ScriptedCli(run=ABSENT_CONTAINER, fwd=ABSENT_CONTAINER, net=ABSENT_NETWORK)
     assert remove_run_leftovers("run_abc", cli) is True
 
 
 @pytest.mark.parametrize(
-    ("rm", "network"),
+    "answers",
     [
-        (CliResult(1, b"", b"permission denied"), OK),
-        (OK, CliResult(1, b"", b"network has active endpoints")),
-        (RunnerError("adapter did not finish within 60s"), OK),
-        (FileNotFoundError("docker"), FileNotFoundError("docker")),
+        {"run": CliResult(1, b"", b"permission denied")},
+        {"fwd": CliResult(1, b"", b"permission denied")},
+        {"net": CliResult(1, b"", b"network has active endpoints")},
+        {"run": RunnerError("adapter did not finish within 60s")},
+        {"run": FileNotFoundError("docker"), "fwd": FileNotFoundError("docker")},
+        # The adapter is gone, the forwarder cannot be removed: the absence must not hide it.
+        {"run": ABSENT_CONTAINER, "fwd": CliResult(1, b"", b"cannot remove: permission denied")},
+        {"run": ABSENT_CONTAINER, "fwd": ABSENT_CONTAINER, "net": CliResult(1, b"", b"in use")},
     ],
 )
-def test_leftovers_that_cannot_be_removed_are_reported(rm, network):
-    cli = ScriptedCli(rm, network)
+def test_leftovers_that_cannot_be_removed_are_reported(answers):
+    cli = ScriptedCli(**answers)
     assert remove_run_leftovers("run_abc", cli) is False
-    assert len(cli.calls) == 2  # the network is still tried after a failed container removal
+    assert cli.calls == REMOVALS  # every object is still tried after a failure

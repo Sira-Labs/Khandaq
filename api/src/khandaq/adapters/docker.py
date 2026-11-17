@@ -261,16 +261,22 @@ def remove_run_leftovers(run_id: str, cli: DockerCli | None = None) -> bool:
     docker = cli or SubprocessDockerCli()
     network, forwarder, adapter = _names(run_id)
     gone = True
-    for args in (["rm", "--force", adapter, forwarder], ["network", "rm", network]):
+    # One object per call: in a combined call "no such container" for one of them would hide a
+    # failure to remove the other.
+    for args in (
+        ["rm", "--force", adapter],
+        ["rm", "--force", forwarder],
+        ["network", "rm", network],
+    ):
         try:
             result = docker(args, timeout=60)
         except (RunnerError, OSError) as exc:
-            log.error("removing leftovers of run %s (%s) failed: %s", run_id, args[0], exc)
+            log.error("removing %s of lost run %s failed: %s", args[-1], run_id, exc)
             gone = False
             continue
         detail = result.stderr.decode("utf-8", "replace").strip()
         if result.returncode != 0 and not any(text in detail.lower() for text in _ABSENT):
-            log.error("removing leftovers of run %s (%s) failed: %s", run_id, args[0], detail)
+            log.error("removing %s of lost run %s failed: %s", args[-1], run_id, detail)
             gone = False
     return gone
 
