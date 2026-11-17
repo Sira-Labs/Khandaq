@@ -243,12 +243,18 @@ def docker_memory(value: str) -> str:
     raise ValueError(f"unsupported memory limit {value!r}")
 
 
+class LeftoversError(RunnerError):
+    """The run is over but its containers or network could not be removed: its forwarder may
+    still be relaying. The run must not be recorded as ended while that is so (spec 032)."""
+
+
 def _names(run_id: str) -> tuple[str, str, str]:
     """(network, forwarder, adapter): the Docker objects of one run."""
     return f"khq-net-{run_id}", f"khq-fwd-{run_id}", f"khq-run-{run_id}"
 
 
 _ABSENT = ("no such container", "no such network", "not found")
+_LEFTOVERS = "the run's containers or network could not be removed"
 
 
 def remove_run_leftovers(run_id: str, cli: DockerCli | None = None) -> bool:
@@ -258,11 +264,19 @@ def remove_run_leftovers(run_id: str, cli: DockerCli | None = None) -> bool:
     relaying. Returns ``True`` when nothing of the run is left: an object that is already gone
     counts as removed. ``False`` means something may still be running.
     """
-    docker = cli or SubprocessDockerCli()
+    return _remove(cli or SubprocessDockerCli(), run_id, None)
+
+
+def _remove(docker: DockerCli, run_id: str, credential: str | None) -> bool:
+    """Remove the run's adapter, forwarder and network; ``True`` when none of them is left.
+
+    Every object is tried even if an earlier one failed. One object per call: in a combined call
+    "no such container" for one of them would hide a failure to remove the other. A container
+    that could not be removed still holds the run's environment, the credential included, in its
+    configuration on the Docker host, so what is logged is redacted.
+    """
     network, forwarder, adapter = _names(run_id)
     gone = True
-    # One object per call: in a combined call "no such container" for one of them would hide a
-    # failure to remove the other.
     for args in (
         ["rm", "--force", adapter],
         ["rm", "--force", forwarder],
@@ -271,12 +285,12 @@ def remove_run_leftovers(run_id: str, cli: DockerCli | None = None) -> bool:
         try:
             result = docker(args, timeout=60)
         except (RunnerError, OSError) as exc:
-            log.error("removing %s of lost run %s failed: %s", args[-1], run_id, exc)
+            log.error("removing %s failed: %s", args[-1], redact(str(exc), credential))
             gone = False
             continue
-        detail = result.stderr.decode("utf-8", "replace").strip()
+        detail = redact(result.stderr.decode("utf-8", "replace").strip(), credential)
         if result.returncode != 0 and not any(text in detail.lower() for text in _ABSENT):
-            log.error("removing %s of lost run %s failed: %s", args[-1], run_id, detail)
+            log.error("removing %s failed: %s", args[-1], detail)
             gone = False
     return gone
 
@@ -399,6 +413,8 @@ class DockerRunner:
         and is redacted from every file and error message that comes back."""
         try:
             return self._run(request, credential)
+        except LeftoversError:
+            raise  # carries no adapter text, and its type decides what happens to the run
         except RunnerError as exc:
             if not credential:
                 raise
@@ -422,37 +438,47 @@ class DockerRunner:
             # A second line of the same 0600 file: never the request JSON, never a docker argument.
             line += f"{CREDENTIAL_ENV}={credential}\n"
         fd, env_file = tempfile.mkstemp(prefix="khq-env-", text=True)  # created 0600
+        removed = True
         try:
-            with os.fdopen(fd, "w") as f:
-                f.write(line)
-            self._ok(
-                ["network", "create", "--internal", *labels, network],
-                "create the network",
-                credential,
-            )
-            self._ok(
-                self.forwarder_args(forwarder, port, address, labels, pace),
-                "start the forwarder",
-                credential,
-            )
-            self._ok(
-                ["network", "connect", "--alias", host, network, forwarder],
-                "attach the forwarder",
-                credential,
-            )
-            self._ok(
-                self.adapter_args(adapter, network, env_file, labels),
-                "create the adapter",
-                credential,
-            )
-            result = self.cli(
-                ["start", "--attach", adapter],
-                timeout=self.settings.adapter_timeout_seconds,
-                stdout_limit=self.settings.adapter_output_limit_mb * 1024 * 1024,
-            )
-        finally:
-            os.unlink(env_file)
-            self._cleanup(network, forwarder, adapter, credential)
+            try:
+                with os.fdopen(fd, "w") as f:
+                    f.write(line)
+                self._ok(
+                    ["network", "create", "--internal", *labels, network],
+                    "create the network",
+                    credential,
+                )
+                self._ok(
+                    self.forwarder_args(forwarder, port, address, labels, pace),
+                    "start the forwarder",
+                    credential,
+                )
+                self._ok(
+                    ["network", "connect", "--alias", host, network, forwarder],
+                    "attach the forwarder",
+                    credential,
+                )
+                self._ok(
+                    self.adapter_args(adapter, network, env_file, labels),
+                    "create the adapter",
+                    credential,
+                )
+                result = self.cli(
+                    ["start", "--attach", adapter],
+                    timeout=self.settings.adapter_timeout_seconds,
+                    stdout_limit=self.settings.adapter_output_limit_mb * 1024 * 1024,
+                )
+            finally:
+                os.unlink(env_file)
+                removed = _remove(self.cli, run_id, credential)
+        except Exception:
+            if not removed:
+                # `from None`: the run's own error may hold the credential, and what matters now
+                # is that something of the run is still there.
+                raise LeftoversError(_LEFTOVERS) from None
+            raise
+        if not removed:
+            raise LeftoversError(_LEFTOVERS)
         if result.returncode != 0:
             # Redact before cutting the tail: a cut through the credential would leave a part of it
             # that no longer matches.
@@ -468,21 +494,3 @@ class DockerRunner:
             detail = redact(result.stderr.decode("utf-8", "replace"), credential)
             raise RunnerError(f"could not {what}: {detail[-_STDERR_TAIL:]}")
         return result
-
-    def _cleanup(
-        self, network: str, forwarder: str, adapter: str, credential: str | None = None
-    ) -> None:
-        """Remove everything the run created; each step runs even if an earlier one failed.
-
-        A container that could not be removed still holds the run's environment, the credential
-        included, in its configuration on the Docker host: that failure is logged as an error.
-        """
-        for args in (["rm", "--force", adapter, forwarder], ["network", "rm", network]):
-            try:
-                result = self.cli(args, timeout=60)
-            except RunnerError as exc:
-                log.error("cleanup %s failed: %s", args, redact(str(exc), credential))
-                continue
-            if result.returncode != 0:
-                detail = redact(result.stderr.decode("utf-8", "replace").strip(), credential)
-                log.error("cleanup %s failed: %s", args, detail)

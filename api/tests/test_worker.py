@@ -280,6 +280,33 @@ def test_runs_a_lost_worker_left_running_are_failed_at_start(env):
     assert _actions(db, run["id"])[-1] == "run.failed"
 
 
+def test_a_run_that_leaves_containers_behind_stays_running_and_is_audited(env):
+    """The worker is alive but could not remove the run's containers (spec 032): the run is not
+    recorded as ended, so the engagement's next paced run stays held back."""
+    from khandaq.adapters.docker import LeftoversError
+    from khandaq.runs import execute_run
+
+    class Stuck:
+        def run(self, request):
+            raise LeftoversError("the run's containers or network could not be removed")
+
+    client, db, _ = env
+    eng_id, tid = _engagement(client, "leftovers")
+    run = _queue(client, eng_id, tid)
+    with db.begin() as conn:  # as the claim leaves it (other tests' runs may be queued too)
+        conn.execute(
+            text("UPDATE runs SET state = 'running', started_at = now() WHERE id = :r"),
+            {"r": run["id"]},
+        )
+    with Session(db) as session:
+        after = execute_run(session, run["id"], runner=Stuck())
+        assert after.state == "running" and after.ended_at is None
+    actions = _actions(db, run["id"])
+    assert actions[-1] == "run.cleanup_failed" and "run.failed" not in actions
+    with db.begin() as conn:  # leave no running run behind for the tests that follow
+        conn.execute(text("UPDATE runs SET state = 'failed' WHERE id = :r"), {"r": run["id"]})
+
+
 def test_a_lost_run_whose_containers_cannot_be_removed_stays_running(env):
     """Its forwarder may still be relaying, so the run keeps holding back the engagement's next
     paced run (spec 032); once the leftovers are gone it is failed and audited."""

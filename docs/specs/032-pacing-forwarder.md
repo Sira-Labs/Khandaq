@@ -36,7 +36,8 @@ with `rate_per_minute: 60` and the run goes through, slower, without exceeding w
     (the adapter holds the rate itself) and stays `false` for garak.
 - **API**: `GET /api/adapters` adds `forwarder_paced` to each entry.
 - **Audit**: `run.started` gains `paced_per_minute` (the number the forwarder is started with) for
-  a paced run; the key is absent otherwise.
+  a paced run; the key is absent otherwise. New action `run.cleanup_failed` (`run_id`, `error`):
+  a run's containers could not be removed and the run stays `running`.
 - **Runner**: `DockerRunner` starts the forwarder with `--pace-per-minute <rate>` when the manifest
   is `forwarder_paced` and the run's params declare `rate_per_minute`.
 - No new setting, no migration.
@@ -93,9 +94,15 @@ with `rate_per_minute: 60` and the run goes through, slower, without exceeding w
    (it is not rejected) and is taken once the first has ended. The check is made under the
    engagement lock, so two workers cannot both start one. Other engagements, runs without a cap
    and built-in adapters are not held back.
-7. **A lost run is cleaned up before it is failed.** `recover_stale_runs` removes the lost run's
-   adapter and forwarder containers and its network (an object already gone counts as removed)
-   and only then records `run.failed`. If the removal fails the run stays `running`.
+7. **A run is not over while its containers are there.** Each forwarder holds only its own run's
+   rate, so a forwarder left behind could relay beside the next paced run.
+   - After every container run the runner removes the adapter, the forwarder and the network, one
+     object per call (an object already gone counts as removed). If one cannot be removed the
+     run is **not** recorded as ended, whatever its own outcome: it stays `running`, its result
+     is dropped, and `run.cleanup_failed` is audited.
+   - `recover_stale_runs` does the same removal for a run left `running` past the timeout (a lost
+     worker, or the case above) and only then records `run.failed`; if the removal fails the run
+     stays `running`. The worker runs this at start and every five minutes.
 8. **A paced run that cannot be paced fails.** If the runner is asked to pace with a rate that is
    not a finite number above 0, it raises before any container starts; nothing falls back to an
    unpaced forwarder.
@@ -159,9 +166,12 @@ Unit (`api/tests/test_egress_forwarder.py`): `test_pacer_spaces_turns`, `test_pa
 Unit (`api/tests/test_docker_runner.py`): `test_forwarder_is_paced_for_a_paced_adapter`,
 `test_forwarder_is_not_paced_without_a_rate_or_flag`, `test_unusable_pace_refuses_the_run`,
 `test_leftovers_of_a_lost_run_are_removed`, `test_leftovers_that_are_already_gone_count_as_removed`,
-`test_leftovers_that_cannot_be_removed_are_reported`.
+`test_leftovers_that_cannot_be_removed_are_reported` (with the mixed cases),
+`test_a_run_whose_containers_cannot_be_removed_ends_in_leftovers` (timeout, failure, success),
+`test_a_failed_removal_is_reported_as_leftovers_and_its_logs_are_redacted`.
 Integration (`api/tests/test_worker.py`):
-`test_a_lost_run_whose_containers_cannot_be_removed_stays_running`.
+`test_a_lost_run_whose_containers_cannot_be_removed_stays_running`,
+`test_a_run_that_leaves_containers_behind_stays_running_and_is_audited`.
 Unit and integration (`api/tests/test_adapter_registry.py`): `test_adapter_refusal_for_a_rate_cap`
 (the table), `test_only_garak_is_paced_by_the_forwarder`,
 `test_a_capped_engagement_runs_garak_paced_and_audits_the_rate` (pre-flight, campaign, create,

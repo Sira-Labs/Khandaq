@@ -42,7 +42,7 @@ from .adapters import (
     get_manifest,
     get_runner,
 )
-from .adapters.docker import remove_run_leftovers
+from .adapters.docker import LeftoversError, remove_run_leftovers
 from .campaign_diff import record_diff
 from .credential_values import CredentialError, redact
 from .deps import EngagementAccess
@@ -397,7 +397,8 @@ def _waits_for_paced_run(paced: list[str]):
 
 
 def execute_run(session: Session, run_id: str, *, actor: User | None = None, runner=None) -> Run:
-    """Execute a ``running`` run and record the outcome; every failure ends in ``failed``."""
+    """Execute a ``running`` run and record the outcome; every failure ends in ``failed``, except
+    a run whose containers could not be removed, which stays ``running`` (``_keep_running``)."""
     run = session.get(Run, run_id)
     if run is None:  # pragma: no cover - the running row was committed before execution
         raise RuntimeError(f"run {run_id} does not exist")
@@ -423,6 +424,8 @@ def execute_run(session: Session, run_id: str, *, actor: User | None = None, run
             artifacts = active.run(request, credential=credential)
     except CredentialError as exc:
         return _fail(session, eng_id, run_id, f"target credential unusable: {exc.detail}", actor)
+    except LeftoversError as exc:
+        return _keep_running(session, eng_id, run_id, str(exc), actor)
     except Exception as exc:  # third-party tool execution: every failure is recorded, never lost
         # The runner redacts what the adapter returned; this covers any other text on the way out.
         return _fail(session, eng_id, run_id, redact(f"adapter failed: {exc}", credential), actor)
@@ -526,6 +529,30 @@ def _fail(session: Session, engagement_id: str, run_id: str, error: str, actor: 
         actor=actor,
         engagement_id=engagement_id,
         detail={"run_id": run_id, "error": brief},
+    )
+    session.commit()
+    session.refresh(run)
+    return run
+
+
+def _keep_running(
+    session: Session, engagement_id: str, run_id: str, error: str, actor: User | None
+) -> Run:
+    """The run is over but its containers could not be removed (spec 032): its forwarder may
+    still be relaying, so the run stays ``running``, which keeps holding back the engagement's
+    next paced run, and whatever it returned is dropped. Recovery removes the leftovers and fails
+    the run once it is past the timeout. Audited, in a fresh transaction."""
+    session.rollback()
+    run = session.get(Run, run_id)
+    if run is None:  # pragma: no cover - the running row was committed before execution
+        raise RuntimeError(f"run {run_id} vanished before its state could be recorded")
+    log.error("run %s: %s; it stays running until they are removed", run_id, error)
+    audit.record(
+        session,
+        action="run.cleanup_failed",
+        actor=actor,
+        engagement_id=engagement_id,
+        detail={"run_id": run_id, "error": error},
     )
     session.commit()
     session.refresh(run)

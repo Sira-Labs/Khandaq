@@ -19,6 +19,7 @@ import pytest
 from khandaq.adapters.docker import (
     CliResult,
     DockerRunner,
+    LeftoversError,
     RunnerError,
     check_address,
     read_output,
@@ -100,11 +101,11 @@ class FakeCli:
         return next(c for c in self.calls if c[: len(prefix)] == list(prefix))
 
     def cleaned_up(self) -> bool:
-        return ["rm", "--force", "khq-run-run_abc", "khq-fwd-run_abc"] in self.calls and [
-            "network",
-            "rm",
-            "khq-net-run_abc",
-        ] in self.calls
+        return self.calls[-3:] == [
+            ["rm", "--force", "khq-run-run_abc"],
+            ["rm", "--force", "khq-fwd-run_abc"],
+            ["network", "rm", "khq-net-run_abc"],
+        ]
 
 
 def _runner(cli: FakeCli, addresses: list[str] | None = None) -> DockerRunner:
@@ -128,7 +129,8 @@ def test_the_sandbox_is_built_in_order_and_torn_down():
         ["network", "connect"],
         ["create", "--name"],
         ["start", "--attach"],
-        ["rm", "--force"],
+        ["rm", "--force"],  # the adapter
+        ["rm", "--force"],  # the forwarder
         ["network", "rm"],
     ]
     assert "--internal" in cli.find("network", "create")  # no route out of the run network
@@ -413,7 +415,7 @@ def test_stderr_and_error_text_are_redacted_before_they_are_recorded():
     assert "[REDACTED:target-credential]" in str(exc.value) and KEY not in str(exc.value)
 
 
-def test_a_setup_error_is_redacted_before_it_is_cut_and_cleanup_logs_are_redacted(caplog):
+def _leaky(rm_fails: bool) -> FakeCli:
     # The key straddles the 2000-character cut of a daemon error.
     daemon = ("x" * 50 + KEY + "y" * (2000 - len(KEY) // 2)).encode()
 
@@ -421,17 +423,56 @@ def test_a_setup_error_is_redacted_before_it_is_cut_and_cleanup_logs_are_redacte
         def __call__(self, args, *, timeout=None, stdout_limit=None):
             if args[0] == "create":
                 return CliResult(1, b"", daemon)
-            if args[0] == "rm":
+            if args[0] == "rm" and rm_fails:
                 return CliResult(1, b"", f"cannot remove: env {KEY}".encode())
             return super().__call__(args, timeout=timeout, stdout_limit=stdout_limit)
 
+    return Leaky(CliResult(0, GOOD_OUTPUT, b""))
+
+
+def test_a_setup_error_is_redacted_before_it_is_cut(caplog):
     with caplog.at_level("DEBUG"), pytest.raises(RunnerError) as exc:
-        _keyed_runner(Leaky(CliResult(0, GOOD_OUTPUT, b""))).run(_request(), credential=KEY)
+        _keyed_runner(_leaky(rm_fails=False)).run(_request(), credential=KEY)
     message = str(exc.value)
+    assert "could not create the adapter" in message
     assert KEY not in message and KEY[len(KEY) // 2 :] not in message
+    assert KEY not in caplog.text
+
+
+def test_a_failed_removal_is_reported_as_leftovers_and_its_logs_are_redacted(caplog):
+    with caplog.at_level("DEBUG"), pytest.raises(LeftoversError) as exc:
+        _keyed_runner(_leaky(rm_fails=True)).run(_request(), credential=KEY)
+    # The setup error, which held the key, is not carried along.
+    assert KEY not in str(exc.value) and exc.value.__cause__ is None
     assert KEY not in caplog.text and "[REDACTED:target-credential]" in caplog.text
     # A container that could not be removed still holds the key: that is an error, not a warning.
-    assert any(r.levelname == "ERROR" and "cleanup" in r.message for r in caplog.records)
+    assert any(r.levelname == "ERROR" and "removing" in r.message for r in caplog.records)
+
+
+@pytest.mark.parametrize(
+    "start",
+    [
+        RunnerError("adapter did not finish within 600s"),  # a timeout: the adapter may live on
+        CliResult(3, b"", b"garak: connection refused"),
+        CliResult(0, GOOD_OUTPUT, b""),  # even a run that went well
+    ],
+)
+@pytest.mark.parametrize("stuck", ["khq-run-run_abc", "khq-fwd-run_abc", "khq-net-run_abc"])
+def test_a_run_whose_containers_cannot_be_removed_ends_in_leftovers(start, stuck):
+    """Whatever the run's own outcome: while something of it is left, its forwarder may still
+    relay, and the caller must not record the run as ended (spec 032)."""
+
+    class Stuck(FakeCli):
+        def __call__(self, args, *, timeout=None, stdout_limit=None):
+            if args[-1] == stuck:
+                self.calls.append(list(args))
+                return CliResult(1, b"", b"permission denied")
+            return super().__call__(args, timeout=timeout, stdout_limit=stdout_limit)
+
+    cli = Stuck(start)
+    with pytest.raises(LeftoversError, match="could not be removed"):
+        _runner(cli).run(_request())
+    assert cli.cleaned_up()  # all three removals were still tried
 
 
 # --- pacing (spec 032) ----------------------------------------------------------------------------

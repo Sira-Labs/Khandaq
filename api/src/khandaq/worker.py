@@ -41,6 +41,9 @@ log = logging.getLogger("khandaq.worker")
 # kills the container at the timeout and recording results takes seconds.
 STALE_MARGIN = dt.timedelta(minutes=10)
 HEARTBEAT_SECONDS = 30.0
+# Lost runs are looked for at start and then this often: a run kept `running` because its
+# containers could not be removed (spec 032) is retried without a worker restart.
+RECOVERY_SECONDS = 300.0
 
 
 class Notifications:
@@ -146,16 +149,16 @@ def run_forever(
     engine = make_engine(settings.database_url)
     listen_engine = create_engine(settings.database_url, poolclass=NullPool)
     notifications: Notifications | None = None
-    recovered = False
+    recovered: float | None = None
     heartbeat = Heartbeat(settings)
     try:
         while not stop.is_set():
             try:
                 # Inside the retry loop: a database still starting when the worker starts is
                 # retried like any later outage instead of killing the process (PR #31 review).
-                if not recovered:
+                if recovered is None or time.monotonic() - recovered >= RECOVERY_SECONDS:
                     _recover_lost_runs(engine, settings)
-                    recovered = True
+                    recovered = time.monotonic()
                 if notifications is None:
                     notifications = Notifications(listen_engine)
                 heartbeat.maybe_beat(engine)
