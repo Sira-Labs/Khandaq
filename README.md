@@ -85,7 +85,7 @@ Decisions are recorded as ADRs in `docs/adr/`; the map is `docs/architecture/03-
 | Path | What |
 |---|---|
 | `core/` | Rust workspace: findings canonicalisation, fingerprint/dedup, the hash-chained evidence ledger, and a PyO3 wheel the API uses. |
-| `api/` | Python 3.12 FastAPI control plane (uv): engagements, scope lock, authz, audit, the worker and adapter host. |
+| `api/` | Python 3.12+ FastAPI control plane (uv; the image runs 3.15): engagements, scope lock, authz, audit, the worker and adapter host. |
 | `adapters/` | One thin, version-pinned adapter per upstream tool; each builds to its own container image. |
 | `web/` | Vite + React 19 + TanStack + Tailwind console. |
 | `deploy/` | `docker compose` bundle, CapRover guide and captain-definitions, env examples. |
