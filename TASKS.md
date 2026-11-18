@@ -375,6 +375,9 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
       the e2e moved to 3.15, so CI tests what the image ships. `requires-python` stays `>=3.12`
       and the adapter images stay on their own pinned bases. Checked locally on 3.15: 505 api
       tests and the 13 binding tests pass. The image itself is first built by the release run.
+      Built by release run #65. Follow-up from the review of #87: the api and bindings jobs
+      also run on 3.12, the oldest version `requires-python` allows; the 3.15 jobs keep their
+      names.
 - [ ] **Owner:** Dependabot cannot label its PRs: the labels `dependencies`, `area: core`,
       `area: api`, `area: web`, `area: ci`, `area: deploy` named in `.github/dependabot.yml` do not
       exist. Create them, or say that they should be dropped from the file; default: unlabelled.
