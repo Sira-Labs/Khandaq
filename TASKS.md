@@ -337,7 +337,7 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
       target has answered), shared by all connections of the run. New manifest flag
       `forwarder_paced` (garak: true; mcp-scanner: false). `adapter_refusal` lets a capped
       engagement run a `forwarder_paced` adapter with a declared rate above 0; `run.started`
-      records `paced_per_minute`. 574 api tests. Manual e2e on 2026-11-16 (pinned garak 0.17.0
+      records `paced_per_minute`. 577 api tests. Manual e2e on 2026-11-16 (pinned garak 0.17.0
       image, bundled demo target, all synthetic): 256 requests, closest two 100.1 ms apart at
       600/min against 3 ms unpaced. Decisions: the forwarder counts turns instead of requests,
       because it must not terminate TLS (ADR-0009), and over-counts rather than under-counts (a
@@ -361,7 +361,11 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
       a run's first turn waits one interval after its forwarder started (the boundary to the
       previous run); a run whose containers cannot be removed, after the run or at recovery,
       stays `running` (audited as `run.cleanup_failed`) and keeps holding the next paced run
-      back; removal is one object per call, and recovery now also runs every five minutes.
+      back; removal is one object per call, and recovery now also runs every five minutes. A
+      second CodeRabbit pass (2026-11-18): the turn is held while the target connection opens
+      and until the first bytes are written, so a slow connect cannot bring two first requests
+      closer (10 s connect limit while pacing); leftovers are looked for whatever the settings
+      say now; a failed removal at recovery is audited once per run.
       **Owner:** review and merge the spec 032 PR. It changes how the rules of engagement's rate
       cap is enforced (a refusal becomes a paced run), so under ADR-0018 a nightly run does not
       merge it. It blocks garak on capped engagements; default: stays refused until merged.

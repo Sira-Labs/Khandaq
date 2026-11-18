@@ -274,7 +274,10 @@ def test_runs_a_lost_worker_left_running_are_failed_at_start(env):
             {"r": fresh["id"]},
         )
     with Session(db) as session:
-        assert recover_stale_runs(session, older_than=dt.timedelta(hours=1)) == 1
+        recovered = recover_stale_runs(
+            session, older_than=dt.timedelta(hours=1), leftovers_removed=lambda lost: True
+        )
+        assert recovered == 1
     assert _run(client, eng_id, run["id"])["state"] == "failed"
     assert _run(client, eng_id, fresh["id"])["state"] == "running"  # a live run is left alone
     assert _actions(db, run["id"])[-1] == "run.failed"
@@ -334,6 +337,11 @@ def test_a_lost_run_whose_containers_cannot_be_removed_stays_running(env):
     assert recovered == 0 and run["id"] in asked
     assert _run(client, eng_id, run["id"])["state"] == "running"
     assert "run.failed" not in _actions(db, run["id"])
+    # Audited, and only once however often recovery comes back to it.
+    assert _actions(db, run["id"]).count("run.cleanup_failed") == 1
+    with Session(db) as session:
+        recover_stale_runs(session, older_than=dt.timedelta(hours=1), leftovers_removed=stuck)
+    assert _actions(db, run["id"]).count("run.cleanup_failed") == 1
 
     with Session(db) as session:
         recovered = recover_stale_runs(
@@ -515,3 +523,18 @@ def test_an_unreachable_evidence_store_is_a_503_not_a_crash(env, monkeypatch):
     assert r.status_code == 503
     assert r.json()["detail"] == "evidence store unavailable; try again later"
     assert _audit(db, eng_id, "evidence.downloaded") == []
+
+
+def test_leftovers_of_a_container_run_are_looked_for_whatever_the_settings(monkeypatch):
+    """Spec 032: a run started while container runs were enabled may have left a forwarder
+    behind even if they are disabled now. Only an in-process adapter is known to leave nothing."""
+    from khandaq import runs
+    from khandaq.models import Run
+
+    asked: list[str] = []
+    monkeypatch.setattr(runs, "remove_run_leftovers", lambda run_id: asked.append(run_id) or False)
+    assert runs.get_settings().forwarder_image == ""  # container runs are off in this test setup
+    assert runs._leftovers_removed(Run(id="run_c", adapter="garak")) is False
+    assert runs._leftovers_removed(Run(id="run_gone", adapter="no-longer-registered")) is False
+    assert runs._leftovers_removed(Run(id="run_e", adapter="echo")) is True
+    assert asked == ["run_c", "run_gone"]

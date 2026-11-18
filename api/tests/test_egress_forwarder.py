@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import socket
 import sys
 
@@ -213,8 +214,10 @@ class _CountingPacer(fwd.Pacer):
         super().__init__(60)
         self.turns = 0
 
-    async def wait_turn(self) -> None:
+    @contextlib.asynccontextmanager
+    async def turn(self):
         self.turns += 1
+        yield
 
 
 async def _http_server() -> asyncio.Server:
@@ -437,9 +440,11 @@ class _GatedPacer(fwd.Pacer):
         self.gate = asyncio.Event()
         self.waiting = 0
 
-    async def wait_turn(self) -> None:
+    @contextlib.asynccontextmanager
+    async def turn(self):
         self.waiting += 1
         await self.gate.wait()
+        yield
 
 
 def test_the_target_sees_nothing_of_a_connection_before_its_slot():
@@ -508,3 +513,75 @@ def test_a_request_abandoned_while_waiting_is_not_delivered():
 def test_a_paced_connection_that_never_shows_its_opening_is_dropped(monkeypatch):
     monkeypatch.setattr(fwd, "_OPENING_SECONDS", 0.1)
     assert _refused(b"\x16") == (b"", 0)  # one byte of a TLS record, then silence
+
+
+def test_a_slow_connect_does_not_bring_two_first_requests_closer(monkeypatch):
+    """The interval counts from when a turn's bytes were written, not from when its slot came:
+    a first connection that takes long to open must not let the next connection's request follow
+    it by less than the interval."""
+    arrivals: list[float] = []
+
+    async def handle(reader, writer):
+        await reader.read(100)
+        arrivals.append(asyncio.get_running_loop().time())
+        writer.write(b"HTTP/1.1 204 No Content\r\n\r\n")
+        await writer.drain()
+        writer.close()
+
+    real_open = asyncio.open_connection
+    opened = 0
+
+    async def slow_first_open(*args, **kwargs):
+        nonlocal opened
+        opened += 1
+        if opened == 1:
+            await asyncio.sleep(0.15)  # the first connection to the target is slow to open
+        return await real_open(*args, **kwargs)
+
+    interval = 0.1
+    pacer = fwd.Pacer(60 / interval)
+
+    async def one_request(port: int) -> None:
+        reader, writer = await real_open("127.0.0.1", port)
+        writer.write(b"GET / HTTP/1.1\r\nHost: t\r\n\r\n")
+        await writer.drain()
+        await asyncio.wait_for(reader.read(100), 5)
+        writer.close()
+
+    async def client(port: int) -> None:
+        first = asyncio.create_task(one_request(port))
+        await asyncio.sleep(0.02)  # the second arrives while the first is still connecting
+        await asyncio.gather(first, one_request(port))
+
+    async def scenario() -> None:
+        upstream = await asyncio.start_server(handle, "127.0.0.1", 0)
+        monkeypatch.setattr(fwd.asyncio, "open_connection", slow_first_open)
+        await _paced(upstream, pacer, client)
+
+    asyncio.run(scenario())
+    assert len(arrivals) == 2
+    # A few milliseconds of slack for the loopback hop between the forwarder's write and the
+    # target's read; without the fix the gap is close to zero.
+    assert arrivals[1] - arrivals[0] >= interval * 0.9, arrivals
+
+
+def test_a_target_that_does_not_accept_in_time_costs_only_its_turn(monkeypatch):
+    monkeypatch.setattr(fwd, "_CONNECT_SECONDS", 0.05)
+
+    async def never(*args, **kwargs):
+        await asyncio.sleep(3600)
+
+    async def client(port: int) -> bytes:
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        writer.write(b"GET / HTTP/1.1\r\nHost: t\r\n\r\n")
+        await writer.drain()
+        monkeypatch.setattr(fwd.asyncio, "open_connection", never)
+        try:
+            return await asyncio.wait_for(reader.read(100), 5)
+        finally:
+            writer.close()
+
+    async def scenario() -> object:
+        return await _paced(await _pong_server(), fwd.Pacer(6000), client)
+
+    assert asyncio.run(scenario()) == b""  # closed, not hung: the pacer is free again

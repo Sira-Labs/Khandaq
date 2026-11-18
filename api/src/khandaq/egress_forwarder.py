@@ -43,6 +43,8 @@ _HTTP1 = b"http/1.1"
 _H2_PREFACE = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
 # How long a paced connection may take to show its opening bytes before it is dropped.
 _OPENING_SECONDS = 30.0
+# How long connecting to the target may take while a turn is held (pacing waits for it).
+_CONNECT_SECONDS = 10.0
 
 
 def parse_address(value: str) -> tuple[str, int]:
@@ -88,15 +90,29 @@ class Pacer:
     def _now(self) -> float:
         return self._clock() if self._clock else asyncio.get_running_loop().time()
 
-    async def wait_turn(self) -> None:
-        # One waiter at a time, and the next slot counts from when this one was really let
-        # through: sleeps that end late and together (a stalled event loop) cannot bunch turns.
+    @contextlib.asynccontextmanager
+    async def turn(self):
+        """Hold the one turn that is let through now: wait for the slot, run the body (which
+        hands the turn's first bytes to the target), then start the interval.
+
+        One holder at a time, and the next slot counts from when this turn's body ended, that is
+        from when its bytes were really written: sleeps that end late and together (a stalled
+        event loop) cannot bunch turns, and neither can a connection that took long to open.
+        """
         async with self._lock:
             now = self._now()
             while self._next > now:
                 await self._sleep(self._next - now)
                 now = self._now()
-            self._next = now + self.interval
+            try:
+                yield
+            finally:
+                self._next = self._now() + self.interval
+
+    async def wait_turn(self) -> None:
+        """Take a turn with nothing to do in it."""
+        async with self.turn():
+            pass
 
 
 class RefusedProtocol(Exception):
@@ -196,20 +212,20 @@ async def _pump(
     reader: asyncio.StreamReader,
     writer: asyncio.StreamWriter,
     *,
-    first: bytes = b"",
-    before_write=None,
+    send=None,
     on_data=None,
 ) -> None:
+    """Relay ``reader`` to ``writer`` until either side ends. ``send`` replaces the plain write
+    (the paced client side); ``on_data`` is told about every chunk read."""
     try:
-        data = first or await reader.read(_CHUNK)
-        while data:
+        while data := await reader.read(_CHUNK):
             if on_data is not None:
                 on_data()
-            if before_write is not None:
-                await before_write()
-            writer.write(data)
-            await writer.drain()
-            data = await reader.read(_CHUNK)
+            if send is not None:
+                await send(data)
+            else:
+                writer.write(data)
+                await writer.drain()
     except (ConnectionError, asyncio.IncompleteReadError):
         pass
     finally:
@@ -218,15 +234,25 @@ async def _pump(
                 writer.write_eof()
 
 
+async def _connect(upstream: tuple[str, int], timeout: float | None = None):
+    """The target connection, or ``None`` (logged) when it cannot be opened."""
+    try:
+        return await asyncio.wait_for(asyncio.open_connection(*upstream), timeout)
+    except (OSError, TimeoutError) as exc:
+        log.warning("upstream %s:%d unreachable: %s", upstream[0], upstream[1], exc)
+        return None
+
+
 async def _relay(
     client_reader: asyncio.StreamReader,
     client_writer: asyncio.StreamWriter,
     upstream: tuple[str, int],
     pacer: Pacer | None = None,
 ) -> None:
-    first = b""
     turns = _Turns()
-    if pacer is not None:
+    if pacer is None:
+        connection = await _connect(upstream)
+    else:
         try:
             first = await asyncio.wait_for(_first_bytes(client_reader), _OPENING_SECONDS)
         except RefusedProtocol as exc:
@@ -239,36 +265,42 @@ async def _relay(
         if not first:
             client_writer.close()
             return
-        # The connection's first turn is taken before the target is even connected to, so the
-        # target sees nothing of this connection, not even a TCP handshake, ahead of its slot.
+        # The connection's first turn. The target is connected to inside the turn, so it sees
+        # nothing of this connection, not even a TCP handshake, ahead of its slot; and the
+        # interval to the next turn starts only once these first bytes are written, however long
+        # the connection took to open.
         turns.open = True
-        await pacer.wait_turn()
-        if client_reader.at_eof():
-            client_writer.close()  # the client gave up while waiting: deliver nothing
-            return
-    try:
-        up_reader, up_writer = await asyncio.open_connection(*upstream)
-    except OSError as exc:
-        log.warning("upstream %s:%d unreachable: %s", upstream[0], upstream[1], exc)
+        connection = None
+        async with pacer.turn():
+            if not client_reader.at_eof():  # else the client gave up while waiting: send nothing
+                connection = await _connect(upstream, _CONNECT_SECONDS)
+                if connection is not None:
+                    connection[1].write(first)
+    if connection is None:
         client_writer.close()
         return
+    up_reader, up_writer = connection
 
-    async def take_turn() -> None:
+    async def send(data: bytes) -> None:
         # The first client bytes since the target last spoke start a turn and wait for its slot.
         if pacer is not None and not turns.open:
             turns.open = True
-            await pacer.wait_turn()
-            if client_reader.at_eof():
-                # The client gave up while waiting (a timeout, then a retry on a new connection):
-                # a request nobody waits for is not sent to the target.
-                raise ConnectionAbortedError("the client closed while waiting for its slot")
+            async with pacer.turn():
+                if client_reader.at_eof():
+                    # The client gave up while waiting (a timeout, then a retry on a new
+                    # connection): a request nobody waits for is not sent to the target.
+                    raise ConnectionAbortedError("the client closed while waiting for its slot")
+                up_writer.write(data)
+        else:
+            up_writer.write(data)
+        await up_writer.drain()  # outside the turn: a slow target must not hold the pacer
 
     def target_spoke() -> None:
         turns.open = False
 
     try:
         await asyncio.gather(
-            _pump(client_reader, up_writer, first=first, before_write=take_turn),
+            _pump(client_reader, up_writer, send=send),
             _pump(up_reader, client_writer, on_data=target_spoke),
         )
     finally:

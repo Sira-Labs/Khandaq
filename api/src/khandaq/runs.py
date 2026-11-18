@@ -50,7 +50,7 @@ from .evidence_crypto import Keyring
 from .evidence_store import EvidenceStore, retain, store_from_settings
 from .ledger import lock_engagement, seal_evidence
 from .mapping_overlay import current_overlay, provenance
-from .models import Engagement, Finding, Run, Scope, Target, User
+from .models import AuditLog, Engagement, Finding, Run, Scope, Target, User
 from .scope import evaluate
 from .settings import get_settings
 
@@ -454,13 +454,37 @@ def execute_run(session: Session, run_id: str, *, actor: User | None = None, run
     return run
 
 
+_LEFTOVERS_AT_RECOVERY = "the lost run's containers or network could not be removed"
+
+
+def _audit_cleanup_failed_once(session: Session, run: Run, error: str) -> None:
+    """Audit ``run.cleanup_failed`` for this run unless it already is: recovery comes back every
+    few minutes, and the trail should say that the run is stuck, not how often it was looked at."""
+    already = session.scalar(
+        select(
+            exists().where(
+                AuditLog.engagement_id == run.engagement_id,
+                AuditLog.action == "run.cleanup_failed",
+                AuditLog.detail["run_id"].astext == run.id,
+            )
+        )
+    )
+    if not already:
+        audit.record(
+            session,
+            action="run.cleanup_failed",
+            engagement_id=run.engagement_id,
+            detail={"run_id": run.id, "error": error},
+        )
+
+
 def _leftovers_removed(run: Run) -> bool:
     """Whether nothing of a lost container run is left on the Docker host."""
     manifest = get_manifest(run.adapter)
     if manifest is not None and manifest.builtin:
         return True  # ran in-process, left nothing
-    if not get_settings().forwarder_image:
-        return True  # container runs are disabled here: this deployment started none
+    # Whatever this deployment is configured to start now: the run was started by a worker that
+    # could, and removal needs only the names derived from the run id.
     return remove_run_leftovers(run.id)
 
 
@@ -475,7 +499,7 @@ def recover_stale_runs(
     The lost worker never cleaned up, so the run's containers are removed first (spec 032): its
     forwarder could otherwise keep relaying beside the next paced run of the engagement. A run
     whose leftovers cannot be removed stays ``running``, which keeps holding that next run back,
-    and is tried again at the next worker start.
+    is audited once as ``run.cleanup_failed`` and is tried again at the next recovery.
     """
     cutoff = _now() - older_than
     stale = session.scalars(
@@ -487,6 +511,7 @@ def recover_stale_runs(
     for run in stale:
         if not leftovers_removed(run):
             log.error("run %s was lost and its containers could not be removed", run.id)
+            _audit_cleanup_failed_once(session, run, _LEFTOVERS_AT_RECOVERY)
             continue
         failed += 1
         run.state = "failed"

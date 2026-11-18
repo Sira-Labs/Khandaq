@@ -54,13 +54,17 @@ with `rate_per_minute: 60` and the run goes through, slower, without exceeding w
 2. **Pacing.** The forwarder holds the first bytes of a turn until the turn's slot. Turns are let
    through one at a time, at least `60 / rate` seconds after the one before, shared by all
    connections of the run, with no burst: in any 60-second window that starts at a turn, at most
-   `rate` turns (rounded up) are let through. The distance counts from when a turn was really let
-   through, so wakeups that come late and together cannot bunch turns. The first turn of a run
+   `rate` turns (rounded up) are let through. The distance counts from when a turn's
+   first bytes were really written to the target, so neither wakeups that come late and
+   together nor a connection that was slow to open can bring two turns closer. The first turn of a run
    is not let through before one interval after the forwarder started, which keeps the distance
    to the last request of the engagement's previous run.
    Bytes within a turn and everything the target sends are relayed without delay.
    - The forwarder connects to the target only when a connection's first slot has come, so the
-     target sees nothing of a waiting connection, not even a TCP handshake.
+     target sees nothing of a waiting connection, not even a TCP handshake. The turn is held
+     while the connection opens (at most 10 seconds, then the connection is dropped) and until
+     the first bytes are written; other turns wait that long. Waiting for a slow target to
+     accept more bytes does not hold the turn.
    - A client that closes while its turn waits (a timeout, then a retry) has that request
      dropped: the slot is used up, but the target is not sent a request nobody waits for.
 3. **Tripwires, fail closed.** Pacing by turns is only sound for HTTP/1.1. With pacing on, the
@@ -102,7 +106,10 @@ with `rate_per_minute: 60` and the run goes through, slower, without exceeding w
      is dropped, and `run.cleanup_failed` is audited.
    - `recover_stale_runs` does the same removal for a run left `running` past the timeout (a lost
      worker, or the case above) and only then records `run.failed`; if the removal fails the run
-     stays `running`. The worker runs this at start and every five minutes.
+     stays `running`. The worker runs this at start and every five minutes. A run that stays
+     `running` this way is audited as `run.cleanup_failed` once, not on every attempt.
+   - Leftovers are looked for whatever the deployment is configured to start now; only a
+     built-in (in-process) adapter is known to leave nothing.
 8. **A paced run that cannot be paced fails.** If the runner is asked to pace with a rate that is
    not a finite number above 0, it raises before any container starts; nothing falls back to an
    unpaced forwarder.
@@ -162,7 +169,9 @@ Unit (`api/tests/test_egress_forwarder.py`): `test_pacer_spaces_turns`, `test_pa
 `test_paced_forwarder_holds_the_rate_end_to_end` (the real process, from its source alone),
 `test_the_target_sees_nothing_of_a_connection_before_its_slot`,
 `test_a_request_abandoned_while_waiting_is_not_delivered`,
-`test_a_paced_connection_that_never_shows_its_opening_is_dropped`.
+`test_a_paced_connection_that_never_shows_its_opening_is_dropped`,
+`test_a_slow_connect_does_not_bring_two_first_requests_closer`,
+`test_a_target_that_does_not_accept_in_time_costs_only_its_turn`.
 Unit (`api/tests/test_docker_runner.py`): `test_forwarder_is_paced_for_a_paced_adapter`,
 `test_forwarder_is_not_paced_without_a_rate_or_flag`, `test_unusable_pace_refuses_the_run`,
 `test_leftovers_of_a_lost_run_are_removed`, `test_leftovers_that_are_already_gone_count_as_removed`,
@@ -171,7 +180,8 @@ Unit (`api/tests/test_docker_runner.py`): `test_forwarder_is_paced_for_a_paced_a
 `test_a_failed_removal_is_reported_as_leftovers_and_its_logs_are_redacted`.
 Integration (`api/tests/test_worker.py`):
 `test_a_lost_run_whose_containers_cannot_be_removed_stays_running`,
-`test_a_run_that_leaves_containers_behind_stays_running_and_is_audited`.
+`test_a_run_that_leaves_containers_behind_stays_running_and_is_audited`,
+`test_leftovers_of_a_container_run_are_looked_for_whatever_the_settings`.
 Unit and integration (`api/tests/test_adapter_registry.py`): `test_adapter_refusal_for_a_rate_cap`
 (the table), `test_only_garak_is_paced_by_the_forwarder`,
 `test_a_capped_engagement_runs_garak_paced_and_audits_the_rate` (pre-flight, campaign, create,
@@ -189,9 +199,10 @@ Manual e2e on 2026-11-16 (local daemon, the pinned garak 0.17.0 image, the bundl
 all synthetic; a scratch recorder in front of the target noted when each request arrived):
 
 - without a cap and without a rate: 256 requests in about 18 s, the closest two 3 ms apart;
-- cap 600/min, rate 600/min: the same 256 requests, the closest two 100.1 ms apart (the
-  slot is 100 ms; before the interval counted from the real release, earlier runs measured 97
-  to 99 ms), run succeeded, same finding, ledger
+- cap 600/min, rate 600/min: the same 256 requests, the closest two 99.6 and 100.1 ms apart on the
+  last two runs (the slot is 100 ms and the recorder sits one loopback hop behind the
+  forwarder; before the interval counted from the real write, earlier runs measured 97 to
+  99 ms), run succeeded, same finding, ledger
   verifies, `run.started` has `paced_per_minute: 600`.
 
 The ClientHello that the image's `openai` 2.54.0 / `httpx` 0.28.1 client sends was captured and
