@@ -1,6 +1,6 @@
 # Khandaq control-plane image (serves the API, or the worker when KHANDAQ_ROLE=worker).
 # Build context is the repository root: `docker build -f api/Dockerfile .`
-FROM python:3.12-slim AS build
+FROM python:3.15-slim AS build
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 # build-essential + a Rust toolchain are needed to compile the khandaq-core PyO3 wheel (maturin);
 # only the resulting venv is copied into the runtime stage, so these never ship in the final image.
@@ -18,7 +18,7 @@ COPY api/src ./src
 # Install the package and its dependencies (building the khandaq-core wheel) into a self-contained venv.
 RUN uv venv /opt/venv && VIRTUAL_ENV=/opt/venv uv pip install --no-cache .
 
-FROM python:3.12-slim
+FROM python:3.15-slim
 ENV PYTHONUNBUFFERED=1 PATH="/opt/venv/bin:$PATH" DOCKER_CONFIG=/tmp/docker-config
 WORKDIR /app
 RUN useradd --system --uid 10001 khandaq \

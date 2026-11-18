@@ -382,10 +382,12 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
 - 2026-11-16: merged Dependabot #80 (docker/build-push-action 7), #81 (python-minor group) and
   #82 (npm-minor group); vite 8.3.8 and jsdom 31 taken on one branch (Dependabot #83 and #84
   closed; both rewrite the lockfile). No source change was needed for vite 8.
-- [ ] Python 3.15 base image for the api (Dependabot #72, 3.12-slim → 3.15-slim): the
-      `khandaq-core` wheel does not build on 3.15 with PyO3 0.26 (tried 2026-11-14), CI tests on
-      3.12 only and never builds the image. Needs a PyO3 bump, then CI and the image moved
-      together. Left open.
+- [x] Python 3.15 base image for the api (Dependabot #72, 3.12-slim → 3.15-slim), 2026-11-18:
+      taken on one branch with PyO3 0.26 → 0.30 (the `khandaq-core` wheel did not build on 3.15
+      with 0.26; 0.30 needed no code change) and the CI jobs that test the api, the bindings and
+      the e2e moved to 3.15, so CI tests what the image ships. `requires-python` stays `>=3.12`
+      and the adapter images stay on their own pinned bases. Checked locally on 3.15: 505 api
+      tests and the 13 binding tests pass. The image itself is first built by the release run.
 - [ ] **Owner:** Dependabot cannot label its PRs: the labels `dependencies`, `area: core`,
       `area: api`, `area: web`, `area: ci`, `area: deploy` named in `.github/dependabot.yml` do not
       exist. Create them, or say that they should be dropped from the file; default: unlabelled.
