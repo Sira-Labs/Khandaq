@@ -189,6 +189,10 @@ def main(request_path: Path = Path("/run-request.json"), evidence: Path = Path("
     """
     request = json.loads(request_path.read_text())
     report = evidence / REPORT_NAME
+    findings_file = evidence / "findings.jsonl"
+    # Findings of an earlier call must not survive a call that fails: they would describe
+    # results this call refused.
+    findings_file.unlink(missing_ok=True)
     if not report.is_file():
         print(f"art adapter: {report} is missing; ART did not run", file=sys.stderr)
         return 2
@@ -202,7 +206,7 @@ def main(request_path: Path = Path("/run-request.json"), evidence: Path = Path("
     except ReportError as exc:
         print(f"art adapter: refusing untrustworthy results: {exc}", file=sys.stderr)
         return 2
-    (evidence / "findings.jsonl").write_text("".join(json.dumps(f) + "\n" for f in findings))
+    findings_file.write_text("".join(json.dumps(f) + "\n" for f in findings))
     return 0
 
 

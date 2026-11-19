@@ -66,7 +66,14 @@ def test_fixture_findings_are_schema_valid():
 
 @pytest.mark.parametrize(
     ("rate", "severity"),
-    [(1.0, "high"), (0.5, "high"), (0.49, "medium"), (0.2, "medium"), (0.19, "low"), (0.005, "low")],
+    [
+        (1.0, "high"),
+        (0.5, "high"),
+        (0.49, "medium"),
+        (0.2, "medium"),
+        (0.19, "low"),
+        (0.005, "low"),
+    ],
 )
 def test_severity_follows_the_success_rate(rate, severity):
     [finding] = _one(success_rate=rate)
@@ -159,12 +166,14 @@ def test_only_the_evasion_family_is_read(changes, reason):
 def _request(tmp_path: Path, spec: dict) -> Path:
     path = tmp_path / "run-request.json"
     path.write_text(
-        json.dumps({
-            "run_id": "run_1",
-            "engagement_id": "eng_1",
-            "target": {"type": "model_artifact", "spec": spec},
-            "params": {},
-        })
+        json.dumps(
+            {
+                "run_id": "run_1",
+                "engagement_id": "eng_1",
+                "target": {"type": "model_artifact", "spec": spec},
+                "params": {},
+            }
+        )
     )
     return path
 
@@ -187,6 +196,19 @@ def test_main_writes_findings_or_exits_2(tmp_path, capsys):
     assert wrap.main(request, evidence) == 0
     written = [json.loads(x) for x in (evidence / "findings.jsonl").read_text().splitlines()]
     assert len(written) == 3 and all(f["target_ref"] == DIGEST for f in written)
+
+    # A later call on the same directory that fails leaves no findings of the earlier one behind.
+    (evidence / wrap.REPORT_NAME).write_text(FIXTURE[0] + "\n")
+    assert wrap.main(request, evidence) == 2
+    assert not (evidence / "findings.jsonl").exists()
+    (evidence / wrap.REPORT_NAME).unlink()
+    (evidence / "findings.jsonl").write_text("stale\n")
+    assert wrap.main(request, evidence) == 2
+    assert not (evidence / "findings.jsonl").exists()
+    # And a valid report writes its complete findings again.
+    (evidence / wrap.REPORT_NAME).write_text("\n".join(FIXTURE) + "\n")
+    assert wrap.main(request, evidence) == 0
+    assert len((evidence / "findings.jsonl").read_text().splitlines()) == 3
 
 
 @pytest.mark.parametrize(
