@@ -26,7 +26,8 @@ ECHO = AdapterManifest(
     paces_requests=True,  # it sends nothing to the target, so no rate limit can be exceeded
 )
 
-# garak runs one request at a time but has no requests-per-minute limiter (spec 027).
+# garak has no requests-per-minute limiter (spec 027). Its client (openai over httpx, HTTP/2 off)
+# speaks plain HTTP/1.1, so the egress forwarder holds the rate for it (spec 032).
 GARAK = AdapterManifest(
     name="garak",
     version="0.17.0",
@@ -36,11 +37,13 @@ GARAK = AdapterManifest(
     image="ghcr.io/sira-labs/khandaq-adapter-garak:0.17.0",
     entrypoint="/usr/local/bin/wrap.py",
     resources={"cpu": "1", "memory": "2Gi"},
+    forwarder_paced=True,
     accepts_credential=True,
 )
 
 # mcp-scanner connects to the one in-scope MCP server and checks its tools with its bundled YARA
-# rules (spec 031). It cannot hold a requests-per-minute limit either.
+# rules (spec 031). It cannot hold a requests-per-minute limit, and the forwarder does not pace it:
+# its MCP client keeps event streams open (spec 032, out of scope).
 MCP_SCANNER = AdapterManifest(
     name="mcp-scanner",
     version="4.8.5",

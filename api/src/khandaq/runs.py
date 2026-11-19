@@ -24,15 +24,25 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import logging
+import math
+from collections.abc import Callable
 
 import khandaq_core as kc
-from sqlalchemy import select, text
+from sqlalchemy import and_, exists, not_, select, text
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 from sqlalchemy.orm.attributes import flag_modified
 
 from . import audit, target_credentials
-from .adapters import AdapterManifest, build_run_request, get_manifest, get_runner
+from .adapters import (
+    AdapterManifest,
+    all_manifests,
+    build_run_request,
+    get_manifest,
+    get_runner,
+)
+from .adapters.docker import LeftoversError, remove_run_leftovers
 from .campaign_diff import record_diff
 from .credential_values import CredentialError, redact
 from .deps import EngagementAccess
@@ -40,11 +50,12 @@ from .evidence_crypto import Keyring
 from .evidence_store import EvidenceStore, retain, store_from_settings
 from .ledger import lock_engagement, seal_evidence
 from .mapping_overlay import current_overlay, provenance
-from .models import Engagement, Finding, Run, Scope, Target, User
+from .models import AuditLog, Engagement, Finding, Run, Scope, Target, User
 from .scope import evaluate
 from .settings import get_settings
 
 NOTIFY_CHANNEL = "khandaq_runs"
+log = logging.getLogger("khandaq.runs")
 
 
 def _now() -> dt.datetime:
@@ -97,18 +108,52 @@ def scope_refusal(
     return None if decision.allowed else decision.reason
 
 
-def adapter_refusal(manifest: AdapterManifest, roe: dict | None) -> str | None:
-    """Why this adapter cannot honour the engagement's rules of engagement, or ``None`` (spec 027).
+def forwarder_pace(manifest: AdapterManifest, params: dict | None) -> object | None:
+    """The declared ``rate_per_minute`` the run's egress forwarder will hold, or ``None`` when the
+    run is not paced by it (spec 032 §4). Not yet validated: see ``usable_pace``."""
+    if not manifest.forwarder_paced:
+        return None
+    return (params or {}).get("rate_per_minute")
+
+
+def usable_pace(value: object) -> bool:
+    """Whether the forwarder can pace at this rate: a finite number above 0."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(value) and value > 0
+    except OverflowError:  # a huge JSON integer cannot become a float
+        return False
+
+
+def _capped(roe: dict | None) -> bool:
+    return (roe or {}).get("max_requests_per_minute") is not None
+
+
+def adapter_refusal(
+    manifest: AdapterManifest, roe: dict | None, params: dict | None = None
+) -> str | None:
+    """Why this adapter cannot honour the engagement's rules of engagement, or ``None``
+    (specs 027 and 032).
 
     The scope lock checks the requested ``rate_per_minute`` against the cap; this checks that the
-    adapter can actually hold a rate. One that cannot is refused rather than trusted to stay under.
+    rate will actually be held: by the adapter itself (``paces_requests``) or by the run's egress
+    forwarder (``forwarder_paced``). An adapter with neither is refused rather than trusted to
+    stay under the cap.
     """
-    if (roe or {}).get("max_requests_per_minute") is not None and not manifest.paces_requests:
+    pace = forwarder_pace(manifest, params)
+    if pace is not None and not usable_pace(pace):
+        # Also without a cap: a declared rate is kept, and this one cannot be.
         return (
-            f"adapter '{manifest.name}' cannot hold the rules of engagement's request-rate limit;"
-            " use an adapter that paces its requests, or an engagement without a rate limit"
+            f"adapter '{manifest.name}' is paced by the run's forwarder, which needs a"
+            f" rate_per_minute above 0, got {pace!r}: a rate of 0/min lets the run send nothing"
         )
-    return None
+    if not _capped(roe) or manifest.paces_requests or pace is not None:
+        return None
+    return (
+        f"adapter '{manifest.name}' cannot hold the rules of engagement's request-rate limit;"
+        " use an adapter that paces its requests, or an engagement without a rate limit"
+    )
 
 
 def run_refusal(
@@ -123,7 +168,7 @@ def run_refusal(
     if reason is not None:
         return reason
     scope_row = session.get(Scope, engagement.id)
-    return adapter_refusal(manifest, scope_row.roe if scope_row is not None else None)
+    return adapter_refusal(manifest, scope_row.roe if scope_row is not None else None, params)
 
 
 def _reject(session: Session, run: Run, reason: str, actor: User | None, **detail) -> None:
@@ -151,6 +196,9 @@ def _start(
     run.state = "running"
     run.started_at = _now()
     detail["credential"] = target_credentials.planned_use(session, target, manifest)
+    pace = forwarder_pace(manifest, run.params)
+    if pace is not None:
+        detail["paced_per_minute"] = pace  # the rate the run's forwarder holds (spec 032)
     audit.record(
         session,
         action="run.started",
@@ -260,10 +308,35 @@ def claim_next_run(session: Session) -> str | None:
     Returns the id of a run that is now ``running`` (committed), or ``None`` when the queue is
     empty or the claimed run was rejected. ``SKIP LOCKED`` makes concurrent workers take
     different runs.
+
+    A forwarder-paced run of an engagement with a rate cap waits (stays ``queued``) while another
+    such run of that engagement is running: each forwarder holds its own run's rate, so two side
+    by side would exceed the engagement's cap together (spec 032 §6).
     """
+    paced = [m.name for m in all_manifests() if m.forwarder_paced]
+    held_back: list[str] = []  # runs another worker's paced run got in front of, this call
+    while len(held_back) <= _MAX_HELD_BACK:
+        claimed = _claim_one(session, paced, held_back)
+        if claimed is not _HELD_BACK:
+            return claimed
+    return None
+
+
+_HELD_BACK = "held back"
+_MAX_HELD_BACK = 20
+
+
+def _claim_one(session: Session, paced: list[str], held_back: list[str]) -> str | None:
+    """One attempt of ``claim_next_run``. Returns ``_HELD_BACK`` (and notes the run) when the
+    oldest claimable run has to wait after all, so the caller goes on to the next one instead of
+    reporting an empty queue."""
     run = session.scalars(
         select(Run)
-        .where(Run.state == "queued")
+        .where(
+            Run.state == "queued",
+            Run.id.not_in(held_back),
+            not_(_waits_for_paced_run(paced)),
+        )
         .order_by(Run.created_at, Run.id)
         .with_for_update(skip_locked=True)
         .limit(1)
@@ -284,13 +357,48 @@ def claim_next_run(session: Session) -> str | None:
         _reject(session, run, reason or "the target or the adapter is gone", None, at="claim")
         session.commit()
         return None
+    scope_row = session.get(Scope, engagement.id)
+    if manifest.forwarder_paced and scope_row is not None and _capped(scope_row.roe):
+        # The query above skips a run that has to wait, but two workers can each pick one of two
+        # queued runs at the same moment. Under the engagement lock only the first starts.
+        lock_engagement(session, engagement.id)
+        run_id = run.id
+        if session.scalar(select(_other_paced_run_is_running(run.engagement_id, run_id, paced))):
+            session.rollback()  # stays queued; taken once the running one has ended
+            held_back.append(run_id)
+            return _HELD_BACK
     _start(session, run, target, manifest, None, by="worker")
     session.commit()
     return run.id
 
 
+def _other_paced_run_is_running(engagement_id, run_id, paced: list[str]):
+    other = aliased(Run)
+    return exists().where(
+        other.engagement_id == engagement_id,
+        other.id != run_id,
+        other.state == "running",
+        other.adapter.in_(paced),
+    )
+
+
+def _waits_for_paced_run(paced: list[str]):
+    """SQL condition: this queued run is forwarder-paced, its engagement has a rate cap, and
+    another forwarder-paced run of that engagement is running."""
+    capped = exists().where(
+        Scope.engagement_id == Run.engagement_id,
+        Scope.roe["max_requests_per_minute"].astext.is_not(None),
+    )
+    return and_(
+        Run.adapter.in_(paced),
+        capped,
+        _other_paced_run_is_running(Run.engagement_id, Run.id, paced),
+    )
+
+
 def execute_run(session: Session, run_id: str, *, actor: User | None = None, runner=None) -> Run:
-    """Execute a ``running`` run and record the outcome; every failure ends in ``failed``."""
+    """Execute a ``running`` run and record the outcome; every failure ends in ``failed``, except
+    a run whose containers could not be removed, which stays ``running`` (``_keep_running``)."""
     run = session.get(Run, run_id)
     if run is None:  # pragma: no cover - the running row was committed before execution
         raise RuntimeError(f"run {run_id} does not exist")
@@ -316,6 +424,8 @@ def execute_run(session: Session, run_id: str, *, actor: User | None = None, run
             artifacts = active.run(request, credential=credential)
     except CredentialError as exc:
         return _fail(session, eng_id, run_id, f"target credential unusable: {exc.detail}", actor)
+    except LeftoversError as exc:
+        return _keep_running(session, eng_id, run_id, str(exc), actor)
     except Exception as exc:  # third-party tool execution: every failure is recorded, never lost
         # The runner redacts what the adapter returned; this covers any other text on the way out.
         return _fail(session, eng_id, run_id, redact(f"adapter failed: {exc}", credential), actor)
@@ -344,15 +454,66 @@ def execute_run(session: Session, run_id: str, *, actor: User | None = None, run
     return run
 
 
-def recover_stale_runs(session: Session, *, older_than: dt.timedelta) -> int:
-    """Worker start: fail runs left ``running`` longer than any run can take (a lost worker)."""
+_LEFTOVERS_AT_RECOVERY = "the lost run's containers or network could not be removed"
+
+
+def _audit_cleanup_failed_once(session: Session, run: Run, error: str) -> None:
+    """Audit ``run.cleanup_failed`` for this run unless it already is: recovery comes back every
+    few minutes, and the trail should say that the run is stuck, not how often it was looked at."""
+    already = session.scalar(
+        select(
+            exists().where(
+                AuditLog.engagement_id == run.engagement_id,
+                AuditLog.action == "run.cleanup_failed",
+                AuditLog.detail["run_id"].astext == run.id,
+            )
+        )
+    )
+    if not already:
+        audit.record(
+            session,
+            action="run.cleanup_failed",
+            engagement_id=run.engagement_id,
+            detail={"run_id": run.id, "error": error},
+        )
+
+
+def _leftovers_removed(run: Run) -> bool:
+    """Whether nothing of a lost container run is left on the Docker host."""
+    manifest = get_manifest(run.adapter)
+    if manifest is not None and manifest.builtin:
+        return True  # ran in-process, left nothing
+    # Whatever this deployment is configured to start now: the run was started by a worker that
+    # could, and removal needs only the names derived from the run id.
+    return remove_run_leftovers(run.id)
+
+
+def recover_stale_runs(
+    session: Session,
+    *,
+    older_than: dt.timedelta,
+    leftovers_removed: Callable[[Run], bool] = _leftovers_removed,
+) -> int:
+    """Worker start: fail runs left ``running`` longer than any run can take (a lost worker).
+
+    The lost worker never cleaned up, so the run's containers are removed first (spec 032): its
+    forwarder could otherwise keep relaying beside the next paced run of the engagement. A run
+    whose leftovers cannot be removed stays ``running``, which keeps holding that next run back,
+    is audited once as ``run.cleanup_failed`` and is tried again at the next recovery.
+    """
     cutoff = _now() - older_than
     stale = session.scalars(
         select(Run)
         .where(Run.state == "running", Run.started_at < cutoff)
         .with_for_update(skip_locked=True)
     ).all()
+    failed = 0
     for run in stale:
+        if not leftovers_removed(run):
+            log.error("run %s was lost and its containers could not be removed", run.id)
+            _audit_cleanup_failed_once(session, run, _LEFTOVERS_AT_RECOVERY)
+            continue
+        failed += 1
         run.state = "failed"
         run.ended_at = _now()
         run.reject_reason = "the worker lost the run (still running past the timeout)"
@@ -363,7 +524,7 @@ def recover_stale_runs(session: Session, *, older_than: dt.timedelta) -> int:
             detail={"run_id": run.id, "error": run.reject_reason},
         )
     session.commit()
-    return len(stale)
+    return failed
 
 
 _ERROR_CHARS, _ERROR_HEAD = 500, 140
@@ -393,6 +554,30 @@ def _fail(session: Session, engagement_id: str, run_id: str, error: str, actor: 
         actor=actor,
         engagement_id=engagement_id,
         detail={"run_id": run_id, "error": brief},
+    )
+    session.commit()
+    session.refresh(run)
+    return run
+
+
+def _keep_running(
+    session: Session, engagement_id: str, run_id: str, error: str, actor: User | None
+) -> Run:
+    """The run is over but its containers could not be removed (spec 032): its forwarder may
+    still be relaying, so the run stays ``running``, which keeps holding back the engagement's
+    next paced run, and whatever it returned is dropped. Recovery removes the leftovers and fails
+    the run once it is past the timeout. Audited, in a fresh transaction."""
+    session.rollback()
+    run = session.get(Run, run_id)
+    if run is None:  # pragma: no cover - the running row was committed before execution
+        raise RuntimeError(f"run {run_id} vanished before its state could be recorded")
+    log.error("run %s: %s; it stays running until they are removed", run_id, error)
+    audit.record(
+        session,
+        action="run.cleanup_failed",
+        actor=actor,
+        engagement_id=engagement_id,
+        detail={"run_id": run_id, "error": error},
     )
     session.commit()
     session.refresh(run)

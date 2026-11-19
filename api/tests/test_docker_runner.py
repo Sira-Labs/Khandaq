@@ -7,6 +7,7 @@ containment test lives in ``tests/e2e``.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import io
 import json
@@ -18,9 +19,11 @@ import pytest
 from khandaq.adapters.docker import (
     CliResult,
     DockerRunner,
+    LeftoversError,
     RunnerError,
     check_address,
     read_output,
+    remove_run_leftovers,
 )
 from khandaq.adapters.manifest import AdapterManifest
 from khandaq.settings import Settings
@@ -98,11 +101,11 @@ class FakeCli:
         return next(c for c in self.calls if c[: len(prefix)] == list(prefix))
 
     def cleaned_up(self) -> bool:
-        return ["rm", "--force", "khq-run-run_abc", "khq-fwd-run_abc"] in self.calls and [
-            "network",
-            "rm",
-            "khq-net-run_abc",
-        ] in self.calls
+        return self.calls[-3:] == [
+            ["rm", "--force", "khq-run-run_abc"],
+            ["rm", "--force", "khq-fwd-run_abc"],
+            ["network", "rm", "khq-net-run_abc"],
+        ]
 
 
 def _runner(cli: FakeCli, addresses: list[str] | None = None) -> DockerRunner:
@@ -126,7 +129,8 @@ def test_the_sandbox_is_built_in_order_and_torn_down():
         ["network", "connect"],
         ["create", "--name"],
         ["start", "--attach"],
-        ["rm", "--force"],
+        ["rm", "--force"],  # the adapter
+        ["rm", "--force"],  # the forwarder
         ["network", "rm"],
     ]
     assert "--internal" in cli.find("network", "create")  # no route out of the run network
@@ -411,7 +415,7 @@ def test_stderr_and_error_text_are_redacted_before_they_are_recorded():
     assert "[REDACTED:target-credential]" in str(exc.value) and KEY not in str(exc.value)
 
 
-def test_a_setup_error_is_redacted_before_it_is_cut_and_cleanup_logs_are_redacted(caplog):
+def _leaky(rm_fails: bool) -> FakeCli:
     # The key straddles the 2000-character cut of a daemon error.
     daemon = ("x" * 50 + KEY + "y" * (2000 - len(KEY) // 2)).encode()
 
@@ -419,14 +423,177 @@ def test_a_setup_error_is_redacted_before_it_is_cut_and_cleanup_logs_are_redacte
         def __call__(self, args, *, timeout=None, stdout_limit=None):
             if args[0] == "create":
                 return CliResult(1, b"", daemon)
-            if args[0] == "rm":
+            if args[0] == "rm" and rm_fails:
                 return CliResult(1, b"", f"cannot remove: env {KEY}".encode())
             return super().__call__(args, timeout=timeout, stdout_limit=stdout_limit)
 
+    return Leaky(CliResult(0, GOOD_OUTPUT, b""))
+
+
+def test_a_setup_error_is_redacted_before_it_is_cut(caplog):
     with caplog.at_level("DEBUG"), pytest.raises(RunnerError) as exc:
-        _keyed_runner(Leaky(CliResult(0, GOOD_OUTPUT, b""))).run(_request(), credential=KEY)
+        _keyed_runner(_leaky(rm_fails=False)).run(_request(), credential=KEY)
     message = str(exc.value)
+    assert "could not create the adapter" in message
     assert KEY not in message and KEY[len(KEY) // 2 :] not in message
+    assert KEY not in caplog.text
+
+
+def test_a_failed_removal_is_reported_as_leftovers_and_its_logs_are_redacted(caplog):
+    with caplog.at_level("DEBUG"), pytest.raises(LeftoversError) as exc:
+        _keyed_runner(_leaky(rm_fails=True)).run(_request(), credential=KEY)
+    # The setup error, which held the key, is not carried along.
+    assert KEY not in str(exc.value) and exc.value.__cause__ is None
     assert KEY not in caplog.text and "[REDACTED:target-credential]" in caplog.text
     # A container that could not be removed still holds the key: that is an error, not a warning.
-    assert any(r.levelname == "ERROR" and "cleanup" in r.message for r in caplog.records)
+    assert any(r.levelname == "ERROR" and "removing" in r.message for r in caplog.records)
+
+
+@pytest.mark.parametrize(
+    "start",
+    [
+        RunnerError("adapter did not finish within 600s"),  # a timeout: the adapter may live on
+        CliResult(3, b"", b"garak: connection refused"),
+        CliResult(0, GOOD_OUTPUT, b""),  # even a run that went well
+    ],
+)
+@pytest.mark.parametrize("stuck", ["khq-run-run_abc", "khq-fwd-run_abc", "khq-net-run_abc"])
+def test_a_run_whose_containers_cannot_be_removed_ends_in_leftovers(start, stuck):
+    """Whatever the run's own outcome: while something of it is left, its forwarder may still
+    relay, and the caller must not record the run as ended (spec 032)."""
+
+    class Stuck(FakeCli):
+        def __call__(self, args, *, timeout=None, stdout_limit=None):
+            if args[-1] == stuck:
+                self.calls.append(list(args))
+                return CliResult(1, b"", b"permission denied")
+            return super().__call__(args, timeout=timeout, stdout_limit=stdout_limit)
+
+    cli = Stuck(start)
+    with pytest.raises(LeftoversError, match="could not be removed"):
+        _runner(cli).run(_request())
+    assert cli.cleaned_up()  # all three removals were still tried
+
+
+@pytest.mark.parametrize("rm_fails", [True, False])
+def test_the_containers_are_removed_even_if_the_env_file_cannot_be_deleted(monkeypatch, rm_fails):
+    """After a timeout the adapter may live on. A failure to delete the env file must not skip
+    the removal, nor hide that the removal failed."""
+    from khandaq.adapters import docker
+
+    class Cli(FakeCli):
+        def __call__(self, args, *, timeout=None, stdout_limit=None):
+            if args[0] == "rm" and rm_fails:
+                self.calls.append(list(args))
+                return CliResult(1, b"", b"permission denied")
+            return super().__call__(args, timeout=timeout, stdout_limit=stdout_limit)
+
+    real_unlink = os.unlink
+
+    def unlink(path):
+        real_unlink(path)  # the file does go; the call still reports an error
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr(docker.os, "unlink", unlink)
+    cli = Cli(RunnerError("adapter did not finish within 600s"))
+    with pytest.raises(LeftoversError if rm_fails else OSError):
+        _runner(cli).run(_request())
+    assert cli.cleaned_up()  # all three removals were tried
+
+
+# --- pacing (spec 032) ----------------------------------------------------------------------------
+
+PACED = dataclasses.replace(MANIFEST, forwarder_paced=True)
+
+
+def _paced_request(rate: object) -> dict:
+    request = _request()
+    request["params"] = {"rate_per_minute": rate}
+    return request
+
+
+def _forwarder(manifest: AdapterManifest, request: dict) -> list[str]:
+    cli = FakeCli(CliResult(0, GOOD_OUTPUT, b""))
+    DockerRunner(manifest, SETTINGS, cli=cli, resolver=lambda host, port: ["203.0.113.7"]).run(
+        request
+    )
+    return cli.find("run", "--detach")
+
+
+@pytest.mark.parametrize(("rate", "flag"), [(60, "60.0"), (0.5, "0.5")])
+def test_forwarder_is_paced_for_a_paced_adapter(rate, flag):
+    fwd = _forwarder(PACED, _paced_request(rate))
+    assert _value(fwd, "--pace-per-minute") == flag
+    assert fwd[fwd.index("--connect") + 1] == "203.0.113.7:443"  # still the one checked address
+
+
+def test_forwarder_is_not_paced_without_a_rate_or_flag():
+    assert "--pace-per-minute" not in _forwarder(PACED, _request())
+    assert "--pace-per-minute" not in _forwarder(MANIFEST, _paced_request(60))
+
+
+@pytest.mark.parametrize("rate", [0, -1, "60", True, float("inf"), 10**400])
+def test_unusable_pace_refuses_the_run(rate):
+    cli = FakeCli(CliResult(0, GOOD_OUTPUT, b""))
+    runner = DockerRunner(PACED, SETTINGS, cli=cli, resolver=lambda host, port: ["203.0.113.7"])
+    with pytest.raises(RunnerError, match="cannot be paced"):
+        runner.run(_paced_request(rate))
+    assert cli.calls == []  # nothing started, and nothing fell back to an unpaced forwarder
+
+
+# --- leftovers of a lost run (spec 032) -----------------------------------------------------------
+
+
+class ScriptedCli:
+    """Answers each removal by the name of the object it removes."""
+
+    def __init__(self, **answers: CliResult | Exception) -> None:
+        self.answers = answers
+        self.calls: list[list[str]] = []
+
+    def __call__(self, args, *, timeout=None, stdout_limit=None):
+        self.calls.append(list(args))
+        answer = self.answers.get(args[-1].split("-")[1], OK)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+
+OK = CliResult(0, b"", b"")
+ABSENT_CONTAINER = CliResult(1, b"", b"Error response from daemon: No such container: khq-x")
+ABSENT_NETWORK = CliResult(1, b"", b"Error response from daemon: network khq-net-x not found")
+REMOVALS = [
+    ["rm", "--force", "khq-run-run_abc"],
+    ["rm", "--force", "khq-fwd-run_abc"],
+    ["network", "rm", "khq-net-run_abc"],
+]
+
+
+def test_leftovers_of_a_lost_run_are_removed():
+    cli = ScriptedCli()
+    assert remove_run_leftovers("run_abc", cli) is True
+    assert cli.calls == REMOVALS  # one object per call
+
+
+def test_leftovers_that_are_already_gone_count_as_removed():
+    cli = ScriptedCli(run=ABSENT_CONTAINER, fwd=ABSENT_CONTAINER, net=ABSENT_NETWORK)
+    assert remove_run_leftovers("run_abc", cli) is True
+
+
+@pytest.mark.parametrize(
+    "answers",
+    [
+        {"run": CliResult(1, b"", b"permission denied")},
+        {"fwd": CliResult(1, b"", b"permission denied")},
+        {"net": CliResult(1, b"", b"network has active endpoints")},
+        {"run": RunnerError("adapter did not finish within 60s")},
+        {"run": FileNotFoundError("docker"), "fwd": FileNotFoundError("docker")},
+        # The adapter is gone, the forwarder cannot be removed: the absence must not hide it.
+        {"run": ABSENT_CONTAINER, "fwd": CliResult(1, b"", b"cannot remove: permission denied")},
+        {"run": ABSENT_CONTAINER, "fwd": ABSENT_CONTAINER, "net": CliResult(1, b"", b"in use")},
+    ],
+)
+def test_leftovers_that_cannot_be_removed_are_reported(answers):
+    cli = ScriptedCli(**answers)
+    assert remove_run_leftovers("run_abc", cli) is False
+    assert cli.calls == REMOVALS  # every object is still tried after a failure
