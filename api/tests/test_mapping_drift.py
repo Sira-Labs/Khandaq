@@ -52,6 +52,8 @@ def _families() -> list[tuple[str, list[tuple[str, str]]]]:
     cases.append(("promptfoo.a-plugin-nobody-curated", promptfoo.DEFAULT_FAMILY[1]))
     mcp = _wrapper("mcp-scanner")
     cases += [(f"mcp-scanner.{k}", v) for k, v in mcp.THREAT_FRAMEWORKS.items()]
+    art = _wrapper("art")
+    cases += [(f"art.{k}.someattack", v) for k, v in art.FAMILY_FRAMEWORKS.items()]
     return cases
 
 
@@ -74,6 +76,13 @@ def test_an_uncurated_mcp_scanner_threat_is_unmapped():
     """Spec 025: no mcp-scanner default, as for garak; the table names only what it curated."""
     for rule in ("mcp-scanner.credential-harvesting", "mcp-scanner"):
         assert _table(rule) == {("unmapped", rule)}
+
+
+def test_an_uncurated_art_family_is_unmapped():
+    """Spec 033: no ART default; a family nobody curated (privacy, poisoning) names nothing."""
+    for rule in ("art.inference.membershipinferenceblackbox", "art.poisoning.x", "art"):
+        assert _table(rule) == {("unmapped", rule)}
+    assert _table("art.evasionx.fgm") == {("unmapped", "art.evasionx.fgm")}  # a '.' boundary
 
 
 def test_the_drift_guard_notices_a_missing_id():

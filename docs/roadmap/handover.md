@@ -56,7 +56,8 @@ sandbox.
 | `garak` | 0.17.0 | ✅ | ✅ (spec 027) | Manual e2e verified 2026-10-08 against the bundled vulnerable target. Under a rate cap the run's forwarder paces it (spec 032, `forwarder_paced: true`). |
 | `pyrit` | 1.1.0 | ✅ | ❌ **pending** | Sandbox-execution wrapper not completed — see §6. |
 | `promptfoo` | 0.118.0 | ✅ | ❌ **pending** | Sandbox-execution wrapper not completed — see §6. |
-| `mcp-scanner` | 4.8.5 | ✅ | ❌ **pending** | Sandbox-execution wrapper not yet written (own spec, per spec 027 "out of scope"). |
+| `mcp-scanner` | 4.8.5 | ✅ | ✅ (spec 031) | Manual e2e verified 2026-11-14 against a local scratch MCP server. |
+| `art` | 1.20.1 | ✅ (spec 033) | ❌ **pending** | Phase 05. Parser for ART's evasion results; not registered. Running it needs a way to bring a model artefact into the sandbox (next spec). |
 
 garak is the reference implementation of the spec-012 contract v2. The remaining three follow the
 **same pattern** — read the run request from `KHANDAQ_RUN_REQUEST`, invoke the tool against the one
@@ -76,7 +77,7 @@ api/         Python 3.12+ FastAPI control plane (uv)
   tests/
 adapters/    one dir per tool: thin wrapper + Dockerfile (pinned) + adapter.yaml manifest
   _tooling/      shared build helpers (CA-bundle base image for the agent proxy)
-  echo/ garak/ pyrit/ promptfoo/ mcp-scanner/
+  echo/ garak/ pyrit/ promptfoo/ mcp-scanner/ art/
 web/         Vite + React 19 + TanStack Query + Tailwind v4 SPA (pnpm)
 deploy/      compose bundle, Caddyfile, CapRover guide + captain-definitions,
              Keycloak realm exports, smoke.py, targets/vulnerable-llm/ (demo target)
@@ -184,7 +185,8 @@ feature is off until the key is set on the api and the worker.
 - Auto staging deploy after merge.
 - An operator guide.
 
-**Further out (R2/R3 forecast):** ART adapter + model-artifact/dataset target types; supply-chain
+**Further out (R2/R3 forecast):** ART in the sandbox with model-artifact/dataset intake (the adapter
+itself is spec 033, done 2026-11-18); supply-chain
 (ModelAudit/ModelScan consensus + AI-BOM); guardrail-regression harness; IR/forensics trace import;
 findings → detections; SSO/SCIM and multi-node adapter runners for production.
 

@@ -61,6 +61,14 @@ def test_mcp_scanner_is_a_registered_container_adapter():
     assert scanner.paces_requests is False and scanner.accepts_credential is True
 
 
+def test_art_is_not_runnable_yet():
+    """Spec 033: the ART adapter has a parser and an image, but nothing brings a model artefact
+    into the sandbox yet, so no run can be queued for it (the registry lists only adapters whose
+    image really runs the tool)."""
+    assert get_manifest("art") is None
+    assert (REPO / "adapters/art/adapter.yaml").is_file()
+
+
 CAP = {"max_requests_per_minute": 60}
 
 

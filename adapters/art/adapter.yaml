@@ -1,0 +1,21 @@
+# ART adapter (spec 033). The Adversarial Robustness Toolbox (Linux Foundation AI & Data, MIT)
+# evaluates how a model's predictions hold under published adversarial attacks. Khandaq
+# orchestrates it (ADR-0001); this manifest pins an exact upstream version.
+name: art
+version: "1.20.1"                 # exact upstream version; bump deliberately with the contract test
+image: ghcr.io/sira-labs/khandaq-adapter-art:1.20.1
+entrypoint: /usr/local/bin/wrap.py
+phases:
+  - 05-adversarial-ml
+frameworks:
+  - atlas
+  - nist-ai-rmf
+# The adapter derives high/medium/low from ART's success rate; this table is the
+# native->canonical identity map (ADR-0004).
+severity_table:
+  high: high
+  medium: medium
+  low: low
+resources:
+  cpu: "2"
+  memory: 4Gi

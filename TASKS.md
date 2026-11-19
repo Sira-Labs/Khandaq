@@ -369,7 +369,29 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
       **Owner:** review and merge the spec 032 PR. It changes how the rules of engagement's rate
       cap is enforced (a refusal becomes a paced run), so under ADR-0018 a nightly run does not
       merge it. It blocks garak on capped engagements; default: stays refused until merged.
-- [ ] S8-2 — spec 033 ART adapter (phase 05) + `model_artifact`/`dataset` target types (to write).
+- [x] S8-2 — spec 033 ART adapter (nightly run of 2026-11-18, UTC): `adapters/art/` wraps the
+      Adversarial Robustness Toolbox 1.20.1 (MIT) with a parser for evasion-robustness results,
+      a pinned image (published by the release run), a fixture recorded from a real ART run and
+      45 contract tests; the core table maps `art.evasion` to ATLAS `AML.T0015`/`AML.T0043` and
+      NIST AI RMF `MEASURE-2.7`, and the drift test covers the wrapper. Decisions: the sprint's
+      story is split, as specs 009/010/025 were: this spec is the adapter, and running it in the
+      sandbox is the next spec, because a `model_artifact` has no network endpoint and nothing
+      yet brings an artefact and its evaluation data into the sandbox; so the adapter is not in
+      the run registry and no run can be queued for it. ART writes no report of its own, so the
+      wrapper defines the result line (ART's class, module, `attack_params`, estimator, and the
+      numbers ART computed) and refuses results of another ART version. ART's own
+      `compute_success` decides what a finding is, not the accuracy drop: on the recorded
+      two-class run every prediction changed while accuracy only fell from 0.845 to 0.155,
+      because flipping also "corrects" the samples the model had wrong. Severity uses garak's
+      thresholds on that rate. Only the evasion family is read; privacy, extraction and
+      poisoning results fail the run until each has its own meaning and mapping. No bare `art`
+      default in the table. The image installs `packaging` by name: ART 1.20.1 imports it
+      without declaring it (found on the real tool). The fixture is synthetic: a seeded
+      scikit-learn classifier on `make_classification` data, FGSM twice, PGD and HopSkipJump.
+      The scope lock already had `model_artifact` and `dataset`; it is untouched, as are the
+      audit log and the ledger. Follow-ups: spec 034 ART in the sandbox (artefact and dataset
+      intake with a digest check against the scope, estimator loading, registration); privacy
+      and poisoning families; TextAttack and ML Privacy Meter.
 
 ### Dependency maintenance (nightly runs, ADR-0018)
 
@@ -392,6 +414,9 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
       the e2e moved to 3.15, so CI tests what the image ships. `requires-python` stays `>=3.12`
       and the adapter images stay on their own pinned bases. Checked locally on 3.15: 505 api
       tests and the 13 binding tests pass. The image itself is first built by the release run.
+      Built by release run #65. Follow-up from the review of #87: the api and bindings jobs
+      also run on 3.12, the oldest version `requires-python` allows; the 3.15 jobs keep their
+      names.
 - [ ] **Owner:** Dependabot cannot label its PRs: the labels `dependencies`, `area: core`,
       `area: api`, `area: web`, `area: ci`, `area: deploy` named in `.github/dependabot.yml` do not
       exist. Create them, or say that they should be dropped from the file; default: unlabelled.
