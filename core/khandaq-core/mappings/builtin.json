@@ -16,6 +16,23 @@
     "nist-ai-rmf": "https://airc.nist.gov/airmf-resources/airmf/5-sec-core/"
   },
   "rules": {
+    "art.evasion": {
+      "mappings": [
+        {
+          "framework": "atlas",
+          "id": "AML.T0015"
+        },
+        {
+          "framework": "atlas",
+          "id": "AML.T0043"
+        },
+        {
+          "framework": "nist-ai-rmf",
+          "id": "MEASURE-2.7"
+        }
+      ],
+      "rationale": "ART evasion attacks: adversarial inputs crafted to change a model's prediction (evade the model, craft adversarial data); robustness is a measured security property."
+    },
     "echo.inject": {
       "mappings": [
         {

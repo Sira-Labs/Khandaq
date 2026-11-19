@@ -28,7 +28,9 @@ Adapters: `garak` runs its real tool in the spec-012 sandbox (spec 027, e2e-veri
 `mcp-scanner` runs its real tool in the sandbox too (spec 031, e2e-verified 2026-11-14), and target
 credentials are in (spec 028, ADR-0019). `pyrit` and `promptfoo` have parsers, fixtures and passing
 contract tests, but their sandbox-execution wrappers are **not written**: specs 029 and 030 are
-blocked for the owner (`TASKS.md`, `handover.md` §6). Next unblocked work is sprint 8.
+blocked for the owner (`TASKS.md`, `handover.md` §6). Sprint 8: `art` has its adapter (spec 033:
+parser, pinned image, recorded fixture); running it in the sandbox needs artefact intake, the next
+spec.
 
 ## R1 — the spine
 

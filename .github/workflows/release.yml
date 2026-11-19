@@ -45,6 +45,10 @@ jobs:
             file: adapters/mcp-scanner/Dockerfile
             context: adapters/mcp-scanner
             manifest: adapters/mcp-scanner/adapter.yaml
+          - name: khandaq-adapter-art
+            file: adapters/art/Dockerfile
+            context: adapters/art
+            manifest: adapters/art/adapter.yaml
           # The bundled intentionally-vulnerable demo target (never a third party).
           - name: khandaq-vulnerable-target
             file: deploy/targets/vulnerable-llm/Dockerfile
