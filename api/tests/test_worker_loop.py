@@ -3,11 +3,13 @@ the loop's collaborators are replaced, so this only checks the retry and cleanup
 
 from __future__ import annotations
 
+import datetime as dt
 import threading
 
 from sqlalchemy.exc import OperationalError
 
 from khandaq import worker
+from khandaq.adapters.docker import OVERHEAD_SECONDS
 from khandaq.settings import Settings
 
 
@@ -135,3 +137,29 @@ def test_any_other_programming_error_still_ends_the_loop(monkeypatch):
         worker.run_forever(
             Settings(database_url="sqlite://", worker_poll_seconds=0.01), threading.Event()
         )
+
+
+def test_a_run_is_stale_only_after_every_bounded_step_of_a_live_run(monkeypatch):
+    """The cutoff covers the adapter timeout and the runner's own Docker calls around it, so
+    recovery cannot remove the containers of a run its worker is still setting up or tearing
+    down (spec 032)."""
+    settings = Settings(adapter_timeout_seconds=600)
+    longest_live_run = dt.timedelta(seconds=600 + OVERHEAD_SECONDS)
+    assert worker.stale_after(settings) == longest_live_run + worker.STALE_MARGIN
+    assert worker.STALE_MARGIN >= dt.timedelta(minutes=5)
+
+    class _Session:
+        def __init__(self, engine) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc) -> None:
+            pass
+
+    seen: list[dt.timedelta] = []
+    monkeypatch.setattr(worker, "Session", _Session)
+    monkeypatch.setattr(worker, "recover_stale_runs", lambda s, older_than: seen.append(older_than))
+    worker._recover_lost_runs(object(), settings)
+    assert seen == [worker.stale_after(settings)]

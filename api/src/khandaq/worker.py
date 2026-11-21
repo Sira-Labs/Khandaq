@@ -30,6 +30,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import NullPool
 
 from . import deployment
+from .adapters.docker import OVERHEAD_SECONDS
 from .alerts import deliver_due
 from .campaigns import schedule_due
 from .runs import NOTIFY_CHANNEL, claim_next_run, execute_run, recover_stale_runs
@@ -37,8 +38,10 @@ from .settings import Settings, get_settings
 
 log = logging.getLogger("khandaq.worker")
 
-# Past the adapter timeout, a run can only still be "running" if its worker died: the runner
-# kills the container at the timeout and recording results takes seconds.
+# Past the adapter timeout plus what the runner's own Docker calls may take around it
+# (``OVERHEAD_SECONDS``), a run can only still be "running" if its worker died: the runner kills
+# the container at the timeout. The margin is for what is left: decrypting a credential before
+# the run and recording its results after.
 STALE_MARGIN = dt.timedelta(minutes=10)
 HEARTBEAT_SECONDS = 30.0
 # Lost runs are looked for at start and then this often: a run kept `running` because its
@@ -99,9 +102,17 @@ def drain(engine: Engine, runner=None) -> int:
     return count
 
 
+def stale_after(settings: Settings) -> dt.timedelta:
+    """How long a run may be ``running`` before recovery treats its worker as lost. It covers
+    every bounded step of a live run, so recovery never removes the containers of a run that a
+    worker is still executing (spec 032)."""
+    longest_run = settings.adapter_timeout_seconds + OVERHEAD_SECONDS
+    return dt.timedelta(seconds=longest_run) + STALE_MARGIN
+
+
 def _recover_lost_runs(engine: Engine, settings: Settings) -> None:
     with Session(engine) as session:
-        older = dt.timedelta(seconds=settings.adapter_timeout_seconds) + STALE_MARGIN
+        older = stale_after(settings)
         if lost := recover_stale_runs(session, older_than=older):
             log.warning("failed %d run(s) a previous worker lost", lost)
 

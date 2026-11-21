@@ -17,6 +17,7 @@ import tarfile
 import pytest
 
 from khandaq.adapters.docker import (
+    OVERHEAD_SECONDS,
     CliResult,
     DockerRunner,
     LeftoversError,
@@ -462,9 +463,17 @@ def test_a_run_whose_containers_cannot_be_removed_ends_in_leftovers(start, stuck
     """Whatever the run's own outcome: while something of it is left, its forwarder may still
     relay, and the caller must not record the run as ended (spec 032)."""
 
+    removal = {
+        "khq-run-run_abc": ["rm", "--force", "khq-run-run_abc"],
+        "khq-fwd-run_abc": ["rm", "--force", "khq-fwd-run_abc"],
+        "khq-net-run_abc": ["network", "rm", "khq-net-run_abc"],
+    }[stuck]
+
     class Stuck(FakeCli):
         def __call__(self, args, *, timeout=None, stdout_limit=None):
-            if args[-1] == stuck:
+            # Only the removal fails: `network create` and `network connect` end in the same
+            # names, and failing those would end the run before the scripted outcome.
+            if list(args) == removal:
                 self.calls.append(list(args))
                 return CliResult(1, b"", b"permission denied")
             return super().__call__(args, timeout=timeout, stdout_limit=stdout_limit)
@@ -473,6 +482,31 @@ def test_a_run_whose_containers_cannot_be_removed_ends_in_leftovers(start, stuck
     with pytest.raises(LeftoversError, match="could not be removed"):
         _runner(cli).run(_request())
     assert cli.cleaned_up()  # all three removals were still tried
+    started = cli.calls.index(["start", "--attach", "khq-run-run_abc"])
+    assert started == len(cli.calls) - 4  # the adapter ran, and only then the removals
+
+
+def test_the_time_a_run_takes_outside_its_adapter_is_what_recovery_allows_for():
+    """Stale-run recovery adds OVERHEAD_SECONDS to the adapter timeout. If a Docker call is added
+    or its limit raised without that constant, recovery could take a live run for a lost one and
+    remove its containers."""
+
+    class Timed(FakeCli):
+        def __init__(self) -> None:
+            super().__init__(CliResult(0, GOOD_OUTPUT, b""))
+            self.limits: list[tuple[str, float]] = []
+
+        def __call__(self, args, *, timeout=None, stdout_limit=None):
+            self.limits.append((args[0], timeout))
+            return super().__call__(args, timeout=timeout, stdout_limit=stdout_limit)
+
+    cli = Timed()
+    runner = _runner(cli)
+    runner.run(_request())
+    assert all(limit is not None for _, limit in cli.limits)  # nothing may wait for ever
+    around = sum(limit for what, limit in cli.limits if what != "start")
+    assert around == OVERHEAD_SECONDS == 660
+    assert dict(cli.limits)["start"] == runner.settings.adapter_timeout_seconds
 
 
 @pytest.mark.parametrize("rm_fails", [True, False])

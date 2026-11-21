@@ -365,7 +365,12 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
       second CodeRabbit pass (2026-11-18): the turn is held while the target connection opens
       and until the first bytes are written, so a slow connect cannot bring two first requests
       closer (10 s connect limit while pacing); leftovers are looked for whatever the settings
-      say now; a failed removal at recovery is audited once per run.
+      say now; a failed removal at recovery is audited once per run. A third pass (2026-11-21):
+      a rate whose interval is infinite (`1e-308`) is refused at admission and by the forwarder,
+      by one shared rule; an ALPN extension that names no protocol is refused; a request whose
+      client left while the target connection opened is not sent; a run counts as lost only
+      after the adapter timeout plus the limits of the runner's own Docker calls (660 s) plus
+      ten minutes, so recovery cannot remove a live run's containers.
       **Owner:** review and merge the spec 032 PR. It changes how the rules of engagement's rate
       cap is enforced (a refusal becomes a paced run), so under ADR-0018 a nightly run does not
       merge it. It blocks garak on capped engagements; default: stays refused until merged.

@@ -25,7 +25,6 @@ from __future__ import annotations
 import datetime as dt
 import json
 import logging
-import math
 from collections.abc import Callable
 
 import khandaq_core as kc
@@ -34,7 +33,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, aliased
 from sqlalchemy.orm.attributes import flag_modified
 
-from . import audit, target_credentials
+from . import audit, egress_forwarder, target_credentials
 from .adapters import (
     AdapterManifest,
     all_manifests,
@@ -117,13 +116,11 @@ def forwarder_pace(manifest: AdapterManifest, params: dict | None) -> object | N
 
 
 def usable_pace(value: object) -> bool:
-    """Whether the forwarder can pace at this rate: a finite number above 0."""
+    """Whether the forwarder can pace at this rate: a finite number above 0 whose interval
+    (``60 / rate``) is finite too. It is the forwarder's own rule, so the two agree."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return False
-    try:
-        return math.isfinite(value) and value > 0
-    except OverflowError:  # a huge JSON integer cannot become a float
-        return False
+    return egress_forwarder.usable_pace(value)
 
 
 def _capped(roe: dict | None) -> bool:

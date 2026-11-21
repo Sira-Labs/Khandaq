@@ -52,6 +52,15 @@ _STDERR_TAIL = 2000
 MAX_REQUEST_BYTES = 60_000
 
 
+# What a run can take outside its adapter's own timeout: four setup calls (network, forwarder,
+# attach, create) and three removals (adapter, forwarder, network), each under its own limit.
+# Stale-run recovery adds this to the adapter timeout, so it never takes a run whose worker is
+# still inside one of these calls for a lost one.
+SETUP_STEP_SECONDS = 120
+REMOVE_STEP_SECONDS = 60
+OVERHEAD_SECONDS = 4 * SETUP_STEP_SECONDS + 3 * REMOVE_STEP_SECONDS
+
+
 class RunnerError(Exception):
     """The run could not be executed or its output is not trustworthy; the message is recorded."""
 
@@ -283,7 +292,7 @@ def _remove(docker: DockerCli, run_id: str, credential: str | None) -> bool:
         ["network", "rm", network],
     ):
         try:
-            result = docker(args, timeout=60)
+            result = docker(args, timeout=REMOVE_STEP_SECONDS)
         except (RunnerError, OSError) as exc:
             log.error("removing %s failed: %s", args[-1], redact(str(exc), credential))
             gone = False
@@ -492,7 +501,7 @@ class DockerRunner:
         return artifacts_from_output(files, request, redacted)
 
     def _ok(self, args: list[str], what: str, credential: str | None = None) -> CliResult:
-        result = self.cli(args, timeout=120)
+        result = self.cli(args, timeout=SETUP_STEP_SECONDS)
         if result.returncode != 0:
             # Redacted before the cut, as for the adapter's own stderr.
             detail = redact(result.stderr.decode("utf-8", "replace"), credential)

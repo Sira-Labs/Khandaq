@@ -61,11 +61,20 @@ def parse_address(value: str) -> tuple[str, int]:
 
 
 def parse_pace(value: str) -> float:
-    """A requests-per-minute pace: a finite number above 0."""
+    """A requests-per-minute pace: a finite number above 0 whose interval is finite too."""
     pace = float(value)
-    if not math.isfinite(pace) or pace <= 0:
+    if not usable_pace(pace):
         raise ValueError(f"the pace must be a finite number above 0, got {value!r}")
     return pace
+
+
+def usable_pace(pace: float) -> bool:
+    """Whether one turn per ``60 / pace`` seconds can be held. A rate so small that the interval
+    overflows (``1e-308``) would never let a turn through, so it is no rate at all."""
+    try:
+        return math.isfinite(pace) and pace > 0 and math.isfinite(60.0 / pace)
+    except OverflowError:  # an integer too large for a float
+        return False
 
 
 class Pacer:
@@ -155,7 +164,9 @@ def client_hello_alpn(record: bytes) -> list[bytes]:
                 raise RefusedProtocol("the ClientHello hides its real offer (ECH)")
             if kind == _EXT_ALPN:
                 names, pos = data[2:], 0
-                if int.from_bytes(data[:2], "big") != len(names):
+                # RFC 7301: a present extension names at least one protocol. An empty list is not
+                # "no ALPN": it is malformed, and what such a client will speak is unknown.
+                if len(data) < 2 or int.from_bytes(data[:2], "big") != len(names) or not names:
                     raise RefusedProtocol("the ClientHello's ALPN list is malformed")
                 while pos < len(names):
                     name = names[pos + 1 : pos + 1 + names[pos]]
@@ -274,6 +285,11 @@ async def _relay(
         async with pacer.turn():
             if not client_reader.at_eof():  # else the client gave up while waiting: send nothing
                 connection = await _connect(upstream, _CONNECT_SECONDS)
+                if connection is not None and client_reader.at_eof():
+                    # The client gave up while the target connection opened: its request is not
+                    # sent either, and the unused connection is closed.
+                    connection[1].close()
+                    connection = None
                 if connection is not None:
                     connection[1].write(first)
     if connection is None:

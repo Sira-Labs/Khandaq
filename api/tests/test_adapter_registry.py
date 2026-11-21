@@ -89,6 +89,9 @@ CAP = {"max_requests_per_minute": 60}
         ("garak", {}, {"rate_per_minute": "30"}, "above 0"),
         ("garak", {}, {"rate_per_minute": True}, "above 0"),
         ("garak", {}, {"rate_per_minute": 10**400}, "above 0"),
+        # Positive and finite, but 60 / rate is not: no turn would ever be let through.
+        ("garak", {}, {"rate_per_minute": 1e-308}, "above 0"),
+        ("garak", CAP, {"rate_per_minute": 1e-308}, "above 0"),
         # mcp-scanner is not paced by anything.
         ("mcp-scanner", CAP, {"rate_per_minute": 30}, "request-rate limit"),
         ("mcp-scanner", {}, {"rate_per_minute": 0}, None),
@@ -397,6 +400,28 @@ def test_two_workers_cannot_both_start_a_paced_run(ctx, monkeypatch):
     _finish(eng, second["id"])
 
 
+def _waits_for_advisory_lock(eng, holder: Session, seconds: float = 5.0) -> bool:
+    """Whether another session comes to wait for an advisory lock that ``holder`` holds."""
+    import time
+
+    pid = holder.execute(text("SELECT pg_backend_pid()")).scalar_one()
+    deadline = time.monotonic() + seconds
+    with eng.connect() as conn:
+        while time.monotonic() < deadline:
+            blocked = conn.execute(
+                text(
+                    "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted "
+                    "AND :pid = ANY (pg_blocking_pids(pid))"
+                ),
+                {"pid": pid},
+            ).scalar_one()
+            conn.rollback()
+            if blocked:
+                return True
+            time.sleep(0.02)
+    return False
+
+
 @needs_db
 def test_the_engagement_lock_makes_a_second_worker_wait_for_the_first(ctx, monkeypatch):
     """Real contention: one worker is in mid-claim (holds the engagement lock and its run's row,
@@ -421,13 +446,16 @@ def test_the_engagement_lock_makes_a_second_worker_wait_for_the_first(ctx, monke
         lock_engagement(holder, eng_id)
         other = threading.Thread(target=lambda: result.append(_claim(eng)))
         other.start()
-        other.join(timeout=0.5)
-        waiting = other.is_alive() and result == []  # blocked on the engagement lock
-        holder.execute(
-            text("UPDATE runs SET state = 'running' WHERE id = :id"), {"id": first["id"]}
-        )
-        holder.commit()
-    other.join(timeout=10)
+        try:
+            # Not "the thread has not returned yet", which is also true before it reached the
+            # claim: the database itself must report a session waiting for the advisory lock.
+            waiting = _waits_for_advisory_lock(eng, holder)
+            holder.execute(
+                text("UPDATE runs SET state = 'running' WHERE id = :id"), {"id": first["id"]}
+            )
+        finally:
+            holder.commit()  # releases the lock whatever happened, so the worker can end
+            other.join(timeout=10)
     started = result[0] if result else "still claiming"
     if started == second["id"]:  # leave no running run behind for the tests that follow
         _finish(eng, second["id"])

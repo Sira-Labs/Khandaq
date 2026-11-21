@@ -202,11 +202,19 @@ def test_the_first_turn_waits_for_the_first_slot():
     assert _release_times(time, pacer, 2) == [101.0, 102.0]
 
 
-@pytest.mark.parametrize("bad", ["0", "-1", "nan", "inf", "fast"])
+@pytest.mark.parametrize("bad", ["0", "-1", "nan", "inf", "fast", "1e-308", "5e-324"])
 def test_pace_argument_must_be_positive(bad):
+    """Also a rate so small that its interval is infinite: no turn would ever be let through."""
     with pytest.raises(ValueError):
         fwd.parse_pace(bad)
     assert fwd.parse_pace("0.5") == 0.5
+    assert fwd.Pacer(fwd.parse_pace("1e-300")).interval == 6e301  # tiny, but a real interval
+
+
+def test_usable_pace_is_the_one_rule_for_admission_and_forwarder():
+    assert fwd.usable_pace(0.5) and fwd.usable_pace(600) and fwd.usable_pace(1e-300)
+    for bad in (0, -1, float("nan"), float("inf"), 1e-308, 10**400):
+        assert not fwd.usable_pace(bad)
 
 
 class _CountingPacer(fwd.Pacer):
@@ -308,16 +316,16 @@ def test_client_hello_alpn():
     assert fwd.client_hello_alpn(_client_hello(None)) == []
 
 
-def _with_extension(record: bytes, kind: int) -> bytes:
-    """``record`` with one empty extension of ``kind`` appended, all lengths corrected."""
+def _with_extension(record: bytes, kind: int, data: bytes = b"") -> bytes:
+    """``record`` with one extension of ``kind`` appended, all lengths corrected."""
     hello = bytearray(record[9:])
     at = 34
     at += 1 + hello[at]
     at += 2 + int.from_bytes(hello[at : at + 2], "big")
     at += 1 + hello[at]
-    size = int.from_bytes(hello[at : at + 2], "big") + 4
+    size = int.from_bytes(hello[at : at + 2], "big") + 4 + len(data)
     hello[at : at + 2] = size.to_bytes(2, "big")
-    hello += kind.to_bytes(2, "big") + b"\x00\x00"
+    hello += kind.to_bytes(2, "big") + len(data).to_bytes(2, "big") + data
     body = b"\x01" + len(hello).to_bytes(3, "big") + bytes(hello)
     return record[:3] + len(body).to_bytes(2, "big") + body
 
@@ -330,6 +338,9 @@ def test_client_hello_that_cannot_be_judged_is_refused():
         record[:5] + b"\x02" + record[6:],  # a ServerHello, not a ClientHello
         record[:8] + bytes([record[8] + 1]) + record[9:],  # claims to continue in another record
         _with_extension(record, 0xFE0D),  # Encrypted Client Hello
+        # An ALPN extension that names no protocol (RFC 7301 forbids it) is not "no ALPN".
+        _with_extension(_client_hello(None), 16, b"\x00\x00"),
+        _with_extension(_client_hello(None), 16),  # not even the list's length
     ):
         with pytest.raises(fwd.RefusedProtocol):
             fwd.client_hello_alpn(broken)
@@ -438,13 +449,19 @@ class _GatedPacer(fwd.Pacer):
     def __init__(self) -> None:
         super().__init__(60)
         self.gate = asyncio.Event()
+        self.entered = asyncio.Event()
         self.waiting = 0
 
     @contextlib.asynccontextmanager
     async def turn(self):
         self.waiting += 1
+        self.entered.set()
         await self.gate.wait()
         yield
+
+    async def until_waiting(self) -> None:
+        """Until a turn has begun, or fail: a relay that skips the pacer must not hang the test."""
+        await asyncio.wait_for(self.entered.wait(), 5)
 
 
 def test_the_target_sees_nothing_of_a_connection_before_its_slot():
@@ -464,8 +481,7 @@ def test_the_target_sees_nothing_of_a_connection_before_its_slot():
         reader, writer = await asyncio.open_connection("127.0.0.1", port)
         writer.write(b"GET / HTTP/1.1\r\nHost: t\r\n\r\n")
         await writer.drain()
-        while not pacer.waiting:
-            await asyncio.sleep(0.01)
+        await pacer.until_waiting()
         await asyncio.sleep(0.05)
         before = list(seen)
         pacer.gate.set()
@@ -495,8 +511,7 @@ def test_a_request_abandoned_while_waiting_is_not_delivered():
         _, writer = await asyncio.open_connection("127.0.0.1", port)
         writer.write(b"GET /gone HTTP/1.1\r\nHost: t\r\n\r\n")
         await writer.drain()
-        while not pacer.waiting:
-            await asyncio.sleep(0.01)
+        await pacer.until_waiting()
         writer.close()
         await writer.wait_closed()
         await asyncio.sleep(0.05)
@@ -508,6 +523,47 @@ def test_a_request_abandoned_while_waiting_is_not_delivered():
 
     asyncio.run(scenario())
     assert seen == [] and pacer.waiting == 1  # the slot was used up, the request was dropped
+
+
+def test_a_request_abandoned_while_the_target_connects_is_not_delivered(monkeypatch):
+    """The client was still there when its slot came, and went away while the connection to the
+    target opened: the request is dropped and the unused connection closed."""
+    seen: list[bytes] = []
+    closed = asyncio.Event()
+
+    async def handle(reader, writer):
+        seen.append(await reader.read(100))  # b"" when the forwarder closes without writing
+        closed.set()
+        writer.close()
+
+    real_open = asyncio.open_connection
+    connecting, client_gone = asyncio.Event(), asyncio.Event()
+
+    async def open_after_the_client_left(*args, **kwargs):
+        connecting.set()
+        await asyncio.wait_for(client_gone.wait(), 5)
+        return await real_open(*args, **kwargs)
+
+    pacer = _CountingPacer()
+
+    async def client(port: int) -> None:
+        _, writer = await real_open("127.0.0.1", port)
+        writer.write(b"GET /gone HTTP/1.1\r\nHost: t\r\n\r\n")
+        await writer.drain()
+        await asyncio.wait_for(connecting.wait(), 5)
+        writer.close()
+        await writer.wait_closed()
+        await asyncio.sleep(0.05)  # the forwarder has seen the client's EOF
+        client_gone.set()
+        await asyncio.wait_for(closed.wait(), 5)
+
+    async def scenario() -> None:
+        upstream = await asyncio.start_server(handle, "127.0.0.1", 0)
+        monkeypatch.setattr(fwd.asyncio, "open_connection", open_after_the_client_left)
+        await _paced(upstream, pacer, client)
+
+    asyncio.run(scenario())
+    assert seen == [b""] and pacer.turns == 1  # connected, nothing written; the slot was used
 
 
 def test_a_paced_connection_that_never_shows_its_opening_is_dropped(monkeypatch):

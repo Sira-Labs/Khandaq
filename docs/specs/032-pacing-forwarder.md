@@ -13,8 +13,10 @@ engagements usually carry a cap, so garak is unusable exactly where it is needed
 When this spec is done, the per-run egress forwarder (spec 012) holds the rate for garak. It is the
 only way out of the sandbox, it is started by the worker, and it lets one request through per
 `60 / rate_per_minute` seconds. A capped engagement can run garak; the run's `run.started` audit
-entry records the rate it was held to. Nothing changes for an engagement without a cap, and
-nothing changes for mcp-scanner, which stays refused under a cap.
+entry records the rate it was held to. For an engagement without a cap nothing changes as long
+as a garak run declares no `rate_per_minute`: it is not paced. A run that does declare one is
+held to it, cap or no cap (Behaviour 2). Nothing changes for mcp-scanner, which stays refused
+under a cap.
 
 The forwarder still relays to exactly one checked address and still passes TLS through untouched.
 It adds a delay; it adds no destination.
@@ -108,11 +110,16 @@ with `rate_per_minute: 60` and the run goes through, slower, without exceeding w
      worker, or the case above) and only then records `run.failed`; if the removal fails the run
      stays `running`. The worker runs this at start and every five minutes. A run that stays
      `running` this way is audited as `run.cleanup_failed` once, not on every attempt.
+   - "Past the timeout" means longer than a live run can take: the adapter timeout, plus the
+     limits of the runner's own Docker calls around it (four setup calls of 120 s and three
+     removals of 60 s, `OVERHEAD_SECONDS`), plus ten minutes for recording. Recovery therefore
+     never removes the containers of a run whose worker is still inside one of those calls.
    - Leftovers are looked for whatever the deployment is configured to start now; only a
      built-in (in-process) adapter is known to leave nothing.
-8. **A paced run that cannot be paced fails.** If the runner is asked to pace with a rate that is
-   not a finite number above 0, it raises before any container starts; nothing falls back to an
-   unpaced forwarder.
+8. **A paced run that cannot be paced fails.** A usable rate is a finite number above 0 whose
+   interval `60 / rate` is finite too (`1e-308` is not: no turn would ever be let through).
+   Admission refuses any other rate, and if the runner is asked to pace with one it raises
+   before any container starts; nothing falls back to an unpaced forwarder.
 9. **Invariants.** The forwarder's destination is still the one address the worker resolved and
    checked; pacing adds no way to reach anything else. No run that the scope lock refuses is
    allowed by this spec. Every paced start is in the audit log with its rate.
@@ -133,8 +140,10 @@ with `rate_per_minute: 60` and the run goes through, slower, without exceeding w
 - One paced run at a time relies on the run's recorded state. A worker that dies mid-run leaves
   its containers behind, so recovery at the next worker start removes the lost run's containers
   and network before it marks the run failed, and leaves it `running` (still holding the next
-  paced run back) when that removal fails. Until a worker starts again the lost run stays
-  `running` and nothing paced starts beside it.
+  paced run back) when that removal fails. A worker that is still up does the same every five
+  minutes, so no restart is needed. In both cases recovery waits until the run is stale (longer
+  than a live run can take, Behaviour 7); until then the lost run stays `running` and nothing
+  paced starts beside it.
 - A cap that is added or lowered while a run is running does not slow that run (true of every
   rule of engagement since spec 002: they are checked at creation and at the claim).
 - The tripwires look at a connection's opening only; a later protocol upgrade is not seen.
@@ -169,6 +178,8 @@ Unit (`api/tests/test_egress_forwarder.py`): `test_pacer_spaces_turns`, `test_pa
 `test_paced_forwarder_holds_the_rate_end_to_end` (the real process, from its source alone),
 `test_the_target_sees_nothing_of_a_connection_before_its_slot`,
 `test_a_request_abandoned_while_waiting_is_not_delivered`,
+`test_a_request_abandoned_while_the_target_connects_is_not_delivered`,
+`test_usable_pace_is_the_one_rule_for_admission_and_forwarder`,
 `test_a_paced_connection_that_never_shows_its_opening_is_dropped`,
 `test_a_slow_connect_does_not_bring_two_first_requests_closer`,
 `test_a_target_that_does_not_accept_in_time_costs_only_its_turn`.
@@ -177,7 +188,10 @@ Unit (`api/tests/test_docker_runner.py`): `test_forwarder_is_paced_for_a_paced_a
 `test_leftovers_of_a_lost_run_are_removed`, `test_leftovers_that_are_already_gone_count_as_removed`,
 `test_leftovers_that_cannot_be_removed_are_reported` (with the mixed cases),
 `test_a_run_whose_containers_cannot_be_removed_ends_in_leftovers` (timeout, failure, success),
-`test_a_failed_removal_is_reported_as_leftovers_and_its_logs_are_redacted`.
+`test_a_failed_removal_is_reported_as_leftovers_and_its_logs_are_redacted`,
+`test_the_time_a_run_takes_outside_its_adapter_is_what_recovery_allows_for`.
+Unit (`api/tests/test_worker_loop.py`):
+`test_a_run_is_stale_only_after_every_bounded_step_of_a_live_run`.
 Integration (`api/tests/test_worker.py`):
 `test_a_lost_run_whose_containers_cannot_be_removed_stays_running`,
 `test_a_run_that_leaves_containers_behind_stays_running_and_is_audited`,
