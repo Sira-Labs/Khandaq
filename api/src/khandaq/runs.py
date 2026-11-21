@@ -393,6 +393,34 @@ def _waits_for_paced_run(paced: list[str]):
     )
 
 
+# How long after its claim a run may still start its tool. Everything from here on is bounded
+# (the runner's own limits and the adapter timeout), and recovery's cutoff allows for this budget
+# on top of them, so a run that starts is never taken for a lost one while it is running.
+START_BUDGET = dt.timedelta(minutes=5)
+
+
+class StartedTooLate(Exception):
+    """The run did not reach the start of its tool within ``START_BUDGET`` of its claim."""
+
+
+def _may_still_start(session: Session, run: Run) -> bool:
+    """The fence in front of the tool (spec 032 §7). The steps before it (reloading the target,
+    reading a credential) have no deadline of their own. If they took so long that recovery has
+    already ended the run, nothing may start now: the engagement's next paced run may be running.
+    ``False`` when the run is no longer ``running``; raises ``StartedTooLate`` when it still is
+    but its budget is spent, so that it fails here instead of racing recovery."""
+    session.refresh(run)
+    if run.state != "running":
+        log.error("run %s was ended while it was being prepared; it is not started", run.id)
+        return False
+    if run.started_at is not None and _now() - run.started_at > START_BUDGET:
+        raise StartedTooLate(
+            f"the run was not ready to start within {START_BUDGET.total_seconds():.0f}s "
+            "of its claim"
+        )
+    return True
+
+
 def execute_run(session: Session, run_id: str, *, actor: User | None = None, runner=None) -> Run:
     """Execute a ``running`` run and record the outcome; every failure ends in ``failed``, except
     a run whose containers could not be removed, which stays ``running`` (``_keep_running``)."""
@@ -415,6 +443,8 @@ def execute_run(session: Session, run_id: str, *, actor: User | None = None, run
         # credential fails the run instead of running without one.
         credential = target_credentials.load_for_run(session, run, target, settings)
         active = runner or get_runner(manifest, settings)
+        if not _may_still_start(session, run):
+            return run  # recovery ended it meanwhile: its record stands, nothing is started
         if credential is None:
             artifacts = active.run(request)
         else:
@@ -423,6 +453,8 @@ def execute_run(session: Session, run_id: str, *, actor: User | None = None, run
         return _fail(session, eng_id, run_id, f"target credential unusable: {exc.detail}", actor)
     except LeftoversError as exc:
         return _keep_running(session, eng_id, run_id, str(exc), actor)
+    except StartedTooLate as exc:
+        return _fail(session, eng_id, run_id, str(exc), actor)
     except Exception as exc:  # third-party tool execution: every failure is recorded, never lost
         # The runner redacts what the adapter returned; this covers any other text on the way out.
         return _fail(session, eng_id, run_id, redact(f"adapter failed: {exc}", credential), actor)

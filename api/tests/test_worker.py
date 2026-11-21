@@ -310,6 +310,85 @@ def test_a_run_that_leaves_containers_behind_stays_running_and_is_audited(env):
         conn.execute(text("UPDATE runs SET state = 'failed' WHERE id = :r"), {"r": run["id"]})
 
 
+class _NeverRun:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def run(self, request, credential=None):
+        self.calls += 1
+        raise AssertionError("the tool must not be started")
+
+
+def _running(db, run_id: str) -> None:
+    with db.begin() as conn:  # as the claim leaves it (other tests' runs may be queued too)
+        conn.execute(
+            text("UPDATE runs SET state = 'running', started_at = now() WHERE id = :r"),
+            {"r": run_id},
+        )
+
+
+def test_a_run_that_recovery_ended_while_it_was_prepared_is_not_started(env, monkeypatch):
+    """Reading the credential has no deadline. If it blocks until recovery has failed the run,
+    the engagement's next paced run may already be running: the first must not start its tool
+    after all, and its record stays as recovery left it (spec 032 §7)."""
+    from khandaq import runs, target_credentials
+
+    client, db, _ = env
+    eng_id, tid = _engagement(client, "fenced")
+    run = _queue(client, eng_id, tid)
+    _running(db, run["id"])
+
+    def blocks_until_recovery_came(session, the_run, target, settings):
+        with db.begin() as conn:  # what recover_stale_runs commits
+            conn.execute(
+                text(
+                    "UPDATE runs SET state = 'failed', ended_at = now(), "
+                    "reject_reason = 'the worker lost the run' WHERE id = :r"
+                ),
+                {"r": the_run.id},
+            )
+        return None
+
+    monkeypatch.setattr(target_credentials, "load_for_run", blocks_until_recovery_came)
+    runner = _NeverRun()
+    with Session(db) as session:
+        after = runs.execute_run(session, run["id"], runner=runner)
+        assert after.state == "failed" and after.reject_reason == "the worker lost the run"
+    assert runner.calls == 0
+    assert "run.succeeded" not in _actions(db, run["id"])
+    assert _actions(db, run["id"]).count("run.failed") == 0  # recovery's record, not a second one
+
+
+def test_a_run_that_is_not_ready_within_its_budget_fails_instead_of_starting(env, monkeypatch):
+    """The cutoff recovery works with allows START_BUDGET before the tool starts. A run that
+    needed longer fails at the fence, so no run starts that recovery could take for a lost one."""
+    from khandaq import runs, target_credentials
+
+    client, db, _ = env
+    eng_id, tid = _engagement(client, "late")
+    run = _queue(client, eng_id, tid)
+    _running(db, run["id"])
+
+    def took_too_long(session, the_run, target, settings):
+        with db.begin() as conn:
+            conn.execute(
+                text("UPDATE runs SET started_at = :t WHERE id = :r"),
+                {
+                    "t": dt.datetime.now(dt.UTC) - runs.START_BUDGET - dt.timedelta(seconds=5),
+                    "r": the_run.id,
+                },
+            )
+        return None
+
+    monkeypatch.setattr(target_credentials, "load_for_run", took_too_long)
+    runner = _NeverRun()
+    with Session(db) as session:
+        after = runs.execute_run(session, run["id"], runner=runner)
+        assert after.state == "failed" and "not ready to start" in after.reject_reason
+    assert runner.calls == 0
+    assert _actions(db, run["id"])[-1] == "run.failed"
+
+
 def test_a_lost_run_whose_containers_cannot_be_removed_stays_running(env):
     """Its forwarder may still be relaying, so the run keeps holding back the engagement's next
     paced run (spec 032); once the leftovers are gone it is failed and audited."""

@@ -370,7 +370,9 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
       by one shared rule; an ALPN extension that names no protocol is refused; a request whose
       client left while the target connection opened is not sent; a run counts as lost only
       after the adapter timeout plus the limits of the runner's own steps (690 s: resolving the
-      target now has a 30 s limit, then the Docker calls) plus ten minutes, so recovery cannot remove a live run's containers.
+      target now has a 30 s limit, then the Docker calls) plus ten minutes, and a fence in front
+      of the tool: a run that recovery ended meanwhile, or that needed more than five minutes
+      to get ready, does not start, so recovery cannot remove a live run's containers.
       **Owner:** review and merge the spec 032 PR. It changes how the rules of engagement's rate
       cap is enforced (a refusal becomes a paced run), so under ADR-0018 a nightly run does not
       merge it. It blocks garak on capped engagements; default: stays refused until merged.

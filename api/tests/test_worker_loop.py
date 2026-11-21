@@ -10,6 +10,7 @@ from sqlalchemy.exc import OperationalError
 
 from khandaq import worker
 from khandaq.adapters.docker import OVERHEAD_SECONDS
+from khandaq.runs import START_BUDGET
 from khandaq.settings import Settings
 
 
@@ -145,7 +146,7 @@ def test_a_run_is_stale_only_after_every_bounded_step_of_a_live_run(monkeypatch)
     down (spec 032)."""
     settings = Settings(adapter_timeout_seconds=600)
     longest_live_run = dt.timedelta(seconds=600 + OVERHEAD_SECONDS)
-    assert worker.stale_after(settings) == longest_live_run + worker.STALE_MARGIN
+    assert worker.stale_after(settings) == START_BUDGET + longest_live_run + worker.STALE_MARGIN
     assert worker.STALE_MARGIN >= dt.timedelta(minutes=5)
 
     class _Session:

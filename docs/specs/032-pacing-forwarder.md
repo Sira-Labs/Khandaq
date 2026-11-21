@@ -110,7 +110,13 @@ with `rate_per_minute: 60` and the run goes through, slower, without exceeding w
      worker, or the case above) and only then records `run.failed`; if the removal fails the run
      stays `running`. The worker runs this at start and every five minutes. A run that stays
      `running` this way is audited as `run.cleanup_failed` once, not on every attempt.
-   - "Past the timeout" means longer than a live run can take: the adapter timeout, plus the
+   - A fence stands in front of the tool. The steps before it (reloading the target, reading a
+     credential) have no deadline of their own, so right before the runner starts the worker
+     reads the run again: if it is no longer `running` (recovery ended it), nothing is started
+     and its record stands; if more than five minutes have passed since the claim
+     (`START_BUDGET`), the run fails there instead of starting.
+   - "Past the timeout" means longer than a live run can take: that start budget, the adapter
+     timeout, plus the
      limits of the runner's own steps around it (30 s to resolve the target, four setup calls of
      120 s and three removals of 60 s: `OVERHEAD_SECONDS`), plus ten minutes for recording. Recovery therefore
      never removes the containers of a run whose worker is still inside one of those calls.
@@ -201,7 +207,9 @@ Unit (`api/tests/test_worker_loop.py`):
 Integration (`api/tests/test_worker.py`):
 `test_a_lost_run_whose_containers_cannot_be_removed_stays_running`,
 `test_a_run_that_leaves_containers_behind_stays_running_and_is_audited`,
-`test_leftovers_of_a_container_run_are_looked_for_whatever_the_settings`.
+`test_leftovers_of_a_container_run_are_looked_for_whatever_the_settings`,
+`test_a_run_that_recovery_ended_while_it_was_prepared_is_not_started`,
+`test_a_run_that_is_not_ready_within_its_budget_fails_instead_of_starting`.
 Unit and integration (`api/tests/test_adapter_registry.py`): `test_adapter_refusal_for_a_rate_cap`
 (the table), `test_only_garak_is_paced_by_the_forwarder`,
 `test_a_capped_engagement_runs_garak_paced_and_audits_the_rate` (pre-flight, campaign, create,
