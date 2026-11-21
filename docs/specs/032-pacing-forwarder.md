@@ -111,8 +111,8 @@ with `rate_per_minute: 60` and the run goes through, slower, without exceeding w
      stays `running`. The worker runs this at start and every five minutes. A run that stays
      `running` this way is audited as `run.cleanup_failed` once, not on every attempt.
    - "Past the timeout" means longer than a live run can take: the adapter timeout, plus the
-     limits of the runner's own Docker calls around it (four setup calls of 120 s and three
-     removals of 60 s, `OVERHEAD_SECONDS`), plus ten minutes for recording. Recovery therefore
+     limits of the runner's own steps around it (30 s to resolve the target, four setup calls of
+     120 s and three removals of 60 s: `OVERHEAD_SECONDS`), plus ten minutes for recording. Recovery therefore
      never removes the containers of a run whose worker is still inside one of those calls.
    - Leftovers are looked for whatever the deployment is configured to start now; only a
      built-in (in-process) adapter is known to leave nothing.

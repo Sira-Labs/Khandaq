@@ -18,6 +18,7 @@ import pytest
 
 from khandaq.adapters.docker import (
     OVERHEAD_SECONDS,
+    RESOLVE_SECONDS,
     CliResult,
     DockerRunner,
     LeftoversError,
@@ -505,8 +506,42 @@ def test_the_time_a_run_takes_outside_its_adapter_is_what_recovery_allows_for():
     runner.run(_request())
     assert all(limit is not None for _, limit in cli.limits)  # nothing may wait for ever
     around = sum(limit for what, limit in cli.limits if what != "start")
-    assert around == OVERHEAD_SECONDS == 660
+    assert around + RESOLVE_SECONDS == OVERHEAD_SECONDS == 690
+    assert runner.resolve_seconds == RESOLVE_SECONDS
     assert dict(cli.limits)["start"] == runner.settings.adapter_timeout_seconds
+
+
+def test_a_resolver_that_does_not_answer_fails_the_run_before_anything_starts():
+    """``getaddrinfo`` has no deadline of its own. A run that hung there would outlive the
+    cutoff recovery works with, and start its containers after it was recorded as failed."""
+    import threading
+
+    release = threading.Event()
+
+    def hangs(host: str, port: int) -> list[str]:
+        release.wait(10)
+        return ["203.0.113.7"]
+
+    cli = FakeCli(CliResult(0, GOOD_OUTPUT, b""))
+    runner = DockerRunner(MANIFEST, SETTINGS, cli=cli, resolver=hangs)
+    runner.resolve_seconds = 0.05
+    try:
+        with pytest.raises(RunnerError, match="took longer than"):
+            runner.run(_request())
+    finally:
+        release.set()
+    assert cli.calls == []  # no network, no forwarder, no adapter
+
+
+def test_a_resolver_error_still_reaches_the_caller():
+    def fails(host: str, port: int) -> list[str]:
+        raise RunnerError("cannot resolve target host 'gw.acme.test': no such name")
+
+    cli = FakeCli(CliResult(0, GOOD_OUTPUT, b""))
+    runner = DockerRunner(MANIFEST, SETTINGS, cli=cli, resolver=fails)
+    with pytest.raises(RunnerError, match="no such name"):
+        runner.run(_request())
+    assert cli.calls == []
 
 
 @pytest.mark.parametrize("rm_fails", [True, False])

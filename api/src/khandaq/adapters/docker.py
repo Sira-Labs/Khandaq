@@ -30,6 +30,7 @@ import socket
 import subprocess
 import tarfile
 import tempfile
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -52,13 +53,14 @@ _STDERR_TAIL = 2000
 MAX_REQUEST_BYTES = 60_000
 
 
-# What a run can take outside its adapter's own timeout: four setup calls (network, forwarder,
-# attach, create) and three removals (adapter, forwarder, network), each under its own limit.
-# Stale-run recovery adds this to the adapter timeout, so it never takes a run whose worker is
-# still inside one of these calls for a lost one.
+# What a run can take outside its adapter's own timeout: resolving the target, four setup calls
+# (network, forwarder, attach, create) and three removals (adapter, forwarder, network), each
+# under its own limit. Stale-run recovery adds this to the adapter timeout, so it never takes a
+# run whose worker is still inside one of these steps for a lost one.
+RESOLVE_SECONDS = 30
 SETUP_STEP_SECONDS = 120
 REMOVE_STEP_SECONDS = 60
-OVERHEAD_SECONDS = 4 * SETUP_STEP_SECONDS + 3 * REMOVE_STEP_SECONDS
+OVERHEAD_SECONDS = RESOLVE_SECONDS + 4 * SETUP_STEP_SECONDS + 3 * REMOVE_STEP_SECONDS
 
 
 class RunnerError(Exception):
@@ -318,6 +320,7 @@ class DockerRunner:
         self.settings = settings
         self.cli = cli or SubprocessDockerCli()
         self.resolver = resolver
+        self.resolve_seconds: float = RESOLVE_SECONDS
 
     # --- pieces, exposed for tests --------------------------------------------------------------
 
@@ -330,7 +333,7 @@ class DockerRunner:
             raise RunnerError(f"target has no usable network endpoint: {exc}") from exc
         if _is_ip_literal(host):
             raise RunnerError("IP-literal targets are not supported for container runs")
-        addresses = self.resolver(host, port)
+        addresses = self._resolve(host, port)
         if not addresses:
             raise RunnerError(f"target host {host!r} resolves to no address")
         checked = [check_address(a) for a in addresses]  # any forbidden address refuses the run
@@ -352,6 +355,29 @@ class DockerRunner:
             return egress_forwarder.parse_pace(repr(float(rate)))
         except (ValueError, OverflowError) as exc:
             raise problem from exc
+
+    def _resolve(self, host: str, port: int) -> list[str]:
+        """The resolver's answer within ``RESOLVE_SECONDS``. ``getaddrinfo`` has no deadline of
+        its own, and a run that hung here would still be ``running`` when recovery came for it."""
+        answer: list[list[str] | BaseException] = []
+
+        def ask() -> None:
+            try:
+                answer.append(self.resolver(host, port))
+            except BaseException as exc:  # handed to the caller's thread, re-raised there
+                answer.append(exc)
+
+        # A daemon thread: one that never returns must not keep the worker from exiting.
+        thread = threading.Thread(target=ask, name="khq-resolve", daemon=True)
+        thread.start()
+        thread.join(self.resolve_seconds)
+        if not answer:
+            raise RunnerError(
+                f"resolving target host {host!r} took longer than {self.resolve_seconds:.0f}s"
+            )
+        if isinstance(answer[0], BaseException):
+            raise answer[0]
+        return answer[0]
 
     def forwarder_args(
         self, name: str, port: int, address: str, labels: list[str], pace: float | None = None
