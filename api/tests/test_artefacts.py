@@ -23,7 +23,8 @@ from khandaq.artefacts import ArtefactError
 
 TEST_URL = os.environ.get("KHANDAQ_TEST_DATABASE_URL")
 
-OWNER = {"X-Khandaq-Dev-User": "owner@test"}
+DEV = "X-Khandaq-Dev-User"
+OWNER = {DEV: "owner@test"}
 EVIDENCE_KEY = "synthetic-test-evidence-key-0123456789"
 MODEL = b"synthetic model bytes \x00\x01\x02 " * 64
 DATA = b"synthetic,evaluation,rows\n" * 32
@@ -370,6 +371,12 @@ def test_read_artefact_refuses_tampered_moved_and_missing_content(env):
     assert refused() == 409
     replace(path_o.read_bytes())  # another target's envelope, moved here
     assert refused() == 409
+    # The same bytes, stored for the same digest under another engagement's target: only the
+    # binding of the envelope to its key tells them apart, and it must.
+    eng_twin, (twin, _) = _engagement(client, "twin")
+    assert _put(client, eng_twin, twin, MODEL).status_code == 201
+    replace((Path(settings.evidence_dir) / _rows(db, twin)[0][2]).read_bytes())
+    assert refused() == 409
     replace(MODEL)  # the right bytes, but not encrypted: not what Khandaq stored
     assert refused() == 409
     path.unlink()
@@ -411,6 +418,119 @@ def test_an_object_that_is_not_the_content_blocks_the_upload(env):
     assert _put(client, eng_id, model, MODEL).status_code == 409
     assert _rows(db, model) == []
     assert path.read_bytes() == b"something else is already here"  # never overwritten
+
+
+def test_the_right_bytes_in_plaintext_at_the_key_are_not_accepted_as_stored(env):
+    """Whoever can write to the store could put the content there unencrypted. Evidence from
+    before spec 014 may be plaintext; content never is, so this is not "already stored"."""
+    client, db, settings = env
+    eng_id, (model, _) = _engagement(client, "plain")
+    path = Path(settings.evidence_dir) / artefacts.object_key(eng_id, model, _digest(MODEL))
+    path.parent.mkdir(parents=True)
+    path.write_bytes(MODEL)
+
+    assert _put(client, eng_id, model, MODEL).status_code == 409
+    assert _rows(db, model) == []
+    assert _audit(db, eng_id, "target.artefact_stored") == []
+    assert client.get(_url(eng_id, model), headers=OWNER).status_code == 404
+
+
+def test_a_store_that_fails_is_a_503_and_records_nothing(env, monkeypatch):
+    client, db, settings = env
+    eng_id, (model, _) = _engagement(client, "diskfull")
+
+    class Broken:
+        def put_new(self, object_key: str, blob: bytes) -> None:
+            raise OSError(28, "No space left on device")
+
+        def get(self, object_key: str) -> bytes:
+            raise OSError(5, "Input/output error")
+
+    monkeypatch.setattr(artefacts, "store_from_settings", lambda s: Broken())
+    assert _put(client, eng_id, model, MODEL).status_code == 503
+    assert _rows(db, model) == []
+    assert _audit(db, eng_id, "target.artefact_stored") == []
+    monkeypatch.undo()
+
+    assert _put(client, eng_id, model, MODEL).status_code == 201
+    monkeypatch.setattr(artefacts, "store_from_settings", lambda s: Broken())
+    with Session(db) as s, pytest.raises(ArtefactError) as exc:
+        artefacts.read_artefact(s, _target(db, model), settings)
+    assert exc.value.status == 503
+
+
+def test_an_owner_who_lost_the_role_while_uploading_stores_nothing(env, monkeypatch):
+    """Authorisation is decided before the body is read, and a body can take minutes. It is
+    decided again before anything is stored."""
+    from khandaq.routers import artefacts as route
+
+    client, db, _ = env
+    eng_id, (model, _) = _engagement(client, "demoted")
+    second = _member(db, eng_id, "second-owner@demoted.test", "owner")
+    real_body = route._body
+
+    def after_the_body(statement: str):
+        async def body(request, limit):
+            content = await real_body(request, limit)
+            with db.begin() as conn:  # what an admin did while the upload was on its way
+                conn.execute(text(statement), {"e": eng_id, "m": "second-owner@demoted.test"})
+            return content
+
+        return body
+
+    demote = (
+        "UPDATE engagement_members SET role = 'viewer' WHERE engagement_id = :e "
+        "AND user_id = (SELECT id FROM users WHERE email = :m)"
+    )
+    monkeypatch.setattr(route, "_body", after_the_body(demote))
+    assert _put(client, eng_id, model, MODEL, headers=second).status_code == 403
+    assert _rows(db, model) == []
+
+    with db.begin() as conn:
+        conn.execute(text(demote.replace("'viewer'", "'owner'")), {"e": eng_id, "m": second[DEV]})
+    disable = "UPDATE users SET disabled = true WHERE email = :m AND CAST(:e AS text) IS NOT NULL"
+    monkeypatch.setattr(route, "_body", after_the_body(disable))
+    assert _put(client, eng_id, model, MODEL, headers=second).status_code == 403
+    assert _rows(db, model) == []
+    assert _audit(db, eng_id, "target.artefact_stored") == []
+
+
+def test_a_body_that_does_not_arrive_in_time_is_a_408(env, monkeypatch):
+    import asyncio
+
+    from khandaq.routers import artefacts as route
+
+    client, db, _ = env
+    eng_id, (model, _) = _engagement(client, "trickle")
+
+    async def never(request, limit):
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(route, "_body", never)
+    monkeypatch.setattr(route, "UPLOAD_SECONDS", 0.05)
+    assert _put(client, eng_id, model, MODEL).status_code == 408
+    assert _rows(db, model) == []
+
+
+def test_a_wrong_upload_is_refused_without_waiting_for_the_engagement_lock(env):
+    """The digest is checked before the lock that sealing and closing take, so a large wrong
+    upload cannot make them wait; only a matching one goes on to the lock."""
+    from khandaq.ledger import lock_engagement
+
+    client, db, _ = env
+    eng_id, (model, _) = _engagement(client, "nolock")
+    with Session(db) as busy:
+        lock_engagement(busy, eng_id)  # a seal or a close is in progress
+        done: dict = {}
+        thread = threading.Thread(
+            target=lambda: done.update(r=_put(client, eng_id, model, MODEL + b"!"))
+        )
+        thread.start()
+        thread.join(timeout=5)
+        waited = thread.is_alive()
+        busy.rollback()
+    thread.join(timeout=10)
+    assert not waited and done["r"].status_code == 422
 
 
 def test_no_evidence_key_is_a_503_and_stores_nothing(env, monkeypatch):

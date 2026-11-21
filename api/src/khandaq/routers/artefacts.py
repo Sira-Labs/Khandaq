@@ -6,17 +6,23 @@ returns stored bytes or deletes them.
 
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.concurrency import run_in_threadpool
 
 from .. import artefacts
 from ..artefacts import ArtefactError
-from ..deps import EngagementAccess, require_engagement_role
-from ..models import Target, TargetArtefact
+from ..deps import EngagementAccess, effective_role, require_engagement_role
+from ..models import Target, TargetArtefact, User
 from ..schemas import ArtefactOut
 from ..settings import get_settings
 
 router = APIRouter(prefix="/api/engagements", tags=["artefacts"])
+
+# How long one upload's body may take to arrive: a trickled body must not hold a request, and
+# the memory already received, for ever.
+UPLOAD_SECONDS = 600.0
 
 
 def _target(access: EngagementAccess, target_id: str) -> Target:
@@ -47,8 +53,22 @@ async def _body(request: Request, limit: int) -> bytes:
     return b"".join(chunks)
 
 
+def _still_owner(access: EngagementAccess) -> None:
+    """The body may have taken minutes to arrive. Whoever was the owner when it began must still
+    be one now: enabled, on the allow-list, and with the owner role on this engagement."""
+    session, settings = access.session, get_settings()
+    user = session.get(User, access.user.id, populate_existing=True)
+    # The allow-list applies wherever sign-in is real; the development login has none.
+    listed = settings.email_allowed(user.email) if user and settings.is_prod else True
+    if user is None or user.disabled or not listed:
+        raise HTTPException(403, "no access: this account can no longer upload")
+    if effective_role(session, user, access.engagement.id) != "owner":
+        raise HTTPException(403, "requires one of: owner")
+
+
 def _store(access: EngagementAccess, target_id: str, content: bytes) -> tuple[ArtefactOut, bool]:
     session = access.session
+    _still_owner(access)
     target = _target(access, target_id)
     try:
         row, created = artefacts.store_artefact(
@@ -74,7 +94,14 @@ async def put_artefact(
 ) -> ArtefactOut:
     # Authorisation is decided; give the connection back while a possibly slow upload arrives.
     await run_in_threadpool(access.session.rollback)
-    content = await _body(request, get_settings().artefact_max_mb * 1024 * 1024)
+    limit = get_settings().artefact_max_mb * 1024 * 1024
+    try:
+        async with asyncio.timeout(UPLOAD_SECONDS):
+            content = await _body(request, limit)
+    except TimeoutError:
+        raise HTTPException(
+            408, f"the upload did not arrive within {UPLOAD_SECONDS:.0f}s"
+        ) from None
     out, created = await run_in_threadpool(_store, access, target_id, content)
     response.status_code = 201 if created else 200
     return out

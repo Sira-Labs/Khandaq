@@ -55,28 +55,35 @@ on those bytes and on nothing else.
 
 1. **Who and when.** Only the engagement `owner` (or an org admin) may upload. The engagement
    must be `draft` or `active`; a `closed` engagement answers `409`. The state is read under the
-   engagement lock, so an upload cannot commit behind a concurrent close.
+   engagement lock, so an upload cannot commit behind a concurrent close. The role is decided
+   before the body is read and **again** before anything is stored: an owner who was demoted,
+   disabled or (in production) taken off the allow-list while the body arrived gets `403`.
 2. **Which targets.** The target must belong to the engagement (`404` otherwise) and be a
    `model_artifact` or a `dataset` (`409` otherwise). Its spec must carry a `digest` of the form
    `sha256:` followed by 64 lower-case hex characters (`409` otherwise): a target named only by
    `location` has nothing the bytes could be checked against, so it cannot hold content.
 3. **Size.** A body larger than `KHANDAQ_ARTEFACT_MAX_MB` is refused with `413` as soon as the
-   limit is passed; the rest is not read. An empty body is `422`.
+   limit is passed; the rest is not read. An empty body is `422`. A body that has not arrived
+   within ten minutes is `408`.
 4. **The digest decides.** The SHA-256 of the body is computed by the API. If it is not the
    target's digest the upload is refused with `422`, nothing is stored, and the refusal is audited
    as `target.artefact_rejected` with both digests and the size. The client's own claim about the
-   content (a header, a file name) is never read.
+   content (a header, a file name) is never read. Hashing and encrypting happen before the
+   engagement lock is taken, so a large or wrong upload does not make evidence sealing or a
+   close wait.
 5. **Stored once.** The bytes are encrypted and written write-once (`evidence_store.retain`), then
    the row and the audit entry `target.artefact_stored` (target, type, digest, size) are committed
    together. A repeat of the same upload finds the row and answers `200` without a second audit
    entry. An object left behind by an upload whose commit failed is accepted on the retry only if
-   it decrypts to the same digest.
+   it is an envelope that decrypts to the same digest. The same bytes in plaintext at that key
+   are not "already stored": `409`.
 6. **Reading back.** `read_artefact` returns the plaintext only after it matches the row's digest
    **and** the digest the target declares now. A missing row, a missing object, an object that is
    not an envelope, a failed decryption or a mismatch raises `ArtefactError`; there is no partial
    result and no fallback. Unlike evidence from before spec 014, content is never read from an
    unencrypted object.
-7. **Failures of the deployment.** No usable evidence key: `503`. The store is down: `503`. In
+7. **Failures of the deployment.** No usable evidence key: `503`. The store is down or fails
+   (an object-store error, a full or unwritable disk): `503`, also from `read_artefact`. In
    production with an empty `KHANDAQ_OBJECT_STORE_URL`: `503`, because the API would write into
    its own evidence directory, which the worker (another container) never sees. An object already
    at the content's key that is not this content: `409`, and it is not overwritten. In every case
@@ -115,6 +122,11 @@ upper-case digests), `test_a_closed_engagement_refuses_an_upload`,
 `test_read_artefact_refuses_tampered_moved_and_missing_content`,
 `test_an_object_left_by_a_failed_commit_is_accepted_on_retry`,
 `test_an_object_that_is_not_the_content_blocks_the_upload`,
+`test_the_right_bytes_in_plaintext_at_the_key_are_not_accepted_as_stored`,
+`test_a_store_that_fails_is_a_503_and_records_nothing`,
+`test_an_owner_who_lost_the_role_while_uploading_stores_nothing`,
+`test_a_body_that_does_not_arrive_in_time_is_a_408`,
+`test_a_wrong_upload_is_refused_without_waiting_for_the_engagement_lock`,
 `test_no_evidence_key_is_a_503_and_stores_nothing`,
 `test_production_without_an_object_store_refuses_uploads`,
 `test_an_upload_cannot_slip_in_behind_a_concurrent_close`.

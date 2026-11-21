@@ -22,10 +22,9 @@ from sqlalchemy.orm import Session
 from . import audit
 from .evidence_crypto import EvidenceDecryptError, EvidenceKeyError, Keyring, is_envelope
 from .evidence_store import (
-    EvidenceConflict,
+    EvidenceExists,
     EvidenceMissing,
     EvidenceStoreError,
-    retain,
     store_from_settings,
 )
 from .ledger import lock_engagement
@@ -95,6 +94,46 @@ def _keyring(settings: Settings) -> Keyring:
         ) from None
 
 
+def _precheck(session: Session, target: Target) -> str:
+    """The target's digest, after the checks that need no lock: a closed engagement and a target
+    that can hold no content are refused before a byte is hashed."""
+    engagement = session.get(Engagement, target.engagement_id)
+    if engagement is None or engagement.state == "closed":
+        raise ArtefactError(409, "a closed engagement takes no content")
+    return declared_digest(target)
+
+
+def _write_once(settings: Settings, key: str, blob: bytes, digest: str, target_id: str) -> None:
+    """Put the envelope ``blob`` at ``key``. An object already there is accepted only if it is an
+    envelope that decrypts to ``digest`` (the object of an upload whose commit failed).
+
+    Not ``evidence_store.retain``: that accepts a plaintext object with the right hash, as
+    evidence from before spec 014 may be. Content is never plaintext at rest.
+    """
+    ring = _keyring(settings)
+    try:
+        store = store_from_settings(settings)
+        try:
+            store.put_new(key, blob)
+            return
+        except EvidenceExists:
+            existing = store.get(key)
+    except (EvidenceStoreError, EvidenceMissing, OSError) as exc:
+        log.error(
+            "artefact store unavailable",
+            extra={"target_id": target_id, "error": type(exc).__name__},
+        )
+        raise ArtefactError(503, "the evidence store is unavailable; try again later") from None
+    try:
+        same = is_envelope(existing) and sha256_digest(ring.decrypt(key, existing)) == digest
+    except EvidenceDecryptError:
+        same = False
+    if not same:
+        log.error("another object is stored at the artefact's key", extra={"target_id": target_id})
+        raise ArtefactError(409, "another object is already stored under this target's digest")
+    log.info("artefact already stored; identical retry accepted", extra={"target_id": target_id})
+
+
 def store_artefact(
     session: Session, target: Target, content: bytes, *, actor: User, settings: Settings
 ) -> tuple[TargetArtefact, bool]:
@@ -103,15 +142,11 @@ def store_artefact(
     Returns the row and whether it is new. The caller commits: the row and its audit entry, or,
     for an ``ArtefactError`` marked ``audited``, the entry that records the refusal.
     """
-    # Under the lock that closing takes, so an upload cannot commit behind a concurrent close, and
-    # two first uploads for one target do not both insert.
-    lock_engagement(session, target.engagement_id)
-    engagement = session.get(Engagement, target.engagement_id, populate_existing=True)
-    if engagement is None or engagement.state == "closed":
-        raise ArtefactError(409, "a closed engagement takes no content")
-    expected = declared_digest(target)
+    expected = _precheck(session, target)
     if not content:
         raise ArtefactError(422, "the upload is empty")
+    # Hashing and encrypting happen before the engagement lock is taken: the same lock serialises
+    # evidence sealing and closing, and neither should wait for 64 MiB of someone's upload.
     actual = sha256_digest(content)
     if actual != expected:
         audit.record(
@@ -132,9 +167,6 @@ def store_artefact(
             f"the upload's SHA-256 is {actual}, not the target's digest {expected}",
             audited=True,
         )
-    existing = get(session, target.id)
-    if existing is not None:
-        return existing, False
     if settings.is_prod and not settings.object_store_url:
         # Without the object store the API would write into its own evidence directory, which the
         # worker, another container, never sees: the content would be recorded and unusable.
@@ -142,16 +174,17 @@ def store_artefact(
             503, "content uploads need the object store (KHANDAQ_OBJECT_STORE_URL is empty)"
         )
     key = object_key(target.engagement_id, target.id, expected)
-    try:
-        retain(store_from_settings(settings), _keyring(settings), key, content, expected)
-    except EvidenceConflict:
-        log.error("stored artefact differs from its digest", extra={"target_id": target.id})
-        raise ArtefactError(
-            409, "other content is already stored under this target's digest"
-        ) from None
-    except EvidenceStoreError as exc:
-        log.error("artefact store unavailable", extra={"target_id": target.id, "error": str(exc)})
-        raise ArtefactError(503, "the evidence store is unavailable; try again later") from None
+    blob = _keyring(settings).encrypt(key, content)
+    # Under the lock that closing takes, so an upload cannot commit behind a concurrent close, and
+    # two first uploads for one target do not both insert. The state is read again under it.
+    lock_engagement(session, target.engagement_id)
+    engagement = session.get(Engagement, target.engagement_id, populate_existing=True)
+    if engagement is None or engagement.state == "closed":
+        raise ArtefactError(409, "a closed engagement takes no content")
+    existing = get(session, target.id)
+    if existing is not None:
+        return existing, False
+    _write_once(settings, key, blob, expected, target.id)
     row = TargetArtefact(
         target_id=target.id,
         engagement_id=target.engagement_id,
@@ -190,8 +223,11 @@ def read_artefact(session: Session, target: Target, settings: Settings) -> bytes
         blob = store_from_settings(settings).get(row.object_key)
     except EvidenceMissing:
         raise ArtefactError(404, "the stored content is missing from the evidence store") from None
-    except EvidenceStoreError as exc:
-        log.error("artefact store unavailable", extra={"target_id": target.id, "error": str(exc)})
+    except (EvidenceStoreError, OSError) as exc:
+        log.error(
+            "artefact store unavailable",
+            extra={"target_id": target.id, "error": type(exc).__name__},
+        )
         raise ArtefactError(503, "the evidence store is unavailable; try again later") from None
     if not is_envelope(blob):
         raise ArtefactError(409, "the stored content is not encrypted; it is not used")

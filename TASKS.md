@@ -373,7 +373,13 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
       may be). Production refuses uploads without the object store, because the API's own
       evidence directory is not the worker's. The route reads the body itself, with the limit
       enforced while it arrives, and gives its database connection back first. `scope.py`,
-      `audit.py`, the ledger and `evidence_store.py` are untouched. Follow-ups: spec 035 (ART in
+      `audit.py`, the ledger and `evidence_store.py` are untouched. An independent review before
+      merge (CodeRabbit was over its hourly limit) led to: the object is written by the module
+      itself, not by `evidence_store.retain`, which accepts a plaintext object with the right
+      hash (right for old evidence, wrong for content); hashing and encrypting moved in front of
+      the engagement lock; the owner role is checked again after the body has arrived (the
+      membership rule is now `deps.effective_role`, used by both checks); a body has ten minutes
+      to arrive; a failing store is a 503 instead of a 500. Follow-ups: spec 035 (ART in
       a sandbox without network: hand-over of model and data, estimators and formats, how a run
       names its dataset and how the lock checks both, registration); a console page for the
       upload; streamed storage for content larger than memory allows.
