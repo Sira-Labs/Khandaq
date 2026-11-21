@@ -389,6 +389,54 @@ def test_a_run_that_is_not_ready_within_its_budget_fails_instead_of_starting(env
     assert _actions(db, run["id"])[-1] == "run.failed"
 
 
+def test_recovery_leaves_a_run_alone_while_a_worker_is_executing_it(env):
+    """However long a step of a live run blocks, and however old the run looks: while its worker
+    holds it, recovery neither removes its containers nor fails it (spec 032 §7). Once the
+    worker is done, the hold is gone."""
+    from khandaq import runs
+
+    client, db, _ = env
+    eng_id, tid = _engagement(client, "held")
+    run = _queue(client, eng_id, tid)
+    _running(db, run["id"])
+    asked: list[str] = []
+    seen: dict = {}
+
+    def removed(lost) -> bool:
+        asked.append(lost.id)
+        return True
+
+    class Slow(FakeRunner):
+        def run(self, request: dict) -> dict:
+            # The tool is running, and so much time has passed that the run looks lost.
+            with db.begin() as conn:
+                conn.execute(
+                    text("UPDATE runs SET started_at = :t WHERE id = :r"),
+                    {"t": dt.datetime.now(dt.UTC) - dt.timedelta(hours=3), "r": run["id"]},
+                )
+            with Session(db) as recovery:
+                seen["recovered"] = runs.recover_stale_runs(
+                    recovery, older_than=dt.timedelta(hours=1), leftovers_removed=removed
+                )
+            seen["state"] = _run(client, eng_id, run["id"])["state"]
+            return super().run(request)
+
+    with Session(db) as session:
+        after = runs.execute_run(session, run["id"], runner=Slow())
+        assert after.state == "succeeded"
+    assert seen == {"recovered": 0, "state": "running"} and asked == []
+    assert "run.failed" not in _actions(db, run["id"])
+
+    # The hold ends with the execution, also when it ends in an error.
+    for outcome in (FakeRunner(), FakeRunner(error=RuntimeError("tool crashed"))):
+        again = _queue(client, eng_id, tid)
+        _running(db, again["id"])
+        with Session(db) as session:
+            runs.execute_run(session, again["id"], runner=outcome)
+        with Session(db) as probe:
+            assert not runs._held_by_a_live_worker(probe, again["id"])
+
+
 def test_a_lost_run_whose_containers_cannot_be_removed_stays_running(env):
     """Its forwarder may still be relaying, so the run keeps holding back the engagement's next
     paced run (spec 032); once the leftovers are gone it is failed and audited."""

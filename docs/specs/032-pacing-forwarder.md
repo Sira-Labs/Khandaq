@@ -110,6 +110,11 @@ with `rate_per_minute: 60` and the run goes through, slower, without exceeding w
      worker, or the case above) and only then records `run.failed`; if the removal fails the run
      stays `running`. The worker runs this at start and every five minutes. A run that stays
      `running` this way is audited as `run.cleanup_failed` once, not on every attempt.
+   - A worker **holds** the run while it executes it: a session-level advisory lock on a
+     connection of its own, released when the execution ends and by the database when the
+     worker's process or connection is gone. Recovery tries the same lock and leaves a run alone
+     while it is held, so no step of a live run, however long it blocks, is mistaken for a lost
+     worker. The age cutoff below still applies on top: recovery looks only at old runs.
    - A fence stands in front of the tool. The steps before it (reloading the target, reading a
      credential) have no deadline of their own, so right before the runner starts the worker
      reads the run again: if it is no longer `running` (recovery ended it), nothing is started
@@ -208,6 +213,7 @@ Integration (`api/tests/test_worker.py`):
 `test_a_lost_run_whose_containers_cannot_be_removed_stays_running`,
 `test_a_run_that_leaves_containers_behind_stays_running_and_is_audited`,
 `test_leftovers_of_a_container_run_are_looked_for_whatever_the_settings`,
+`test_recovery_leaves_a_run_alone_while_a_worker_is_executing_it`,
 `test_a_run_that_recovery_ended_while_it_was_prepared_is_not_started`,
 `test_a_run_that_is_not_ready_within_its_budget_fails_instead_of_starting`.
 Unit and integration (`api/tests/test_adapter_registry.py`): `test_adapter_refusal_for_a_rate_cap`

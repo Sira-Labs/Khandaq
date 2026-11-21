@@ -22,10 +22,11 @@ their hash is sealed (spec 014, ADR-0016).
 
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import json
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 
 import khandaq_core as kc
 from sqlalchemy import and_, exists, not_, select, text
@@ -421,9 +422,55 @@ def _may_still_start(session: Session, run: Run) -> bool:
     return True
 
 
+_RUN_HOLD = "SELECT {call}(hashtextextended(:key, 0))"
+
+
+def _hold_key(run_id: str) -> dict[str, str]:
+    return {"key": f"khandaq.run:{run_id}"}
+
+
+@contextlib.contextmanager
+def _holding(session: Session, run_id: str) -> Iterator[None]:
+    """Hold the run for as long as a worker is executing it (spec 032 §7).
+
+    A session-level advisory lock on a connection of its own: it survives the commits of the
+    execution and is released when this block ends, or by the database when the worker's process
+    or connection is gone. Recovery tries the same lock and leaves a run alone while it is held,
+    so no step of a live run, however long it blocks, can be mistaken for a lost worker.
+    """
+    connection = session.get_bind().engine.connect()
+    try:
+        connection.execute(text(_RUN_HOLD.format(call="pg_advisory_lock")), _hold_key(run_id))
+        connection.commit()  # the lock belongs to the connection, not to this transaction
+        yield
+    finally:
+        try:
+            connection.execute(text(_RUN_HOLD.format(call="pg_advisory_unlock")), _hold_key(run_id))
+            connection.commit()
+        except SQLAlchemyError:  # the connection is gone, and the lock with it
+            log.warning("run %s: the hold's connection was lost before its release", run_id)
+        finally:
+            connection.close()
+
+
+def _held_by_a_live_worker(session: Session, run_id: str) -> bool:
+    """Whether a worker is executing the run right now. Takes the hold for the rest of this
+    transaction when nobody has it, so a worker cannot begin while recovery ends the run."""
+    free = session.execute(
+        text(_RUN_HOLD.format(call="pg_try_advisory_xact_lock")), _hold_key(run_id)
+    ).scalar_one()
+    return not free
+
+
 def execute_run(session: Session, run_id: str, *, actor: User | None = None, runner=None) -> Run:
     """Execute a ``running`` run and record the outcome; every failure ends in ``failed``, except
-    a run whose containers could not be removed, which stays ``running`` (``_keep_running``)."""
+    a run whose containers could not be removed, which stays ``running`` (``_keep_running``).
+    The run is held for the whole execution, so recovery leaves it alone (``_holding``)."""
+    with _holding(session, run_id):
+        return _execute(session, run_id, actor=actor, runner=runner)
+
+
+def _execute(session: Session, run_id: str, *, actor: User | None, runner) -> Run:
     run = session.get(Run, run_id)
     if run is None:  # pragma: no cover - the running row was committed before execution
         raise RuntimeError(f"run {run_id} does not exist")
@@ -538,6 +585,11 @@ def recover_stale_runs(
     ).all()
     failed = 0
     for run in stale:
+        if _held_by_a_live_worker(session, run.id):
+            # Old enough to look lost, but its worker is alive and inside it: removing its
+            # containers now would kill a live run, and failing it would let another start.
+            log.warning("run %s is past the cutoff but a worker still holds it", run.id)
+            continue
         if not leftovers_removed(run):
             log.error("run %s was lost and its containers could not be removed", run.id)
             _audit_cleanup_failed_once(session, run, _LEFTOVERS_AT_RECOVERY)
