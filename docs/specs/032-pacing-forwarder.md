@@ -161,6 +161,12 @@ with `rate_per_minute: 60` and the run goes through, slower, without exceeding w
   minutes, so no restart is needed. In both cases recovery waits until the run is stale (longer
   than a live run can take, Behaviour 7); until then the lost run stays `running` and nothing
   paced starts beside it.
+- Recovery and a live worker are kept apart by three things: the hold, the fence and the age
+  cutoff (Behaviour 7). They fail together only in a double fault: the hold's connection is
+  lost **and** a local step between the fence and the first Docker call (writing the run's env
+  file) blocks for longer than the whole cutoff, at least 25 minutes more than the adapter
+  timeout. Then recovery could end the run and its worker could still start it. Closing that
+  too needs a fencing token checked by the Docker host, which Docker does not offer.
 - A cap that is added or lowered while a run is running does not slow that run (true of every
   rule of engagement since spec 002: they are checked at creation and at the claim).
 - The tripwires look at a connection's opening only; a later protocol upgrade is not seen.
