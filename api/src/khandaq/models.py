@@ -176,6 +176,30 @@ class TargetCredential(Base):
     )
 
 
+class TargetArtefact(Base):
+    """The stored content of a model or dataset target (spec 034): its digest, size and object key.
+    The bytes are an ADR-0016 envelope in the evidence store, never in the database."""
+
+    __tablename__ = "target_artefacts"
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=lambda: new_id("tar"))
+    target_id: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    engagement_id: Mapped[str] = mapped_column(Text, nullable=False)
+    sha256: Mapped[str] = mapped_column(Text, nullable=False)
+    bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    object_key: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    stored_by_user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
+    created_at: Mapped[dt.datetime] = _created_at()
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["target_id", "engagement_id"],
+            ["targets.id", "targets.engagement_id"],
+            name="fk_target_artefacts_target_engagement",
+        ),
+        CheckConstraint("bytes > 0", name="ck_target_artefacts_bytes"),
+        Index("ix_target_artefacts_engagement", "engagement_id"),
+    )
+
+
 class Scope(Base):
     __tablename__ = "scopes"
     engagement_id: Mapped[str] = mapped_column(ForeignKey("engagements.id"), primary_key=True)

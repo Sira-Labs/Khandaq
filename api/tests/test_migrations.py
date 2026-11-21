@@ -11,7 +11,7 @@ import json
 import os
 
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, inspect, text
 
 TEST_URL = os.environ.get("KHANDAQ_TEST_DATABASE_URL")
 pytestmark = pytest.mark.skipif(not TEST_URL, reason="KHANDAQ_TEST_DATABASE_URL not set")
@@ -490,4 +490,45 @@ def test_0010_keeps_alerts_as_webhook_rows_and_allows_one_row_per_channel():
     # Email history cannot be dropped by a downgrade.
     with pytest.raises(RuntimeError, match="email alerts"):
         migrate.downgrade(url=TEST_URL, revision="0009_alert_outbox")
+    eng.dispose()
+
+
+def test_0013_creates_the_artefact_table_an_upgraded_install_lacks():
+    """An install at 0012 has no ``target_artefacts`` (0001's create_all ran before the model
+    existed); 0013 must build the table the model describes, constraints included."""
+    from khandaq import migrate
+
+    eng = create_engine(TEST_URL, future=True)
+    with eng.begin() as conn:
+        conn.execute(text("DROP SCHEMA public CASCADE"))
+        conn.execute(text("CREATE SCHEMA public"))
+    migrate.upgrade(url=TEST_URL)
+    migrate.downgrade(url=TEST_URL, revision="0012_target_credentials")  # a spec 028 install
+    assert "target_artefacts" not in inspect(eng).get_table_names()
+
+    migrate.upgrade(url=TEST_URL)
+
+    inspector = inspect(eng)
+    columns = {c["name"]: c for c in inspector.get_columns("target_artefacts")}
+    assert set(columns) == {
+        "id",
+        "target_id",
+        "engagement_id",
+        "sha256",
+        "bytes",
+        "object_key",
+        "stored_by_user_id",
+        "created_at",
+    }
+    assert not any(c["nullable"] for c in columns.values())
+    foreign = {fk["name"]: fk for fk in inspector.get_foreign_keys("target_artefacts")}
+    pinned = foreign["fk_target_artefacts_target_engagement"]
+    assert pinned["constrained_columns"] == ["target_id", "engagement_id"]
+    assert pinned["referred_table"] == "targets"
+    checks = {c["name"] for c in inspector.get_check_constraints("target_artefacts")}
+    assert "ck_target_artefacts_bytes" in checks
+    unique = {
+        tuple(u["column_names"]) for u in inspector.get_unique_constraints("target_artefacts")
+    }
+    assert {("target_id",), ("object_key",)} <= unique
     eng.dispose()

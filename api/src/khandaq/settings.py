@@ -12,6 +12,7 @@ from functools import lru_cache
 from typing import Literal
 from urllib.parse import urlsplit
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .evidence_crypto import MIN_KEY_CHARS
@@ -95,6 +96,9 @@ class Settings(BaseSettings):
     # Where container runs' evidence bytes are retained, encrypted and write-once, when no object
     # store is configured (specs 012, 014). The worker needs this volume.
     evidence_dir: str = "/var/lib/khandaq/evidence"
+    # The largest upload accepted as the content of a model or dataset target (spec 034). It is
+    # held in memory once while it is hashed, encrypted and stored.
+    artefact_max_mb: int = Field(default=64, ge=1)
     worker_poll_seconds: float = 5.0
     # Campaigns (spec 016, ADR-0017): the shortest interval a campaign may re-run at, so a
     # schedule cannot hammer a client system. Rules of engagement still apply per run.

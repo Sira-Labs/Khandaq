@@ -212,3 +212,11 @@ def test_prod_runs_without_a_credential_key_and_with_a_real_one():
     Settings(
         **{**_PROD_FULL, "credential_key": "c" * 40, "credential_previous_keys": "d" * 40}
     ).validate_runtime()
+
+
+def test_the_artefact_size_limit_has_a_default_and_a_floor():
+    # Spec 034: an upload is held in memory once, so the limit is explicit and never zero.
+    assert Settings().artefact_max_mb == 64
+    assert Settings(artefact_max_mb=1).artefact_max_mb == 1
+    with pytest.raises(ValueError):
+        Settings(artefact_max_mb=0)
