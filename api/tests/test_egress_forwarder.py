@@ -622,22 +622,35 @@ def test_a_slow_connect_does_not_bring_two_first_requests_closer(monkeypatch):
 
 
 def test_a_target_that_does_not_accept_in_time_costs_only_its_turn(monkeypatch):
+    """The first connection's target never accepts: it is dropped at the connect limit, and the
+    shared pacer is free for the next connection, which gets its answer."""
     monkeypatch.setattr(fwd, "_CONNECT_SECONDS", 0.05)
+    real_open = asyncio.open_connection
+    opened = 0
 
-    async def never(*args, **kwargs):
-        await asyncio.sleep(3600)
+    async def first_never_opens(*args, **kwargs):
+        nonlocal opened
+        opened += 1
+        if opened == 1:
+            await asyncio.sleep(3600)
+        return await real_open(*args, **kwargs)
 
-    async def client(port: int) -> bytes:
-        reader, writer = await asyncio.open_connection("127.0.0.1", port)
-        writer.write(b"GET / HTTP/1.1\r\nHost: t\r\n\r\n")
-        await writer.drain()
-        monkeypatch.setattr(fwd.asyncio, "open_connection", never)
-        try:
-            return await asyncio.wait_for(reader.read(100), 5)
-        finally:
-            writer.close()
+    async def client(port: int) -> tuple[bytes, bytes]:
+        answers = []
+        for _ in range(2):
+            reader, writer = await real_open("127.0.0.1", port)
+            writer.write(b"ping")
+            await writer.drain()
+            try:
+                answers.append(await asyncio.wait_for(reader.read(100), 5))
+            finally:
+                writer.close()
+        return answers[0], answers[1]
 
     async def scenario() -> object:
-        return await _paced(await _pong_server(), fwd.Pacer(6000), client)
+        upstream = await _pong_server()
+        monkeypatch.setattr(fwd.asyncio, "open_connection", first_never_opens)
+        return await _paced(upstream, fwd.Pacer(6000), client)
 
-    assert asyncio.run(scenario()) == b""  # closed, not hung: the pacer is free again
+    # The first is closed, not hung; the second passes the same pacer and is answered.
+    assert asyncio.run(scenario()) == (b"", b"pong:ping")

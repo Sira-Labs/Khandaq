@@ -126,6 +126,12 @@ with `rate_per_minute: 60` and the run goes through, slower, without exceeding w
 
 ## Limits, stated plainly
 
+- The rate is held where the forwarder hands a turn's first bytes to its own TCP connection to
+  the target, which is the last point Khandaq controls. What the target sees can differ by what
+  the network adds in between: a write the kernel sends a moment later, a retransmission. Two
+  requests can therefore arrive closer together than the interval by that jitter; the number of
+  requests the forwarder lets out per minute does not grow. The end-to-end figures below were
+  measured at the target.
 - The guarantee rests on the adapter speaking HTTP/1.1 without pipelining or a protocol upgrade.
   The ALPN and preface tripwires catch a tool that starts to offer HTTP/2; pipelining inside TLS
   cannot be seen by anyone but the endpoints. `forwarder_paced` is therefore set per adapter,
