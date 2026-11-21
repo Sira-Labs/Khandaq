@@ -353,6 +353,33 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
       audit log and the ledger. Follow-ups: spec 034 ART in the sandbox (artefact and dataset
       intake with a digest check against the scope, estimator loading, registration); privacy
       and poisoning families; TextAttack and ML Privacy Meter.
+- [x] S8-3 — spec 034 artefact intake (nightly run of 2026-11-21, UTC): an engagement owner
+      uploads the content of a `model_artifact` or `dataset` target
+      (`PUT …/targets/{id}/artefact`); it is stored only if its SHA-256 is the digest the target
+      declares, as an ADR-0016 envelope in the evidence store under
+      `artefacts/<engagement>/<target>/<digest>`, write-once, audited (`target.artefact_stored`,
+      `target.artefact_rejected`); `read_artefact` hands it back only after it matches the digest
+      again. Table `target_artefacts` (migration 0013), `KHANDAQ_ARTEFACT_MAX_MB` (64),
+      `has_artefact`/`artefact_bytes` on a target. Decisions: the follow-up named under S8-2 is
+      split, as 033 was from it: the intake is a control of its own and is delivered and reviewed
+      alone; running ART on the content is spec 035. An upload is the only way in: Khandaq never
+      fetches from a target's `location`, so no worker ever opens a connection on behalf of an
+      artefact, and a target named only by `location` can hold no content. The digest must be
+      `sha256:` + 64 lower-case hex, the form the API computes, so a target written in another
+      spelling is refused instead of never matching. No scope check at upload: stored content
+      gives no permission, and the lock decides every run as before (a draft engagement has no
+      final scope yet). Content uses the evidence key and store but is not sealed into the
+      ledger, and it is never read back from an unencrypted object (evidence from before spec 014
+      may be). Production refuses uploads without the object store, because the API's own
+      evidence directory is not the worker's. The route reads the body itself, with the limit
+      enforced while it arrives, and gives its database connection back first. `scope.py`,
+      `audit.py`, the ledger and `evidence_store.py` are untouched. Follow-ups: spec 035 (ART in
+      a sandbox without network: hand-over of model and data, estimators and formats, how a run
+      names its dataset and how the lock checks both, registration); a console page for the
+      upload; streamed storage for content larger than memory allows.
+      **Owner:** uploaded content (a client's model or data) stays stored after the engagement
+      closes, as evidence does, because the store has no delete. Say if it should be deleted on
+      close or after a period; it blocks nothing; default: kept.
 
 ### Dependency maintenance (nightly runs, ADR-0018)
 
