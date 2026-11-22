@@ -221,3 +221,7 @@ def test_the_artefact_size_limit_has_a_default_and_a_floor(monkeypatch):
     assert Settings(artefact_max_mb=1).artefact_max_mb == 1
     with pytest.raises(ValueError):
         Settings(artefact_max_mb=0)
+    monkeypatch.delenv("KHANDAQ_ARTEFACT_MAX_UPLOADS", raising=False)
+    assert Settings().artefact_max_uploads == 2
+    with pytest.raises(ValueError):
+        Settings(artefact_max_uploads=0)

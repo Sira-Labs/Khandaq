@@ -26,6 +26,16 @@ router = APIRouter(prefix="/api/engagements", tags=["artefacts"])
 UPLOAD_SECONDS = 600.0
 
 
+class _Uploads:
+    """Uploads this process is holding in memory. Counted on the event loop only (the check and
+    the increment have no await between them), so it needs no lock."""
+
+    in_flight = 0
+
+
+_uploads = _Uploads()
+
+
 def _target(access: EngagementAccess, target_id: str) -> Target:
     target = access.session.get(Target, target_id)
     if target is None or target.engagement_id != access.engagement.id:
@@ -99,15 +109,26 @@ async def put_artefact(
 ) -> ArtefactOut:
     # Authorisation is decided; give the connection back while a possibly slow upload arrives.
     await run_in_threadpool(access.session.rollback)
-    limit = get_settings().artefact_max_mb * 1024 * 1024
-    try:
-        async with asyncio.timeout(UPLOAD_SECONDS):
-            content = await _body(request, limit)
-    except TimeoutError:
+    settings = get_settings()
+    limit = settings.artefact_max_mb * 1024 * 1024
+    # A slot is taken before a byte of the body is read and kept until the content is stored:
+    # each upload holds its body in memory, so their number is what bounds the total.
+    if _uploads.in_flight >= settings.artefact_max_uploads:
         raise HTTPException(
-            408, f"the upload did not arrive within {UPLOAD_SECONDS:.0f}s"
-        ) from None
-    out, created = await run_in_threadpool(_store, access, target_id, content)
+            429, "too many uploads at once; try again shortly", headers={"Retry-After": "30"}
+        )
+    _uploads.in_flight += 1
+    try:
+        try:
+            async with asyncio.timeout(UPLOAD_SECONDS):
+                content = await _body(request, limit)
+        except TimeoutError:
+            raise HTTPException(
+                408, f"the upload did not arrive within {UPLOAD_SECONDS:.0f}s"
+            ) from None
+        out, created = await run_in_threadpool(_store, access, target_id, content)
+    finally:
+        _uploads.in_flight -= 1
     response.status_code = 201 if created else 200
     return out
 

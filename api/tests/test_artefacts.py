@@ -380,7 +380,7 @@ def test_read_artefact_refuses_tampered_moved_and_missing_content(env):
     replace(MODEL)  # the right bytes, but not encrypted: not what Khandaq stored
     assert refused() == 409
     path.unlink()
-    assert refused() == 404
+    assert refused() == 503  # recorded as stored and gone: the deployment's fault, not "none"
 
     # A target whose digest was changed behind the row no longer reads the old content.
     replace(original)
@@ -395,16 +395,75 @@ def test_read_artefact_refuses_tampered_moved_and_missing_content(env):
     assert refused() == 409
 
 
-def test_an_object_left_by_a_failed_commit_is_accepted_on_retry(env):
+def test_an_object_left_by_a_failed_commit_is_accepted_on_retry(env, monkeypatch):
+    """The object is written, then the transaction fails: no row and no audit entry exist. The
+    retry finds the object, verifies it, and records it once."""
     client, db, settings = env
     eng_id, (model, _) = _engagement(client, "retry")
-    assert _put(client, eng_id, model, MODEL).status_code == 201
-    with db.begin() as conn:  # as if the object was written and the commit then failed
-        conn.execute(text("DELETE FROM target_artefacts WHERE target_id = :t"), {"t": model})
+    real_record = artefacts.audit.record
+
+    def fails_once(session, **entry):
+        if entry["action"] == "target.artefact_stored":
+            monkeypatch.setattr(artefacts.audit, "record", real_record)
+            raise RuntimeError("the database went away before the commit")
+        return real_record(session, **entry)
+
+    monkeypatch.setattr(artefacts.audit, "record", fails_once)
+    with pytest.raises(RuntimeError, match="went away"):
+        _put(client, eng_id, model, MODEL)
+    key = artefacts.object_key(eng_id, model, _digest(MODEL))
+    assert (Path(settings.evidence_dir) / key).is_file()  # written, and not recorded:
+    assert _rows(db, model) == []
+    assert _audit(db, eng_id, "target.artefact_stored") == []
+    assert client.get(_url(eng_id, model), headers=OWNER).status_code == 404
 
     assert _put(client, eng_id, model, MODEL).status_code == 201
+    assert len(_rows(db, model)) == 1
+    assert len(_audit(db, eng_id, "target.artefact_stored")) == 1
     with Session(db) as s:
         assert artefacts.read_artefact(s, _target(db, model), settings) == MODEL
+
+
+def test_one_upload_more_than_the_process_holds_is_refused_before_its_body_is_read(
+    env, monkeypatch
+):
+    """Each upload holds its body in memory, so their number bounds the total. The slot is
+    taken before the body is read and given back on every way out."""
+    import asyncio
+
+    from khandaq.routers import artefacts as route
+
+    client, db, settings = env
+    eng_id, (model, data) = _engagement(client, "busy")
+    monkeypatch.setattr(settings, "artefact_max_uploads", 1)
+    arrived, release = threading.Event(), threading.Event()
+    real_body = route._body
+
+    async def slow(request, limit):
+        arrived.set()
+        while not release.is_set():
+            await asyncio.sleep(0.01)
+        return await real_body(request, limit)
+
+    monkeypatch.setattr(route, "_body", slow)
+    first: dict = {}
+    thread = threading.Thread(target=lambda: first.update(r=_put(client, eng_id, model, MODEL)))
+    thread.start()
+    try:
+        assert arrived.wait(timeout=10)
+        second = _put(client, eng_id, data, DATA)
+        assert second.status_code == 429 and second.headers["retry-after"] == "30"
+        assert _rows(db, data) == []
+    finally:
+        release.set()
+        thread.join(timeout=10)
+    assert first["r"].status_code == 201
+    assert route._uploads.in_flight == 0
+
+    monkeypatch.setattr(route, "_body", real_body)
+    assert _put(client, eng_id, data, DATA).status_code == 201  # the slot is free again
+    assert _put(client, eng_id, data, DATA + b"!").status_code == 422  # and after a refusal
+    assert route._uploads.in_flight == 0
 
 
 def test_an_object_that_is_not_the_content_blocks_the_upload(env):

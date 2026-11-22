@@ -230,7 +230,10 @@ def read_artefact(session: Session, target: Target, settings: Settings) -> bytes
     try:
         blob = store_from_settings(settings).get(row.object_key)
     except EvidenceMissing:
-        raise ArtefactError(404, "the stored content is missing from the evidence store") from None
+        # The row says it is stored: a missing object is a fault of the deployment, not "no
+        # content" (which is the 404 above).
+        log.error("recorded artefact is missing from the store", extra={"target_id": target.id})
+        raise ArtefactError(503, "the stored content is missing from the evidence store") from None
     except (EvidenceStoreError, OSError) as exc:
         log.error(
             "artefact store unavailable",

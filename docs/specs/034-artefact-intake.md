@@ -33,6 +33,8 @@ on those bytes and on nothing else.
 
 - **Config** `KHANDAQ_ARTEFACT_MAX_MB` (default `64`, minimum `1`): the largest upload accepted.
   The content is held in memory once while it is hashed, encrypted and stored.
+  `KHANDAQ_ARTEFACT_MAX_UPLOADS` (default `2`, minimum `1`): how many uploads one API process
+  holds at once. Together they bound the memory uploads can take.
 - **Table** `target_artefacts` (migration `0013_target_artefacts`): `id` (`tar_…`), `target_id`
   (unique), `engagement_id`, `sha256` (`sha256:<64 hex>`), `bytes`, `object_key`,
   `stored_by_user_id`, `created_at`. A composite foreign key pins the row to its target's own
@@ -64,7 +66,9 @@ on those bytes and on nothing else.
    `location` has nothing the bytes could be checked against, so it cannot hold content.
 3. **Size.** A body larger than `KHANDAQ_ARTEFACT_MAX_MB` is refused with `413` as soon as the
    limit is passed; the rest is not read. An empty body is `422`. A body that has not arrived
-   within ten minutes is `408`.
+   within ten minutes is `408`. An upload beyond `KHANDAQ_ARTEFACT_MAX_UPLOADS` is refused with
+   `429` and `Retry-After` before its body is read; the slot is held until the content is
+   stored and released on every way out.
 4. **The digest decides.** The SHA-256 of the body is computed by the API. If it is not the
    target's digest the upload is refused with `422`, nothing is stored, and the refusal is audited
    as `target.artefact_rejected` with both digests and the size. The client's own claim about the
@@ -80,7 +84,8 @@ on those bytes and on nothing else.
    it is an envelope that decrypts to the same digest. The same bytes in plaintext at that key
    are not "already stored": `409`.
 6. **Reading back.** `read_artefact` returns the plaintext only after it matches the row's digest
-   **and** the digest the target declares now. A missing row, a missing object, an object that is
+   **and** the digest the target declares now. A missing row (`404`), a missing object for a row
+   that says it is stored (`503`: the deployment lost it), an object that is
    not an envelope, a failed decryption or a mismatch raises `ArtefactError`; there is no partial
    result and no fallback. Unlike evidence from before spec 014, content is never read from an
    unencrypted object.
@@ -132,7 +137,8 @@ upper-case digests), `test_a_closed_engagement_refuses_an_upload`,
 `test_no_evidence_key_is_a_503_and_stores_nothing`,
 `test_production_without_an_object_store_refuses_uploads`,
 `test_an_upload_cannot_slip_in_behind_a_concurrent_close`,
-`test_a_slow_store_does_not_hold_the_engagement_lock`.
+`test_a_slow_store_does_not_hold_the_engagement_lock`,
+`test_one_upload_more_than_the_process_holds_is_refused_before_its_body_is_read`.
 Integration (`api/tests/test_migrations.py`):
 `test_0013_creates_the_artefact_table_an_upgraded_install_lacks`.
 Unit (`api/tests/test_settings.py`): `test_the_artefact_size_limit_has_a_default_and_a_floor`.

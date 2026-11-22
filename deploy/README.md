@@ -64,7 +64,8 @@ curl -X PUT --data-binary @model.bin -H "Content-Type: application/octet-stream"
   "$KHANDAQ_URL/api/engagements/$ENGAGEMENT/targets/$TARGET/artefact"
 ```
 
-`KHANDAQ_ARTEFACT_MAX_MB` (default 64) caps one upload. Production needs the object store for
+`KHANDAQ_ARTEFACT_MAX_MB` (default 64) caps one upload, `KHANDAQ_ARTEFACT_MAX_UPLOADS`
+(default 2) how many the API holds in memory at once. Production needs the object store for
 this (`KHANDAQ_OBJECT_STORE_URL`, the default). Stored content stays after the engagement closes,
 as its evidence does. Nothing runs on it yet (spec 035).
 
