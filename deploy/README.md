@@ -52,6 +52,23 @@ per run via the host Docker socket (shape A in `caprover.md`); only use this on 
   worker's evidence volume, which the API cannot read on a multi-host deployment.
 - OIDC settings for anything beyond a single-user local run
 
+## Content of model and dataset targets (spec 034)
+
+A `model_artifact` or `dataset` target names its content by digest. The engagement owner uploads
+the content itself; Khandaq keeps it only if its SHA-256 is that digest, encrypted in the evidence
+store, and never fetches it from anywhere:
+
+```sh
+curl -X PUT --data-binary @model.bin -H "Content-Type: application/octet-stream" \
+  -H "Authorization: Bearer $KHANDAQ_TOKEN" \
+  "$KHANDAQ_URL/api/engagements/$ENGAGEMENT/targets/$TARGET/artefact"
+```
+
+`KHANDAQ_ARTEFACT_MAX_MB` (default 64) caps one upload, `KHANDAQ_ARTEFACT_MAX_UPLOADS`
+(default 2) how many the API holds in memory at once. Production needs the object store for
+this (`KHANDAQ_OBJECT_STORE_URL`, the default). Stored content stays after the engagement closes,
+as its evidence does. Nothing runs on it yet (spec 035).
+
 ## Campaigns and alerts (specs 016, 017)
 
 The worker re-runs campaigns on their interval (never more often than

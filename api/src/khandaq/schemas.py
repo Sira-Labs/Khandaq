@@ -41,6 +41,18 @@ class TargetOut(BaseModel):
     # Whether a write-only credential is stored (spec 028). The value itself is never returned.
     has_credential: bool = False
     credential_updated_at: dt.datetime | None = None
+    # Whether the target's content is stored (spec 034), and its size. Never the content.
+    has_artefact: bool = False
+    artefact_bytes: int | None = None
+
+
+class ArtefactOut(BaseModel):
+    """The stored content of a model or dataset target (spec 034): what it is, never the bytes."""
+
+    target_id: str
+    sha256: str
+    bytes: int
+    stored_at: dt.datetime
 
 
 class CredentialOut(BaseModel):
