@@ -16,6 +16,7 @@ from .db import schema_revision
 from .routers import (
     adapters,
     alerts,
+    artefacts,
     auth,
     campaigns,
     credentials,
@@ -64,6 +65,7 @@ def create_app() -> FastAPI:
     app.include_router(deployment.router)
     app.include_router(engagements.router)
     app.include_router(credentials.router)
+    app.include_router(artefacts.router)
     app.include_router(ledger.router)
     app.include_router(evidence.router)
     app.include_router(runs.router)

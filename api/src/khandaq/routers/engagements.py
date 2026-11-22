@@ -14,7 +14,7 @@ from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import audit, campaigns, scope, target_credentials
+from .. import artefacts, audit, campaigns, scope, target_credentials
 from ..adapters import get_manifest
 from ..deps import (
     EngagementAccess,
@@ -28,6 +28,7 @@ from ..models import (
     EngagementMember,
     Scope,
     Target,
+    TargetArtefact,
     TargetCredential,
     User,
 )
@@ -53,8 +54,12 @@ def _now() -> dt.datetime:
     return dt.datetime.now(dt.UTC)
 
 
-def target_out(target: Target, credential: TargetCredential | None = None) -> TargetOut:
-    """A target as the API shows it: whether a credential is stored, never the credential."""
+def target_out(
+    target: Target,
+    credential: TargetCredential | None = None,
+    artefact: TargetArtefact | None = None,
+) -> TargetOut:
+    """A target as the API shows it: whether a credential or content is stored, never either."""
     return TargetOut(
         id=target.id,
         engagement_id=target.engagement_id,
@@ -62,6 +67,8 @@ def target_out(target: Target, credential: TargetCredential | None = None) -> Ta
         spec=target.spec,
         has_credential=credential is not None,
         credential_updated_at=credential.updated_at if credential is not None else None,
+        has_artefact=artefact is not None,
+        artefact_bytes=artefact.bytes if artefact is not None else None,
     )
 
 
@@ -118,7 +125,8 @@ def list_targets(access: EngagementAccess = Depends(require_engagement_role())) 
         select(Target).where(Target.engagement_id == access.engagement.id)
     ).all()
     credentials = target_credentials.by_target(access.session, access.engagement.id)
-    return [target_out(t, credentials.get(t.id)) for t in rows]
+    stored = artefacts.by_target(access.session, access.engagement.id)
+    return [target_out(t, credentials.get(t.id), stored.get(t.id)) for t in rows]
 
 
 @router.get("/{engagement_id}/scope", response_model=ScopeOut | None)

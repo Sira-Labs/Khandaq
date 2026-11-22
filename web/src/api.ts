@@ -140,6 +140,9 @@ export interface Target {
   /** Whether a write-only credential is stored for the target (spec 028). Never the value. */
   has_credential?: boolean;
   credential_updated_at?: string | null;
+  /** Whether the content of a model or dataset target is stored (spec 034), and its size. */
+  has_artefact?: boolean;
+  artefact_bytes?: number | null;
 }
 
 /** What setting a target credential returns (spec 028): its status, never the value. */

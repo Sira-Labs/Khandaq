@@ -30,7 +30,9 @@ credentials are in (spec 028, ADR-0019). `pyrit` and `promptfoo` have parsers, f
 contract tests, but their sandbox-execution wrappers are **not written**: specs 029 and 030 are
 blocked for the owner (`TASKS.md`, `handover.md` §6). Sprint 8: the pacing forwarder (spec 032) is
 implemented and waits for the owner's sign-off; `art` has its adapter (spec 033: parser, pinned
-image, recorded fixture); running it in the sandbox needs artefact intake, the next spec.
+image, recorded fixture), and the content of `model_artifact` and `dataset` targets can be uploaded
+and is stored only when it matches the target's digest (spec 034). Running ART on that content in
+a sandbox without network is the next spec (035).
 
 ## R1 — the spine
 
@@ -88,8 +90,8 @@ to CapRover staging.
 | 5 | Campaigns: scheduler, baseline, diff (new/resolved/regressed), alerts (webhook + email); console, tokens + smoke test, mapping tables + overlay, deployment status (API + console) | 016–024 (written) |
 | 6 | Cisco mcp-scanner adapter (phase 07) + agent target type; console setup; garak runs in the sandbox | 025–027 (done; the scope lock already had the `mcp_server` and `agent` types) |
 | 7 | Per-run target credentials (028, done); then finish adapter execution: PyRIT, promptfoo, mcp-scanner run their real tools in the spec-012 sandbox (spec-027 pattern) | 028, 031 (done); 029, 030 (blocked for the owner) |
-| 8 | A pacing forwarder for garak (lets capped engagements run it); ART adapter (phase 05) + model_artifact/dataset target types | 032 (implemented, PR awaits sign-off); 033 (done: adapter; sandbox execution is the next spec) |
-| 9 | Supply chain: ModelAudit/ModelScan consensus + AI-BOM (phase 08); guardrail-regression harness (phase 09) | 034–036 |
+| 8 | A pacing forwarder for garak (lets capped engagements run it); ART adapter (phase 05) + model_artifact/dataset target types | 032 (implemented, PR awaits sign-off); 033 (adapter) and 034 (artefact intake) done; 035 (ART runs on the content, to write) |
+| 9 | Supply chain: ModelAudit/ModelScan consensus + AI-BOM (phase 08); guardrail-regression harness (phase 09) | 036–038 |
 
 (Forecast numbers shifted by one on 2026-10-03: spec 012 closes R1's execution gap; and by one
 again the same day: spec 013 wires the pinned ledger root into report re-verification, spec 014

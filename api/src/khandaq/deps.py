@@ -128,6 +128,20 @@ class EngagementAccess:
     session: Session
 
 
+def effective_role(session: Session, user: User, engagement_id: str) -> str | None:
+    """The caller's effective role on an engagement, or ``None`` without a membership.
+
+    Org admins are treated as 'owner'. The org-level read-only role caps every engagement role:
+    such a user may read what they are a member of, never launch runs or change scope.
+    """
+    if user.org_role == "admin":
+        return "owner"
+    member = session.get(EngagementMember, (engagement_id, user.id))
+    if member is None:
+        return None
+    return "viewer" if user.org_role == "read_only" else member.role
+
+
 def require_engagement_role(*allowed: str):
     """Dependency factory: load the engagement and enforce the caller's engagement role.
 
@@ -143,17 +157,9 @@ def require_engagement_role(*allowed: str):
         engagement = session.get(Engagement, engagement_id)
         if engagement is None:
             raise HTTPException(404, "engagement not found")
-        if user.org_role == "admin":
-            role = "owner"
-        else:
-            member = session.get(EngagementMember, (engagement_id, user.id))
-            if member is None:
-                raise HTTPException(403, "no access to this engagement")
-            role = member.role
-            if user.org_role == "read_only":
-                # The org-level read-only role caps every engagement role: such a user may read
-                # what they are a member of, never launch runs or change scope.
-                role = "viewer"
+        role = effective_role(session, user, engagement_id)
+        if role is None:
+            raise HTTPException(403, "no access to this engagement")
         if allowed and role not in allowed:
             raise HTTPException(403, f"requires one of: {', '.join(allowed)}")
         return EngagementAccess(engagement=engagement, user=user, role=role, session=session)
