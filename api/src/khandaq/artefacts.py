@@ -175,6 +175,15 @@ def store_artefact(
         )
     key = object_key(target.engagement_id, target.id, expected)
     blob = _keyring(settings).encrypt(key, content)
+    existing = get(session, target.id)
+    if existing is not None:
+        return existing, False
+    # The object is written before the engagement lock is taken, never under it: a slow store
+    # must not make evidence sealing or a close wait. That is safe because the key is derived
+    # from the digest and the store never overwrites: a second writer finds the first one's
+    # object and accepts it only if it decrypts to the same content. Until the row below is
+    # committed the object is unreachable; nothing reads content without a row.
+    _write_once(settings, key, blob, expected, target.id)
     # Under the lock that closing takes, so an upload cannot commit behind a concurrent close, and
     # two first uploads for one target do not both insert. The state is read again under it.
     lock_engagement(session, target.engagement_id)
@@ -184,7 +193,6 @@ def store_artefact(
     existing = get(session, target.id)
     if existing is not None:
         return existing, False
-    _write_once(settings, key, blob, expected, target.id)
     row = TargetArtefact(
         target_id=target.id,
         engagement_id=target.engagement_id,

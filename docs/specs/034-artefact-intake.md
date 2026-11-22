@@ -42,7 +42,7 @@ on those bytes and on nothing else.
     `ArtefactOut` when stored, `200` with the same when these bytes were already stored.
   - `GET /artefact` — any member. `ArtefactOut`, or `404` when nothing is stored.
   - No route returns the bytes, and none deletes them.
-- **`ArtefactOut`**: `target_id`, `sha256`, `bytes`, `stored_at`.
+- **`ArtefactOut`**: `target_id`, `sha256`, `bytes`, `stored_at` (RFC 3339, UTC).
 - **`TargetOut`** gains `has_artefact` (bool) and `artefact_bytes` (int or null).
 - **Storage**: the evidence store (spec 014) under the object key
   `artefacts/<engagement_id>/<target_id>/<hex digest>`, as an ADR-0016 envelope under the evidence
@@ -68,12 +68,14 @@ on those bytes and on nothing else.
 4. **The digest decides.** The SHA-256 of the body is computed by the API. If it is not the
    target's digest the upload is refused with `422`, nothing is stored, and the refusal is audited
    as `target.artefact_rejected` with both digests and the size. The client's own claim about the
-   content (a header, a file name) is never read. Hashing and encrypting happen before the
-   engagement lock is taken, so a large or wrong upload does not make evidence sealing or a
-   close wait.
-5. **Stored once.** The bytes are encrypted and written write-once (`evidence_store.retain`), then
-   the row and the audit entry `target.artefact_stored` (target, type, digest, size) are committed
-   together. A repeat of the same upload finds the row and answers `200` without a second audit
+   content (a header, a file name) is never read. Hashing, encrypting and the write to the
+   store all happen before the engagement lock is taken, so neither a large or wrong upload nor
+   a slow store makes evidence sealing or a close wait. Under the lock there is only the state
+   check, the row and the audit entry.
+5. **Stored once.** The bytes are encrypted and written write-once, then the row and the audit
+   entry `target.artefact_stored` (target, type, digest, size) are committed together. Content
+   exists for Khandaq only through its row: an object whose upload lost the race against a
+   close, or whose commit failed, stays in the store without a row and is read by nothing. A repeat of the same upload finds the row and answers `200` without a second audit
    entry. An object left behind by an upload whose commit failed is accepted on the retry only if
    it is an envelope that decrypts to the same digest. The same bytes in plaintext at that key
    are not "already stored": `409`.
@@ -129,7 +131,8 @@ upper-case digests), `test_a_closed_engagement_refuses_an_upload`,
 `test_a_wrong_upload_is_refused_without_waiting_for_the_engagement_lock`,
 `test_no_evidence_key_is_a_503_and_stores_nothing`,
 `test_production_without_an_object_store_refuses_uploads`,
-`test_an_upload_cannot_slip_in_behind_a_concurrent_close`.
+`test_an_upload_cannot_slip_in_behind_a_concurrent_close`,
+`test_a_slow_store_does_not_hold_the_engagement_lock`.
 Integration (`api/tests/test_migrations.py`):
 `test_0013_creates_the_artefact_table_an_upgraded_install_lacks`.
 Unit (`api/tests/test_settings.py`): `test_the_artefact_size_limit_has_a_default_and_a_floor`.

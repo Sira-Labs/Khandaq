@@ -214,8 +214,9 @@ def test_prod_runs_without_a_credential_key_and_with_a_real_one():
     ).validate_runtime()
 
 
-def test_the_artefact_size_limit_has_a_default_and_a_floor():
+def test_the_artefact_size_limit_has_a_default_and_a_floor(monkeypatch):
     # Spec 034: an upload is held in memory once, so the limit is explicit and never zero.
+    monkeypatch.delenv("KHANDAQ_ARTEFACT_MAX_MB", raising=False)  # the default, not an override
     assert Settings().artefact_max_mb == 64
     assert Settings(artefact_max_mb=1).artefact_max_mb == 1
     with pytest.raises(ValueError):

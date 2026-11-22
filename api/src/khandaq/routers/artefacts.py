@@ -7,6 +7,7 @@ returns stored bytes or deletes them.
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.concurrency import run_in_threadpool
@@ -34,7 +35,11 @@ def _target(access: EngagementAccess, target_id: str) -> Target:
 
 def _out(row: TargetArtefact) -> ArtefactOut:
     return ArtefactOut(
-        target_id=row.target_id, sha256=row.sha256, bytes=row.bytes, stored_at=row.created_at
+        target_id=row.target_id,
+        sha256=row.sha256,
+        bytes=row.bytes,
+        # UTC whatever the database session's time zone is (timestamps are RFC 3339 UTC).
+        stored_at=row.created_at.astimezone(dt.UTC),
     )
 
 

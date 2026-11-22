@@ -160,7 +160,7 @@ def test_an_owner_stores_content_that_matches_the_digest(env):
     assert body["target_id"] == model
     assert body["sha256"] == _digest(MODEL)
     assert body["bytes"] == len(MODEL)
-    assert dt.datetime.fromisoformat(body["stored_at"]).tzinfo is not None
+    assert dt.datetime.fromisoformat(body["stored_at"]).utcoffset() == dt.timedelta(0)
 
     assert _put(client, eng_id, data, DATA).status_code == 201
     assert _rows(db, model)[0][:2] == (_digest(MODEL), len(MODEL))
@@ -567,13 +567,22 @@ def test_production_without_an_object_store_refuses_uploads(env, monkeypatch):
     assert len(_files(settings)) == before
 
 
-def test_an_upload_cannot_slip_in_behind_a_concurrent_close(env):
+def test_an_upload_cannot_slip_in_behind_a_concurrent_close(env, monkeypatch):
+    """The upload passed the first state check while the engagement was open and then reaches
+    the lock a close is holding. It must wait there, and see the close when it gets the lock."""
     from khandaq import models as m
     from khandaq.ledger import lock_engagement
 
     client, db, _ = env
     eng_id, (model, _) = _engagement(client, "race")
     result: dict = {}
+    at_the_lock = threading.Event()
+
+    def signalling_lock(session, engagement_id):
+        at_the_lock.set()  # past the precheck, about to wait for the real lock
+        lock_engagement(session, engagement_id)
+
+    monkeypatch.setattr(artefacts, "lock_engagement", signalling_lock)
 
     def put() -> None:
         result["response"] = _put(client, eng_id, model, MODEL)
@@ -582,15 +591,57 @@ def test_an_upload_cannot_slip_in_behind_a_concurrent_close(env):
         lock_engagement(closing, eng_id)  # a close is in progress and holds the lock
         thread = threading.Thread(target=put)
         thread.start()
-        thread.join(timeout=1.0)
-        assert thread.is_alive(), "the upload must wait for the close, not run beside it"
-        engagement = closing.get(m.Engagement, eng_id)
-        engagement.state = "closed"
-        engagement.closed_at = dt.datetime.now(dt.UTC)
-        closing.commit()  # releases the lock
-    thread.join(timeout=10)
+        try:
+            reached = at_the_lock.wait(timeout=10)
+            thread.join(timeout=0.5)
+            waiting = thread.is_alive()
+            engagement = closing.get(m.Engagement, eng_id)
+            engagement.state = "closed"
+            engagement.closed_at = dt.datetime.now(dt.UTC)
+        finally:
+            closing.commit()  # releases the lock whatever happened
+            thread.join(timeout=10)
 
+    assert reached and waiting, "the upload must wait at the lock for the close"
     assert not thread.is_alive()
     assert result["response"].status_code == 409
     assert _rows(db, model) == []
     assert _audit(db, eng_id, "target.artefact_stored") == []
+    assert client.get(_url(eng_id, model), headers=OWNER).status_code == 404
+
+
+def test_a_slow_store_does_not_hold_the_engagement_lock(env, monkeypatch):
+    """Sealing evidence and closing take the engagement lock. While an upload's object is on
+    its way to a slow store, they must get it at once."""
+    from khandaq.evidence_store import store_from_settings
+    from khandaq.ledger import lock_engagement
+
+    client, db, settings = env
+    eng_id, (model, _) = _engagement(client, "slowstore")
+    real = store_from_settings(settings)
+    writing, release = threading.Event(), threading.Event()
+
+    class Slow:
+        def put_new(self, object_key: str, blob: bytes) -> None:
+            writing.set()
+            release.wait(10)
+            real.put_new(object_key, blob)
+
+        def get(self, object_key: str) -> bytes:
+            return real.get(object_key)
+
+    monkeypatch.setattr(artefacts, "store_from_settings", lambda s: Slow())
+    result: dict = {}
+    thread = threading.Thread(target=lambda: result.update(r=_put(client, eng_id, model, MODEL)))
+    thread.start()
+    try:
+        assert writing.wait(timeout=10)
+        with Session(db) as sealing:
+            sealing.execute(text("SET LOCAL lock_timeout = '2s'"))
+            lock_engagement(sealing, eng_id)  # would time out if the upload held the lock
+            sealing.rollback()
+    finally:
+        release.set()
+        thread.join(timeout=10)
+    assert result["r"].status_code == 201
+    assert len(_rows(db, model)) == 1
