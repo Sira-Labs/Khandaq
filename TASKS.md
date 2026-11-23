@@ -400,8 +400,18 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
       shared path with the Docker host and nothing of the content outlives the container (it is
       unpacked into the tmpfs scratch, sized from the hand-over). An adapter must fit its
       target: offline only on `model_artifact`, network adapters never on stored content (such a
-      run used to be queued and fail in the runner). An offline adapter sends nothing, so a
-      rate cap does not refuse it (`paces_requests`). Models are scikit-learn classifiers saved
+      run used to be queued and fail in the runner). An offline adapter sends nothing, so it
+      counts as pacing (`paces_requests`); the lock is unchanged and under a rate cap still wants
+      a declared `rate_per_minute` from it, as from every run. An independent review before the
+      merge found that the lock also lets a model or dataset in by its `location`, which Khandaq
+      never fetches: a target with an allowed location and another digest would have brought
+      that digest's content into a run. An offline run now needs an allow rule that names the
+      digest of the model and of the dataset (an added refusal in `runs.py`, `scope.py`
+      untouched). From the same review: the wrapper answers every bad input with exit 2 and a
+      message that carries no text from the model or the data (not a traceback), checks each
+      input's SHA-256 as well as its size, and takes only real numbers that fit 32-bit floats;
+      the hand-over's standard input is a memory file, so decrypted content is never on the
+      worker's disk; the tests use the worker's real `claim_next_run`. Models are scikit-learn classifiers saved
       with skops and loaded with no trusted types: a pickle is refused, because loading one
       runs the file's code. Data is an `.npz` read with `allow_pickle=False`. The wrapper has a
       fixed table of three ART evasion classes with typed, bounded parameters, untargeted

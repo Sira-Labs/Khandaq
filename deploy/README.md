@@ -72,8 +72,9 @@ as its evidence does.
 ### Running ART on it (spec 035)
 
 The `art` adapter runs on a `model_artifact` target and needs `dataset_target_id` in the run's
-parameters: a `dataset` target of the same engagement. Both must be in the scope's allow rules
-and have their content stored; the model is a scikit-learn classifier saved with `skops`, the
+parameters: a `dataset` target of the same engagement. Both must be named **by digest** in the scope's
+allow rules (a rule with only a `location` is not enough to run content) and have their content
+stored; under a rate cap the run declares `rate_per_minute` like any other; the model is a scikit-learn classifier saved with `skops`, the
 dataset an `.npz` with the arrays `x` and `y`. The run's container has no network at all
 (`--network none`); the worker hands it the two verified contents on standard input. The worker
 host needs the image `ghcr.io/sira-labs/khandaq-adapter-art:1.20.1` (`make build` in

@@ -26,7 +26,8 @@ Khandaq deployment, and I get the result in the same inbox as my other findings.
 
 - **Manifest flag** `offline` (`AdapterManifest.offline`, `adapter.yaml`): the adapter reaches no
   network and takes the stored content of its targets as input. `art`: `offline: true`,
-  `paces_requests: true` (it sends nothing, so no rate can be exceeded).
+  `paces_requests: true` (it sends nothing, so no rate can be exceeded). The scope lock is
+  unchanged: under a rate cap it wants `rate_per_minute` from every run, this one included.
 - **Run parameters** for `art`:
   - `dataset_target_id` (required): a `dataset` target of the same engagement.
   - `samples` (optional, default `200`, `1`–`5000`): how many rows of the dataset are used, from
@@ -40,21 +41,23 @@ Khandaq deployment, and I get the result in the same inbox as my other findings.
     | `ProjectedGradientDescent` | `eps`, `eps_step`, `norm`, `max_iter`, `num_random_init`, `batch_size` |
     | `HopSkipJump` | `norm`, `max_iter`, `max_eval`, `init_eval`, `init_size`, `batch_size` |
 
-    `norm` is `1`, `2` or `"inf"`. Every attack is untargeted. Numbers must be finite; counts are
+    `norm` is `1`, `2` or `"inf"` (`HopSkipJump`: `2` or `"inf"`, the two ART takes). Every
+    attack is untargeted. Numbers must be finite; counts are
     positive integers of at most 10 000.
 - **Content formats** (what the wrapper loads; anything else fails the run):
   - model: a scikit-learn estimator saved with **skops** (`skops.io.dump`), loaded with
     `trusted=[]`, so a file that needs any type outside skops's default list is refused. Never
     `pickle`. It must be an estimator ART's `SklearnClassifier` accepts.
-  - dataset: a NumPy `.npz` (loaded with `allow_pickle=False`) holding `x` (2-D, finite numbers)
-    and `y` (1-D, class labels the model knows), of equal length.
+  - dataset: a NumPy `.npz` (loaded with `allow_pickle=False`) holding `x` (2-D, finite real
+    numbers that fit 32-bit floats) and `y` (1-D, class labels the model knows), of equal length.
 - **Run request** (`KHANDAQ_RUN_REQUEST`) gains `inputs`:
   `{"model": {"sha256": …, "bytes": …}, "dataset": {"sha256": …, "bytes": …}}`.
 - **Hand-over**: the worker writes one uncompressed tar with the members `model` and `dataset` to
   the container's standard input. No host path is mounted (as before, spec 012).
 - **Image**: `adapters/art/requirements.txt` pins `adversarial-robustness-toolbox==1.20.1`,
-  `scikit-learn==1.9.1`, `skops==0.16.0`, `numpy==2.5.5` and `packaging`; the `Dockerfile` and the
-  CI contract job install from it.
+  `scikit-learn==1.9.1`, `skops==0.16.0`, `numpy==2.5.5`, and `packaging`, `scipy`, `joblib` and
+  `threadpoolctl` at the versions the tests ran with; the `Dockerfile` and the CI contract job
+  install from it.
 - **Audit**: `run.started` gains `inputs: {"model": <digest>, "dataset": <digest>}` for an offline
   run.
 
@@ -67,7 +70,13 @@ Khandaq deployment, and I get the result in the same inbox as my other findings.
 2. **The adapter must fit the target.** An `offline` adapter is refused for anything but a
    `model_artifact` target. An adapter that needs a network is refused for a `model_artifact` or
    `dataset` target (before, such a run was queued and failed in the runner).
-3. **Content must be stored.** A model or dataset target without stored content refuses the run,
+3. **Content runs only by its digest.** The lock lets a `model_artifact` or `dataset` in when an
+   allow rule names its digest **or** its `location`. A location is never fetched or checked by
+   Khandaq, so for an offline run that is not enough: the digest of the model and of the dataset
+   must each be named by an allow rule of its type. Otherwise a target with an allowed location
+   and any digest at all would bring that digest's content into a run. This is an added refusal
+   in `runs.py`; `scope.py` is unchanged.
+   **Content must be stored.** A model or dataset target without stored content refuses the run,
    with a reason that says which one and what to upload. `dataset_target_id` must name a `dataset`
    target of the same engagement; anything else refuses the run.
 4. **Verified again at the start.** The worker reads both contents through `read_artefact`, which
@@ -79,10 +88,13 @@ Khandaq deployment, and I get the result in the same inbox as my other findings.
    on standard output, an output cap and the adapter timeout.
 6. **The wrapper**:
    - reads the request and the tar from standard input, accepting exactly the two members, as
-     regular files, up to the sizes the request declares;
+     regular files, of the sizes and SHA-256 digests the request declares;
    - loads the model and the data as described above; a file in another format, an estimator ART
      does not accept, labels the model does not know, or parameters outside the table end the run
-     with exit 2 and a message on standard error;
+     with exit 2 and a message on standard error. The message names what was wrong and, for an
+     error raised by a library, only the error's type: text taken from the model or the data
+     (the names of untrusted types, for instance) is never repeated, because the message is
+     recorded with the run;
    - for each attack calls the ART class with the given parameters, `generate` on the samples,
      and `art.utils.compute_success`, and writes one result line per attack and the completion
      record (the spec-033 format);
@@ -107,6 +119,7 @@ Khandaq deployment, and I get the result in the same inbox as my other findings.
       emits schema-valid findings; unsafe or malformed inputs and parameters outside the table
       exit 2 without findings.
 - [x] `run.started` records the two digests.
+- [x] A model or dataset that the scope allows only by its `location` is not run.
 
 ## Test cases
 
@@ -115,13 +128,17 @@ Integration (`api/tests/test_offline_runs.py`, Postgres):
 `test_an_offline_run_is_queued_when_both_targets_are_in_scope_and_stored`,
 `test_an_offline_run_needs_both_targets_in_scope_and_stored` (the refusal table),
 `test_adapters_must_fit_their_target`,
-`test_a_rate_cap_does_not_refuse_an_adapter_that_sends_nothing`,
+`test_under_a_rate_cap_an_offline_run_declares_a_rate_like_any_other`,
+`test_content_allowed_only_by_its_location_is_not_run`,
+`test_the_builtin_adapter_still_runs_on_any_target_in_scope`,
 `test_the_claim_checks_the_dataset_again`,
 `test_the_worker_hands_over_the_verified_contents_and_audits_their_digests`,
 `test_tampered_content_fails_the_run_before_the_runner`.
 Unit (`api/tests/test_docker_runner.py`): `test_an_offline_run_has_no_network_and_takes_its_inputs_on_stdin`,
 `test_an_offline_run_is_cleaned_up_whatever_happened`,
-`test_an_offline_adapter_without_inputs_is_refused`.
+`test_an_offline_adapter_without_inputs_is_refused`,
+`test_an_offline_container_that_cannot_be_created_or_removed`,
+`test_the_real_cli_feeds_standard_input_without_a_file_on_disk`.
 Adapter (`adapters/art/tests/test_run.py`, with the pinned ART installed):
 `test_a_synthetic_model_is_evaluated_and_translated`, `test_the_chosen_attacks_and_parameters_reach_art`,
 `test_parameters_outside_the_table_are_refused`, `test_inputs_that_are_not_what_they_claim_are_refused`
