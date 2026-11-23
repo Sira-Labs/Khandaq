@@ -95,24 +95,28 @@ Khandaq deployment, and I get the result in the same inbox as my other findings.
 
 ## Acceptance criteria
 
-- [ ] `art` is registered; the registry matches `adapters/art/adapter.yaml`, including `offline`.
-- [ ] A run whose model or dataset is out of scope, missing, of the wrong type, of another
+- [x] `art` is registered; the registry matches `adapters/art/adapter.yaml`, including `offline`.
+- [x] A run whose model or dataset is out of scope, missing, of the wrong type, of another
       engagement or without stored content is rejected and audited; none reaches the runner.
-- [ ] A network adapter on an artefact target and `art` on a network target are rejected.
-- [ ] The worker hands the runner exactly the two verified contents; tampered content fails the
+- [x] A network adapter on an artefact target and `art` on a network target are rejected.
+- [x] The worker hands the runner exactly the two verified contents; tampered content fails the
       run before any container is created.
-- [ ] An offline run creates no network and no forwarder, uses `--network none`, and feeds the
+- [x] An offline run creates no network and no forwarder, uses `--network none`, and feeds the
       inputs through standard input; the container is removed whatever happened.
-- [ ] The wrapper evaluates a synthetic skops model on a synthetic `.npz` with ART 1.20.1 and
+- [x] The wrapper evaluates a synthetic skops model on a synthetic `.npz` with ART 1.20.1 and
       emits schema-valid findings; unsafe or malformed inputs and parameters outside the table
       exit 2 without findings.
-- [ ] `run.started` records the two digests.
+- [x] `run.started` records the two digests.
 
 ## Test cases
 
-Unit and integration (`api/tests/test_offline_runs.py`): `test_art_is_a_registered_offline_adapter`,
+Unit (`api/tests/test_adapter_registry.py`): `test_art_is_a_registered_offline_adapter`.
+Integration (`api/tests/test_offline_runs.py`, Postgres):
+`test_an_offline_run_is_queued_when_both_targets_are_in_scope_and_stored`,
 `test_an_offline_run_needs_both_targets_in_scope_and_stored` (the refusal table),
-`test_adapters_must_fit_their_target`, `test_the_claim_checks_the_dataset_again`,
+`test_adapters_must_fit_their_target`,
+`test_a_rate_cap_does_not_refuse_an_adapter_that_sends_nothing`,
+`test_the_claim_checks_the_dataset_again`,
 `test_the_worker_hands_over_the_verified_contents_and_audits_their_digests`,
 `test_tampered_content_fails_the_run_before_the_runner`.
 Unit (`api/tests/test_docker_runner.py`): `test_an_offline_run_has_no_network_and_takes_its_inputs_on_stdin`,

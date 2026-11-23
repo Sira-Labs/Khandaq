@@ -67,7 +67,17 @@ curl -X PUT --data-binary @model.bin -H "Content-Type: application/octet-stream"
 `KHANDAQ_ARTEFACT_MAX_MB` (default 64) caps one upload, `KHANDAQ_ARTEFACT_MAX_UPLOADS`
 (default 2) how many the API holds in memory at once. Production needs the object store for
 this (`KHANDAQ_OBJECT_STORE_URL`, the default). Stored content stays after the engagement closes,
-as its evidence does. Nothing runs on it yet (spec 035).
+as its evidence does.
+
+### Running ART on it (spec 035)
+
+The `art` adapter runs on a `model_artifact` target and needs `dataset_target_id` in the run's
+parameters: a `dataset` target of the same engagement. Both must be in the scope's allow rules
+and have their content stored; the model is a scikit-learn classifier saved with `skops`, the
+dataset an `.npz` with the arrays `x` and `y`. The run's container has no network at all
+(`--network none`); the worker hands it the two verified contents on standard input. The worker
+host needs the image `ghcr.io/sira-labs/khandaq-adapter-art:1.20.1` (`make build` in
+`adapters/art/`), as for the other adapters.
 
 ## Campaigns and alerts (specs 016, 017)
 
