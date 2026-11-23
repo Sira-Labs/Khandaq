@@ -22,7 +22,7 @@
     "@testing-library/react": "^16.0.1",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
-    "@vitejs/plugin-react": "^5.2.0",
+    "@vitejs/plugin-react": "^6.3.0",
     "jsdom": "^31.0.1",
     "tailwindcss": "^4.3.5",
     "typescript": "^7.0.2",
