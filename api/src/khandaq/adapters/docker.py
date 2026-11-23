@@ -264,7 +264,14 @@ def _names(run_id: str) -> tuple[str, str, str]:
     return f"khq-net-{run_id}", f"khq-fwd-{run_id}", f"khq-run-{run_id}"
 
 
-_ABSENT = ("no such container", "no such network", "not found")
+# What the Docker daemon answers for an object that is not there, with the object's name filled
+# in. Only such an answer proves absence: "not found" alone is also what the CLI says of a missing
+# context, and then nothing was asked of any daemon.
+_ABSENT = ("no such container: {name}", "no such network: {name}", "network {name} not found")
+# Lookups that never returned (``_resolve``). Each keeps a thread until its resolver call comes
+# back, so their number is bounded: beyond it a run fails instead of starting another.
+RESOLVER_SLOTS = 4
+_resolver_slots = threading.BoundedSemaphore(RESOLVER_SLOTS)
 _LEFTOVERS = "the run's containers or network could not be removed"
 
 
@@ -276,6 +283,12 @@ def remove_run_leftovers(run_id: str, cli: DockerCli | None = None) -> bool:
     counts as removed. ``False`` means something may still be running.
     """
     return _remove(cli or SubprocessDockerCli(), run_id, None)
+
+
+def _says_absent(detail: str, name: str) -> bool:
+    """Whether a failed removal's message is the daemon saying that ``name`` does not exist."""
+    said = detail.lower()
+    return any(text.format(name=name.lower()) in said for text in _ABSENT)
 
 
 def _remove(docker: DockerCli, run_id: str, credential: str | None) -> bool:
@@ -300,7 +313,7 @@ def _remove(docker: DockerCli, run_id: str, credential: str | None) -> bool:
             gone = False
             continue
         detail = redact(result.stderr.decode("utf-8", "replace").strip(), credential)
-        if result.returncode != 0 and not any(text in detail.lower() for text in _ABSENT):
+        if result.returncode != 0 and not _says_absent(detail, args[-1]):
             log.error("removing %s failed: %s", args[-1], detail)
             gone = False
     return gone
@@ -360,16 +373,28 @@ class DockerRunner:
         """The resolver's answer within ``RESOLVE_SECONDS``. ``getaddrinfo`` has no deadline of
         its own, and a run that hung here would still be ``running`` when recovery came for it."""
         answer: list[list[str] | BaseException] = []
+        if not _resolver_slots.acquire(blocking=False):
+            raise RunnerError(
+                f"{RESOLVER_SLOTS} earlier lookups of a target host have not returned; "
+                "no further one is started"
+            )
 
         def ask() -> None:
             try:
                 answer.append(self.resolver(host, port))
             except BaseException as exc:  # handed to the caller's thread, re-raised there
                 answer.append(exc)
+            finally:
+                # Only here: a lookup that timed out for its run still occupies its thread.
+                _resolver_slots.release()
 
         # A daemon thread: one that never returns must not keep the worker from exiting.
         thread = threading.Thread(target=ask, name="khq-resolve", daemon=True)
-        thread.start()
+        try:
+            thread.start()
+        except RuntimeError:  # no thread could be started: nothing will give the slot back
+            _resolver_slots.release()
+            raise RunnerError(f"could not start the lookup of target host {host!r}") from None
         thread.join(self.resolve_seconds)
         if not answer:
             raise RunnerError(

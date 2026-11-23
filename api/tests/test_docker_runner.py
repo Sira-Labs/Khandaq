@@ -533,6 +533,45 @@ def test_a_resolver_that_does_not_answer_fails_the_run_before_anything_starts():
     assert cli.calls == []  # no network, no forwarder, no adapter
 
 
+def test_lookups_that_never_return_are_bounded():
+    """Each timed-out lookup keeps its thread until the resolver comes back. Beyond the bound a
+    run fails without starting another, and a returned lookup frees its place."""
+    import threading
+
+    from khandaq.adapters import docker
+
+    def lookups_ended() -> None:
+        for thread in threading.enumerate():
+            if thread.name == "khq-resolve":
+                thread.join(5)
+
+    lookups_ended()  # an earlier test's lookup may still be on its way out
+    release, asked = threading.Event(), []
+
+    def hangs(host: str, port: int) -> list[str]:
+        asked.append(host)
+        release.wait(10)
+        return ["203.0.113.7"]
+
+    cli = FakeCli(CliResult(0, GOOD_OUTPUT, b""))
+    runner = DockerRunner(MANIFEST, SETTINGS, cli=cli, resolver=hangs)
+    runner.resolve_seconds = 0.02
+    try:
+        for _ in range(docker.RESOLVER_SLOTS):
+            with pytest.raises(RunnerError, match="took longer than"):
+                runner.run(_request())
+        with pytest.raises(RunnerError, match="have not returned"):
+            runner.run(_request())
+        assert len(asked) == docker.RESOLVER_SLOTS  # the refused one asked no resolver
+    finally:
+        release.set()
+    lookups_ended()
+    runner.resolver = lambda host, port: ["203.0.113.7"]
+    runner.resolve_seconds = 5
+    runner.run(_request())  # every place is free again
+    assert cli.calls != []
+
+
 def test_a_resolver_error_still_reaches_the_caller():
     def fails(host: str, port: int) -> list[str]:
         raise RunnerError("cannot resolve target host 'gw.acme.test': no such name")
@@ -629,8 +668,13 @@ class ScriptedCli:
 
 
 OK = CliResult(0, b"", b"")
-ABSENT_CONTAINER = CliResult(1, b"", b"Error response from daemon: No such container: khq-x")
-ABSENT_NETWORK = CliResult(1, b"", b"Error response from daemon: network khq-net-x not found")
+ABSENT_CONTAINER = CliResult(
+    1, b"", b"Error response from daemon: No such container: khq-run-run_abc"
+)
+ABSENT_FORWARDER = CliResult(
+    1, b"", b"Error response from daemon: No such container: khq-fwd-run_abc"
+)
+ABSENT_NETWORK = CliResult(1, b"", b"Error response from daemon: network khq-net-run_abc not found")
 REMOVALS = [
     ["rm", "--force", "khq-run-run_abc"],
     ["rm", "--force", "khq-fwd-run_abc"],
@@ -645,7 +689,7 @@ def test_leftovers_of_a_lost_run_are_removed():
 
 
 def test_leftovers_that_are_already_gone_count_as_removed():
-    cli = ScriptedCli(run=ABSENT_CONTAINER, fwd=ABSENT_CONTAINER, net=ABSENT_NETWORK)
+    cli = ScriptedCli(run=ABSENT_CONTAINER, fwd=ABSENT_FORWARDER, net=ABSENT_NETWORK)
     assert remove_run_leftovers("run_abc", cli) is True
 
 
@@ -659,7 +703,14 @@ def test_leftovers_that_are_already_gone_count_as_removed():
         {"run": FileNotFoundError("docker"), "fwd": FileNotFoundError("docker")},
         # The adapter is gone, the forwarder cannot be removed: the absence must not hide it.
         {"run": ABSENT_CONTAINER, "fwd": CliResult(1, b"", b"cannot remove: permission denied")},
-        {"run": ABSENT_CONTAINER, "fwd": ABSENT_CONTAINER, "net": CliResult(1, b"", b"in use")},
+        {"run": ABSENT_CONTAINER, "fwd": ABSENT_FORWARDER, "net": CliResult(1, b"", b"in use")},
+        # Failures that say "not found" without the daemon saying the object is gone: a Docker
+        # context that does not exist never reached a daemon, and another object's absence says
+        # nothing about this one.
+        {"run": CliResult(1, b"", b'context "staging" not found')},
+        {"net": CliResult(1, b"", b"docker: 'network' command not found")},
+        {"fwd": ABSENT_CONTAINER},
+        {"net": CliResult(1, b"", b"Error response from daemon: network khq-net-other not found")},
     ],
 )
 def test_leftovers_that_cannot_be_removed_are_reported(answers):
