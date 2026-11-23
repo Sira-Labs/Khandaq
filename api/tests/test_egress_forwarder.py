@@ -330,6 +330,22 @@ def _with_extension(record: bytes, kind: int, data: bytes = b"") -> bytes:
     return record[:3] + len(body).to_bytes(2, "big") + body
 
 
+def _with_trailing_bytes(record: bytes, tail: bytes) -> bytes:
+    """``record`` with ``tail`` appended inside its extensions block, all lengths corrected: what
+    is left after the last complete extension is not a whole extension header."""
+    assert len(tail) < 4, "four bytes are a complete header: use _with_extension"
+    hello = bytearray(record[9:])
+    at = 34
+    at += 1 + hello[at]
+    at += 2 + int.from_bytes(hello[at : at + 2], "big")
+    at += 1 + hello[at]
+    size = int.from_bytes(hello[at : at + 2], "big") + len(tail)
+    hello[at : at + 2] = size.to_bytes(2, "big")
+    hello += tail
+    body = b"\x01" + len(hello).to_bytes(3, "big") + bytes(hello)
+    return record[:3] + len(body).to_bytes(2, "big") + body
+
+
 def test_client_hello_that_cannot_be_judged_is_refused():
     record = _client_hello(["http/1.1"])
     for broken in (
@@ -341,6 +357,11 @@ def test_client_hello_that_cannot_be_judged_is_refused():
         # An ALPN extension that names no protocol (RFC 7301 forbids it) is not "no ALPN".
         _with_extension(_client_hello(None), 16, b"\x00\x00"),
         _with_extension(_client_hello(None), 16),  # not even the list's length
+        # Bytes after the last extension that are not a whole type-and-length header. Read
+        # leniently, the missing length is zero and the HTTP/1.1 offer before it would pass.
+        _with_trailing_bytes(record, b"\x00"),
+        _with_trailing_bytes(record, b"\xff\xaa"),
+        _with_trailing_bytes(record, b"\xff\xaa\x00"),
     ):
         with pytest.raises(fwd.RefusedProtocol):
             fwd.client_hello_alpn(broken)
@@ -575,11 +596,26 @@ def test_a_slow_connect_does_not_bring_two_first_requests_closer(monkeypatch):
     """The interval counts from when a turn's bytes were written, not from when its slot came:
     a first connection that takes long to open must not let the next connection's request follow
     it by less than the interval."""
-    arrivals: list[float] = []
+    writes: list[float] = []
+
+    class Stamped:
+        """The forwarder's connection to the target, noting when its first bytes are written:
+        that is where the pace is held. When the target reads them is the network's business."""
+
+        def __init__(self, writer):
+            self._writer, self._written = writer, False
+
+        def write(self, data):
+            if not self._written:
+                self._written = True
+                writes.append(asyncio.get_running_loop().time())
+            self._writer.write(data)
+
+        def __getattr__(self, name):
+            return getattr(self._writer, name)
 
     async def handle(reader, writer):
         await reader.read(100)
-        arrivals.append(asyncio.get_running_loop().time())
         writer.write(b"HTTP/1.1 204 No Content\r\n\r\n")
         await writer.drain()
         writer.close()
@@ -592,7 +628,8 @@ def test_a_slow_connect_does_not_bring_two_first_requests_closer(monkeypatch):
         opened += 1
         if opened == 1:
             await asyncio.sleep(0.15)  # the first connection to the target is slow to open
-        return await real_open(*args, **kwargs)
+        reader, writer = await real_open(*args, **kwargs)
+        return reader, Stamped(writer)
 
     interval = 0.1
     pacer = fwd.Pacer(60 / interval)
@@ -615,10 +652,10 @@ def test_a_slow_connect_does_not_bring_two_first_requests_closer(monkeypatch):
         await _paced(upstream, pacer, client)
 
     asyncio.run(scenario())
-    assert len(arrivals) == 2
-    # A few milliseconds of slack for the loopback hop between the forwarder's write and the
-    # target's read; without the fix the gap is close to zero.
-    assert arrivals[1] - arrivals[0] >= interval * 0.9, arrivals
+    assert len(writes) == 2
+    # Measured at the forwarder's own writes, so the interval holds in full (less the clock's
+    # rounding); if the interval counted from when the slot came, the gap would be close to zero.
+    assert writes[1] - writes[0] >= interval - 0.002, writes
 
 
 def test_a_target_that_does_not_accept_in_time_costs_only_its_turn(monkeypatch):

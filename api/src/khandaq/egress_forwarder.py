@@ -154,6 +154,8 @@ def client_hello_alpn(record: bytes) -> list[bytes]:
             raise RefusedProtocol("the ClientHello's extensions are malformed")
         offered: list[bytes] = []
         while at < end:
+            if end - at < 4:  # not even an extension's type and length
+                raise RefusedProtocol("the ClientHello's extensions are malformed")
             kind = int.from_bytes(hello[at : at + 2], "big")
             size = int.from_bytes(hello[at + 2 : at + 4], "big")
             data = hello[at + 4 : at + 4 + size]
