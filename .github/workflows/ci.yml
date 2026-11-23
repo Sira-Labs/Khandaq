@@ -68,9 +68,15 @@ jobs:
       - uses: actions/setup-python@v7
         with: { python-version: "3.12" }
       - run: pip install pyyaml jsonschema pytest
+      # What the ART image holds (spec 035): without it the tests that run the real tool on a
+      # synthetic model would be skipped.
+      - run: pip install -r adapters/art/requirements.txt
       - run: python adapters/_tooling/validate_manifests.py
       # Adapter contract tests: each adapter's parser must still emit schema-valid findings.
       - run: pytest --import-mode=importlib adapters/*/tests -q
+      # The same tests again, as errors if any was skipped: a missing dependency must not
+      # turn the ART run tests into a silent pass.
+      - run: pytest --import-mode=importlib adapters/art/tests -q -rs | tee /tmp/art.txt && ! grep -q skipped /tmp/art.txt
 
   api:
     name: python api${{ matrix.python != '3.15' && format(' ({0})', matrix.python) || '' }}
