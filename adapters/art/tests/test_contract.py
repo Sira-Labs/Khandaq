@@ -178,36 +178,36 @@ def _request(tmp_path: Path, spec: dict) -> Path:
     return path
 
 
-def test_main_writes_findings_or_exits_2(tmp_path, capsys):
-    request = _request(tmp_path, {"digest": DIGEST})
+def test_translate_writes_findings_or_exits_2(tmp_path, capsys):
+    request = json.loads(_request(tmp_path, {"digest": DIGEST}).read_text())
     evidence = tmp_path / "evidence"
     evidence.mkdir()
 
-    assert wrap.main(request, evidence) == 2  # no results: ART did not run
+    assert wrap.translate(request, evidence) == 2  # no results: ART did not run
     assert "is missing" in capsys.readouterr().err
     assert not (evidence / "findings.jsonl").exists()
 
     (evidence / wrap.REPORT_NAME).write_text(FIXTURE[0] + "\n")  # no completion record
-    assert wrap.main(request, evidence) == 2
+    assert wrap.translate(request, evidence) == 2
     assert "refusing untrustworthy results" in capsys.readouterr().err
     assert not (evidence / "findings.jsonl").exists()
 
     (evidence / wrap.REPORT_NAME).write_text("\n".join(FIXTURE) + "\n")
-    assert wrap.main(request, evidence) == 0
+    assert wrap.translate(request, evidence) == 0
     written = [json.loads(x) for x in (evidence / "findings.jsonl").read_text().splitlines()]
     assert len(written) == 3 and all(f["target_ref"] == DIGEST for f in written)
 
     # A later call on the same directory that fails leaves no findings of the earlier one behind.
     (evidence / wrap.REPORT_NAME).write_text(FIXTURE[0] + "\n")
-    assert wrap.main(request, evidence) == 2
+    assert wrap.translate(request, evidence) == 2
     assert not (evidence / "findings.jsonl").exists()
     (evidence / wrap.REPORT_NAME).unlink()
     (evidence / "findings.jsonl").write_text("stale\n")
-    assert wrap.main(request, evidence) == 2
+    assert wrap.translate(request, evidence) == 2
     assert not (evidence / "findings.jsonl").exists()
     # And a valid report writes its complete findings again.
     (evidence / wrap.REPORT_NAME).write_text("\n".join(FIXTURE) + "\n")
-    assert wrap.main(request, evidence) == 0
+    assert wrap.translate(request, evidence) == 0
     assert len((evidence / "findings.jsonl").read_text().splitlines()) == 3
 
 

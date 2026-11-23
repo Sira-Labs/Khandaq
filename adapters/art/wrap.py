@@ -6,17 +6,22 @@ not reimplement it (ADR-0001). This wrapper translates the results of ART's publ
 attacks, as ART itself measured them, into canonical Khandaq findings. It contains no attack, no
 perturbation and no payload of its own, and it opens no network connection.
 
-Driving ART against a model artefact inside the run sandbox is a later spec; until then the results
-must already be in the evidence directory, and the wrapper fails closed when they are not. The
-parser is contract-tested against a fixture recorded from a real ART run on a synthetic model.
+In the run sandbox (spec 035) it is handed a stored model and a stored dataset on standard input,
+in a container without any network. It loads them from formats that cannot run code (skops with
+no extra trusted types, ``.npz`` without pickles), calls the ART attack classes the operator chose
+from a fixed table with the numbers the operator gave, and records what ART measured. The parser
+is contract-tested against a fixture recorded from a real ART run on a synthetic model.
 """
 
 from __future__ import annotations
 
 import json
 import math
+import os
 import sys
+import tarfile
 from pathlib import Path
+from typing import IO
 
 VERSION = "1.20.1"
 PHASE = "05-adversarial-ml"
@@ -180,14 +185,13 @@ def target_ref(request: dict) -> str:
     return "target"
 
 
-def main(request_path: Path = Path("/run-request.json"), evidence: Path = Path("/evidence")) -> int:
+def translate(request: dict, evidence: Path) -> int:
     """Translate the ART results in ``evidence`` into ``findings.jsonl``.
 
-    Exits non-zero, and writes no findings file, when the results are missing, incomplete or
+    Returns non-zero, and leaves no findings file, when the results are missing, incomplete or
     unreadable: a run that produced no trustworthy results must surface as a failed run, never as
     a run with zero findings.
     """
-    request = json.loads(request_path.read_text())
     report = evidence / REPORT_NAME
     findings_file = evidence / "findings.jsonl"
     # Findings of an earlier call must not survive a call that fails: they would describe
@@ -208,6 +212,301 @@ def main(request_path: Path = Path("/run-request.json"), evidence: Path = Path("
         return 2
     findings_file.write_text("".join(json.dumps(f) + "\n" for f in findings))
     return 0
+
+
+# --- running ART in the sandbox (spec 035) --------------------------------------------------------
+
+INPUT_NAMES = ("model", "dataset")
+MAX_ATTACKS = 8
+DEFAULT_SAMPLES, MAX_SAMPLES = 200, 5000
+MAX_COUNT = 10_000
+_NORMS = {1: 1, 2: 2, "inf": math.inf}
+
+# The attacks an operator may choose, and the parameters each takes: all of them ART's own
+# published classes and ART's own parameter names. Nothing here describes how an attack works.
+#   "number": a finite number above 0; "count": a positive integer up to MAX_COUNT;
+#   "norm": 1, 2 or "inf"; "flag": true or false.
+ATTACKS: dict[str, dict[str, str]] = {
+    "FastGradientMethod": {
+        "eps": "number",
+        "eps_step": "number",
+        "norm": "norm",
+        "num_random_init": "count0",
+        "minimal": "flag",
+        "batch_size": "count",
+    },
+    "ProjectedGradientDescent": {
+        "eps": "number",
+        "eps_step": "number",
+        "norm": "norm",
+        "max_iter": "count",
+        "num_random_init": "count0",
+        "batch_size": "count",
+    },
+    "HopSkipJump": {
+        "norm": "norm",
+        "max_iter": "count",
+        "max_eval": "count",
+        "init_eval": "count",
+        "init_size": "count",
+        "batch_size": "count",
+    },
+}
+
+
+class RequestError(ValueError):
+    """The request or its inputs cannot be turned into an ART evaluation; the run fails before
+    ART is called."""
+
+
+def load_request(environ: dict[str, str], fallback: Path) -> dict:
+    """The run request from ``KHANDAQ_RUN_REQUEST`` (the sandbox contract), else from a file."""
+    raw = environ.get("KHANDAQ_RUN_REQUEST")
+    if raw is None:
+        if not fallback.is_file():
+            raise RequestError("no run request: KHANDAQ_RUN_REQUEST is not set")
+        raw = fallback.read_text()
+    try:
+        request = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RequestError(f"the run request is not JSON: {exc}") from exc
+    if not isinstance(request, dict) or not isinstance(request.get("target"), dict):
+        raise RequestError("the run request has no target")
+    return request
+
+
+def _value(kind: str, name: str, value: object) -> object:
+    """``value`` as ART takes it, or a RequestError naming the parameter."""
+    problem = RequestError(f"parameter {name!r} is not a valid {kind.rstrip('0')}: {value!r}")
+    if kind == "flag":
+        if not isinstance(value, bool):
+            raise problem
+        return value
+    if kind == "norm":
+        if isinstance(value, bool) or value not in _NORMS:
+            raise problem
+        return _NORMS[value]  # type: ignore[index]
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise problem
+    if kind in ("count", "count0"):
+        least = 0 if kind == "count0" else 1
+        if not isinstance(value, int) or not least <= value <= MAX_COUNT:
+            raise problem
+        return value
+    if not math.isfinite(value) or value <= 0:
+        raise problem
+    return float(value)
+
+
+def chosen_attacks(params: dict) -> list[tuple[str, dict]]:
+    """The attacks the run asks for, each checked against ``ATTACKS``. Default: one
+    ``FastGradientMethod`` with ART's own defaults."""
+    wanted = params.get("attacks", [{"name": "FastGradientMethod"}])
+    if not isinstance(wanted, list) or not 1 <= len(wanted) <= MAX_ATTACKS:
+        raise RequestError(f"'attacks' must be a list of 1 to {MAX_ATTACKS} attacks")
+    chosen: list[tuple[str, dict]] = []
+    for entry in wanted:
+        if not isinstance(entry, dict) or set(entry) - {"name", "params"}:
+            raise RequestError("an attack is {'name': ..., 'params': {...}}")
+        name = entry.get("name")
+        if not isinstance(name, str) or name not in ATTACKS:
+            raise RequestError(f"attack {name!r} is not one of {sorted(ATTACKS)}")
+        given = entry.get("params", {})
+        if not isinstance(given, dict):
+            raise RequestError(f"the parameters of {name} must be an object")
+        unknown = sorted(set(given) - set(ATTACKS[name]))
+        if unknown:
+            raise RequestError(f"{name} takes no parameter {unknown}")
+        chosen.append((name, {k: _value(ATTACKS[name][k], k, v) for k, v in given.items()}))
+    return chosen
+
+
+def sample_count(params: dict) -> int:
+    samples = params.get("samples", DEFAULT_SAMPLES)
+    if isinstance(samples, bool) or not isinstance(samples, int) or not 1 <= samples <= MAX_SAMPLES:
+        raise RequestError(f"'samples' must be an integer from 1 to {MAX_SAMPLES}")
+    return samples
+
+
+def read_inputs(stream: IO[bytes], request: dict, scratch: Path) -> dict[str, Path]:
+    """Unpack the hand-over tar: exactly ``model`` and ``dataset``, regular files, each of the
+    size the request declares. Anything else is refused before a byte of it is interpreted."""
+    declared = request.get("inputs")
+    if not isinstance(declared, dict) or set(declared) != set(INPUT_NAMES):
+        raise RequestError("the run request does not declare the inputs 'model' and 'dataset'")
+    scratch.mkdir(parents=True, exist_ok=True)
+    paths: dict[str, Path] = {}
+    try:
+        with tarfile.open(fileobj=stream, mode="r|") as tar:
+            for member in tar:
+                name = member.name
+                if name not in INPUT_NAMES or name in paths or not member.isfile():
+                    raise RequestError(f"unexpected input {name!r}")
+                size = (declared[name] or {}).get("bytes")
+                if isinstance(size, bool) or not isinstance(size, int) or member.size != size:
+                    raise RequestError(f"input {name!r} is not the size the request declares")
+                source = tar.extractfile(member)
+                if source is None:
+                    raise RequestError(f"input {name!r} cannot be read")
+                paths[name] = scratch / name
+                with open(paths[name], "wb") as target:
+                    while chunk := source.read(1024 * 1024):
+                        target.write(chunk)
+    except tarfile.TarError as exc:
+        raise RequestError(f"the inputs are not a tar archive: {exc}") from exc
+    if set(paths) != set(INPUT_NAMES):
+        raise RequestError("the inputs 'model' and 'dataset' are not both there")
+    return paths
+
+
+def load_model(path: Path):
+    """The scikit-learn estimator in a skops file. ``trusted=[]``: a file that needs any type
+    beyond skops's own default list is refused, and nothing in it is ever unpickled."""
+    import skops.io
+    from skops.io.exceptions import UntrustedTypesFoundException
+
+    try:
+        return skops.io.load(path, trusted=[])
+    except UntrustedTypesFoundException as exc:
+        raise RequestError(f"the model needs types that are not trusted: {exc}") from exc
+    except Exception as exc:  # skops raises many types for a file that is not a skops file
+        raise RequestError(f"the model is not a skops file: {type(exc).__name__}") from exc
+
+
+def load_dataset(path: Path, samples: int):
+    """``x`` and ``y`` from an ``.npz``, the first ``samples`` rows. No pickles."""
+    import numpy as np
+
+    try:
+        with np.load(path, allow_pickle=False) as data:
+            if "x" not in data.files or "y" not in data.files:
+                raise RequestError("the dataset needs the arrays 'x' and 'y'")
+            x, y = data["x"], data["y"]
+    except RequestError:
+        raise
+    except Exception as exc:  # not an .npz, or one that needs pickle
+        raise RequestError(f"the dataset is not a plain .npz: {type(exc).__name__}") from exc
+    if x.ndim != 2 or y.ndim != 1 or len(x) != len(y) or len(x) == 0:
+        raise RequestError("the dataset needs a 2-D 'x' and a 1-D 'y' of the same length")
+    if not np.issubdtype(x.dtype, np.number) or not np.isfinite(x).all():
+        raise RequestError("the dataset's 'x' must be finite numbers")
+    return x[:samples].astype(np.float32), y[:samples]
+
+
+def _plain(value: object) -> object:
+    """A parameter value as it goes into the results (JSON)."""
+    import numpy as np
+
+    if isinstance(value, (np.floating, np.integer)):
+        value = value.item()
+    if isinstance(value, float) and math.isinf(value):
+        return "inf"
+    if isinstance(value, (int, float, str, bool)) or value is None:
+        return value
+    return str(value)
+
+
+def evaluate(request: dict, model_path: Path, dataset_path: Path) -> list[dict]:
+    """Run the chosen ART attacks on the model and return one result per attack, in the
+    spec-033 format: what was run, with which parameters, and what ART measured."""
+    params = request.get("params") or {}
+    attacks = chosen_attacks(params)
+    x, y = load_dataset(dataset_path, sample_count(params))
+    model = load_model(model_path)
+
+    import art
+    import art.attacks.evasion as evasion
+    import numpy as np
+    from art.estimators.classification import SklearnClassifier
+    from art.utils import compute_success
+
+    if art.__version__ != VERSION:
+        raise RequestError(f"this image holds ART {art.__version__}, not the pinned {VERSION}")
+    classes = getattr(model, "classes_", None)
+    if classes is None:
+        raise RequestError("the model is not a fitted classifier")
+    known = {label.item() if hasattr(label, "item") else label for label in classes}
+    labels = [label.item() if hasattr(label, "item") else label for label in y]
+    if not set(labels) <= known:
+        raise RequestError("the dataset has labels the model does not know")
+    try:
+        estimator = SklearnClassifier(
+            model=model, clip_values=(float(x.min()), float(x.max()))
+        )
+    except Exception as exc:  # ART refuses estimators it has no wrapper for
+        raise RequestError(f"ART does not accept this estimator: {type(exc).__name__}") from exc
+    index = {label: position for position, label in enumerate(sorted(known))}
+    positions = np.array([index[label] for label in labels])
+    one_hot = np.eye(len(known))[positions]
+
+    def accuracy(samples) -> float:
+        return float((np.argmax(estimator.predict(samples), axis=1) == positions).mean())
+
+    clean = accuracy(x)
+    results: list[dict] = []
+    for name, given in attacks:
+        cls = getattr(evasion, name)
+        quiet = {"verbose": False} if "verbose" in cls.attack_params else {}
+        attack = cls(estimator, **given, **quiet)
+        adversarial = attack.generate(x=x)
+        results.append(
+            {
+                "art_version": art.__version__,
+                "family": "evasion",
+                "attack": cls.__name__,
+                "attack_module": cls.__module__,
+                "params": {
+                    key: _plain(getattr(attack, key))
+                    for key in cls.attack_params
+                    if key not in ("summary_writer", "verbose") and hasattr(attack, key)
+                },
+                "estimator": type(estimator).__name__,
+                "samples": int(len(x)),
+                "clean_accuracy": round(clean, 6),
+                "adversarial_accuracy": round(accuracy(adversarial), 6),
+                "success_rate": round(
+                    float(compute_success(estimator, x, one_hot, adversarial)), 6
+                ),
+            }
+        )
+    return results
+
+
+def write_results(results: list[dict], evidence: Path) -> None:
+    evidence.mkdir(parents=True, exist_ok=True)
+    lines = [json.dumps(result) for result in results]
+    lines.append(json.dumps({"khandaq": "completion", "results": len(results)}))
+    (evidence / REPORT_NAME).write_text("\n".join(lines) + "\n")
+
+
+def write_tar(evidence: Path, out: IO[bytes]) -> None:
+    """The sandbox output contract (spec 012): one uncompressed tar of ``evidence`` on stdout."""
+    with tarfile.open(fileobj=out, mode="w|") as tar:
+        for path in sorted(evidence.iterdir()):
+            tar.add(path, arcname=path.name)
+
+
+def main(
+    request_path: Path = Path("/run-request.json"),
+    evidence: Path = Path("/evidence"),
+    scratch: Path = Path("/tmp/art"),
+    stdin: IO[bytes] | None = None,
+    out: IO[bytes] | None = None,
+) -> int:
+    """Sandbox entrypoint: read the request and the inputs, run ART, translate its results, and
+    emit the evidence tar on standard output (only on success)."""
+    try:
+        request = load_request(dict(os.environ), request_path)
+        inputs = read_inputs(stdin or sys.stdin.buffer, request, scratch)
+        results = evaluate(request, inputs["model"], inputs["dataset"])
+    except RequestError as exc:
+        print(f"art adapter: {exc}", file=sys.stderr)
+        return 2
+    write_results(results, evidence)
+    code = translate(request, evidence)
+    if code == 0:
+        write_tar(evidence, out or sys.stdout.buffer)
+    return code
 
 
 if __name__ == "__main__":

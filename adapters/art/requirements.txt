@@ -1,0 +1,8 @@
+# What the ART adapter image holds (spec 035), pinned exactly (ADR-0001). The Dockerfile and the
+# CI contract job install from this file, so the tests run against what the image runs.
+adversarial-robustness-toolbox==1.20.1
+# ART 1.20.1 imports `packaging` without declaring it.
+packaging
+scikit-learn==1.9.1
+skops==0.16.0
+numpy==2.5.5
