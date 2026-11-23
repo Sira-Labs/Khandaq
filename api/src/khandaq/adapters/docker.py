@@ -95,7 +95,7 @@ class SubprocessDockerCli:
         with (
             tempfile.TemporaryFile() as out,
             tempfile.TemporaryFile() as err,
-            tempfile.TemporaryFile() as source,
+            _memory_file() as source,
         ):
             if stdin is not None:  # from a file, so a full pipe can never block the worker
                 source.write(stdin)
@@ -121,6 +121,16 @@ class SubprocessDockerCli:
             if stdout_limit is not None and os.fstat(out.fileno()).st_size > stdout_limit:
                 raise RunnerError(f"adapter output exceeded {stdout_limit} bytes")
             return CliResult(proc.returncode, _read(out), _read(err))
+
+
+def _memory_file() -> IO[bytes]:
+    """A file for a process's standard input that is never on a disk where the kernel offers one
+    (Linux): what is handed over this way can be content that is stored encrypted (spec 035).
+    Elsewhere an unnamed temporary file, as for the output."""
+    create = getattr(os, "memfd_create", None)
+    if create is None:  # pragma: no cover - not Linux (a development machine)
+        return tempfile.TemporaryFile()
+    return os.fdopen(create("khq-stdin"), "w+b")
 
 
 def _read(f: IO[bytes]) -> bytes:

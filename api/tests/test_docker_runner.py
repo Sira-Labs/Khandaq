@@ -527,6 +527,39 @@ def test_an_offline_run_is_cleaned_up_whatever_happened(start):
     assert not os.path.exists(cli.env_file[0])
 
 
+def test_an_offline_container_that_cannot_be_created_or_removed():
+    # Not created: the run fails, and the removal is still attempted (a half-made container).
+    cli = OfflineCli(CliResult(0, GOOD_OUTPUT, b""))
+    cli.fail_on = "create --name"
+    with pytest.raises(RunnerError, match="could not create the adapter"):
+        DockerRunner(OFFLINE, SETTINGS, cli=cli).run(_offline_request(), inputs=INPUTS)
+    assert [c[0] for c in cli.calls] == ["create", "rm"]
+    assert not os.path.exists(cli.env_file[0])
+
+    # Not removed: an offline container relays nothing and holds no credential, so the run's
+    # result stands; the failure is logged.
+    cli = OfflineCli(CliResult(0, GOOD_OUTPUT, b""), rm_fails=True)
+    result = DockerRunner(OFFLINE, SETTINGS, cli=cli).run(_offline_request(), inputs=INPUTS)
+    assert result["findings"] and cli.calls[-1] == ["rm", "--force", "khq-run-run_abc"]
+
+
+def test_the_real_cli_feeds_standard_input_without_a_file_on_disk(tmp_path, monkeypatch):
+    """``SubprocessDockerCli`` with a stand-in binary: what it is given reaches the process's
+    standard input whole, a process without input reads none, and the input is not written to
+    the temporary directory."""
+    from khandaq.adapters import docker
+
+    monkeypatch.setattr(docker.tempfile, "tempdir", str(tmp_path))
+    payload = os.urandom(3 * 1024 * 1024)
+    cli = docker.SubprocessDockerCli(binary="cat", poll_seconds=0.01)
+    assert cli([], timeout=30, stdin=payload).stdout == payload
+    assert cli([], timeout=30).stdout == b""  # no input: standard input is empty, not inherited
+    assert list(tmp_path.iterdir()) == []  # only unnamed files were ever there
+    if hasattr(os, "memfd_create"):
+        with docker._memory_file() as source:  # and the input's file is not a file on a disk
+            assert os.readlink(f"/proc/self/fd/{source.fileno()}").startswith("/memfd:")
+
+
 def test_an_offline_adapter_without_inputs_is_refused():
     cli = OfflineCli(CliResult(0, GOOD_OUTPUT, b""))
     runner = DockerRunner(OFFLINE, SETTINGS, cli=cli)
