@@ -108,8 +108,16 @@ with `rate_per_minute: 60` and the run goes through, slower, without exceeding w
      is dropped, and `run.cleanup_failed` is audited.
    - `recover_stale_runs` does the same removal for a run left `running` past the timeout (a lost
      worker, or the case above) and only then records `run.failed`; if the removal fails the run
-     stays `running`. The worker runs this at start and every five minutes. A run that stays
-     `running` this way is audited as `run.cleanup_failed` once, not on every attempt.
+     stays `running`. The worker runs this at start and then whenever five minutes have passed
+     and it is between two runs: a worker executes one run at a time and does not touch Docker
+     for another run beside it, so while it executes a run a retry waits for that run to end
+     (another worker, if there is one, is not held up by this). Each stale run is handled in a
+     transaction of its own, so a run that is left alone keeps no lock while the others are
+     cleaned up. A run that stays `running` this way is audited as `run.cleanup_failed` once,
+     not on every attempt.
+   - An object counts as gone only when the Docker daemon says that this very container or
+     network does not exist. Any other failure (a missing Docker context, a daemon that cannot
+     be reached) leaves the run `running`.
    - A worker **holds** the run while it executes it: a session-level advisory lock on a
      connection of its own, released when the execution ends and by the database when the
      worker's process or connection is gone. Recovery tries the same lock and leaves a run alone

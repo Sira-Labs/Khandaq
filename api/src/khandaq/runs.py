@@ -447,8 +447,12 @@ def _holding(session: Session, run_id: str) -> Iterator[None]:
         try:
             connection.execute(text(_RUN_HOLD.format(call="pg_advisory_unlock")), _hold_key(run_id))
             connection.commit()
-        except SQLAlchemyError:  # the connection is gone, and the lock with it
+        except SQLAlchemyError:
+            # The release did not go through. If the backend is still alive it still has the
+            # lock, and back in the pool it would keep the run held for good: a rollback does
+            # not release a session-level lock. Ending the backend does.
             log.warning("run %s: the hold's connection was lost before its release", run_id)
+            connection.invalidate()
         finally:
             connection.close()
 
@@ -578,23 +582,30 @@ def recover_stale_runs(
     is audited once as ``run.cleanup_failed`` and is tried again at the next recovery.
     """
     cutoff = _now() - older_than
-    stale = session.scalars(
-        select(Run)
-        .where(Run.state == "running", Run.started_at < cutoff)
-        .with_for_update(skip_locked=True)
-    ).all()
+    stale = Run.state == "running", Run.started_at < cutoff
+    candidates = session.scalars(select(Run.id).where(*stale).order_by(Run.started_at)).all()
+    session.rollback()  # the list is only a hint: each run is judged again under its own lock
     failed = 0
-    for run in stale:
+    for run_id in candidates:
+        # One run per transaction, so a run that is left alone keeps no row lock while the
+        # containers of the others are removed: its live worker can record its result at once.
+        run = session.scalars(
+            select(Run).where(Run.id == run_id, *stale).with_for_update(skip_locked=True)
+        ).first()
+        if run is None:  # ended meanwhile, or another worker is at it
+            session.rollback()
+            continue
         if _held_by_a_live_worker(session, run.id):
             # Old enough to look lost, but its worker is alive and inside it: removing its
             # containers now would kill a live run, and failing it would let another start.
             log.warning("run %s is past the cutoff but a worker still holds it", run.id)
+            session.rollback()
             continue
         if not leftovers_removed(run):
             log.error("run %s was lost and its containers could not be removed", run.id)
             _audit_cleanup_failed_once(session, run, _LEFTOVERS_AT_RECOVERY)
+            session.commit()
             continue
-        failed += 1
         run.state = "failed"
         run.ended_at = _now()
         run.reject_reason = "the worker lost the run (still running past the timeout)"
@@ -604,7 +615,8 @@ def recover_stale_runs(
             engagement_id=run.engagement_id,
             detail={"run_id": run.id, "error": run.reject_reason},
         )
-    session.commit()
+        session.commit()
+        failed += 1
     return failed
 
 

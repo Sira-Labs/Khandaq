@@ -437,6 +437,72 @@ def test_recovery_leaves_a_run_alone_while_a_worker_is_executing_it(env):
             assert not runs._held_by_a_live_worker(probe, again["id"])
 
 
+def test_recovery_keeps_no_lock_on_a_run_it_leaves_alone(env):
+    """Two runs past the cutoff: one a live worker holds, one that is lost. While the lost one's
+    containers are removed, the held one's row is not locked, so its worker can record its result
+    without waiting for the cleanup of other runs (one run per transaction)."""
+    from khandaq import runs
+
+    client, db, _ = env
+    eng_id, tid = _engagement(client, "one at a time")
+    held, lost = _queue(client, eng_id, tid), _queue(client, eng_id, tid)
+    old = dt.datetime.now(dt.UTC) - dt.timedelta(hours=3)
+    for at, run in enumerate((held, lost)):
+        _running(db, run["id"])
+        with db.begin() as conn:
+            conn.execute(
+                text("UPDATE runs SET started_at = :t WHERE id = :r"),
+                {"t": old + dt.timedelta(seconds=at), "r": run["id"]},  # the held one is first
+            )
+    asked: list[str] = []
+
+    def removed(run) -> bool:
+        asked.append(run.id)
+        with db.connect() as other:  # as the held run's worker would, to record its result
+            other.execute(
+                text("SELECT id FROM runs WHERE id = :r FOR UPDATE NOWAIT"), {"r": held["id"]}
+            )
+            other.rollback()
+        return True
+
+    with Session(db) as worker, runs._holding(worker, held["id"]), Session(db) as recovery:
+        assert (
+            runs.recover_stale_runs(
+                recovery, older_than=dt.timedelta(hours=1), leftovers_removed=removed
+            )
+            == 1
+        )
+    assert asked == [lost["id"]]
+    assert _run(client, eng_id, held["id"])["state"] == "running"
+    assert _run(client, eng_id, lost["id"])["state"] == "failed"
+
+
+def test_a_hold_whose_release_fails_does_not_go_back_to_the_pool(env, monkeypatch):
+    """If the unlock statement fails while the backend lives, the connection would return to the
+    pool still holding the run. It is discarded instead, which ends the backend and the hold."""
+    from sqlalchemy.exc import OperationalError
+
+    from khandaq import runs
+
+    client, db, _ = env
+    eng_id, tid = _engagement(client, "release fails")
+    run = _queue(client, eng_id, tid)
+    real_text = runs.text
+
+    def failing_unlock(statement: str):
+        if "pg_advisory_unlock" in statement:
+            raise OperationalError(statement, {}, Exception("canceling statement"))
+        return real_text(statement)
+
+    with Session(db) as session:
+        monkeypatch.setattr(runs, "text", failing_unlock)
+        with runs._holding(session, run["id"]):
+            pass
+        monkeypatch.setattr(runs, "text", real_text)
+    with Session(db) as probe:
+        assert not runs._held_by_a_live_worker(probe, run["id"])
+
+
 def test_a_lost_run_whose_containers_cannot_be_removed_stays_running(env):
     """Its forwarder may still be relaying, so the run keeps holding back the engagement's next
     paced run (spec 032); once the leftovers are gone it is failed and audited."""
