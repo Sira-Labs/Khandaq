@@ -170,6 +170,11 @@ def test_the_chosen_attacks_and_parameters_reach_art(tmp_path):
         {"attacks": [{"name": "HopSkipJump", "params": {"eps": 0.1}}]},  # not HopSkipJump's
         {"attacks": [{"name": "FastGradientMethod", "extra": 1}]},
         {"attacks": [{"name": "FastGradientMethod", "params": [0.3]}]},
+        # Values that are not even the right kind of thing: refused, not a crash.
+        {"attacks": [{"name": "FastGradientMethod", "params": {"norm": [1]}}]},
+        {"attacks": [{"name": "FastGradientMethod", "params": {"norm": {"inf": 1}}}]},
+        {"attacks": [{"name": "FastGradientMethod", "params": {"eps": 10**400}}]},
+        {"attacks": [{"name": "HopSkipJump", "params": {"norm": 1}}]},  # ART takes 2 or inf
         {"samples": 0},
         {"samples": 5001},
         {"samples": True},
@@ -206,6 +211,33 @@ X = np.load(io.BytesIO(DATASET))["x"]
 Y = np.load(io.BytesIO(DATASET))["y"]
 
 
+def _needs_an_untrusted_type() -> bytes:
+    """A well-formed skops file whose estimator carries a function skops does not trust."""
+    import os
+
+    from sklearn.preprocessing import FunctionTransformer
+
+    return skops_io.dumps(FunctionTransformer(func=os.getcwd))
+
+
+def _a_pipeline() -> bytes:
+    """A fitted scikit-learn estimator of trusted types that ART has no wrapper for."""
+    from sklearn.pipeline import Pipeline
+    from sklearn.preprocessing import StandardScaler
+
+    pipeline = Pipeline([("scale", StandardScaler()), ("model", LogisticRegression())])
+    return skops_io.dumps(pipeline.fit(X, Y))
+
+
+def _npz_with_a_text_member() -> bytes:
+    import zipfile
+
+    data = io.BytesIO(_npz(y=Y))
+    with zipfile.ZipFile(data, "a") as archive:
+        archive.writestr("x", b"not an array")
+    return data.getvalue()
+
+
 @pytest.mark.parametrize(
     ("model", "dataset", "why"),
     [
@@ -219,6 +251,13 @@ Y = np.load(io.BytesIO(DATASET))["y"]
         (MODEL, _npz(x=X[:, 0], y=Y), "2-D 'x'"),
         (MODEL, _npz(x=np.full_like(X, np.nan), y=Y), "finite numbers"),
         (MODEL, _npz(x=X, y=Y + 5), "labels the model does not know"),
+        # A real skops file that needs a type beyond skops's own list: this is the trust check.
+        (_needs_an_untrusted_type(), DATASET, "types that are not trusted"),
+        (_a_pipeline(), DATASET, "ART"),
+        (MODEL, _npz(x=X[:, :5], y=Y), "cannot predict on this dataset"),
+        (MODEL, _npz(x=X.astype(np.float64) * 1e300, y=Y), "fit 32-bit floats"),
+        (MODEL, _npz(x=X.astype(np.complex64) + 1j, y=Y), "real numbers"),
+        (MODEL, _npz_with_a_text_member(), "must be arrays"),
     ],
 )
 def test_inputs_that_are_not_what_they_claim_are_refused(
@@ -231,6 +270,7 @@ def test_inputs_that_are_not_what_they_claim_are_refused(
     assert code == 2 and out == b""
     assert why in captured.err
     assert "code ran" not in captured.out + captured.err  # nothing was unpickled
+    assert "Traceback" not in captured.err and "getcwd" not in captured.err  # no text of the file
     assert not (evidence / "findings.jsonl").exists()
 
 
@@ -242,6 +282,11 @@ def test_inputs_that_are_not_what_they_claim_are_refused(
         ({"model": MODEL, "../dataset": DATASET}, "unexpected input"),
         ({"model": MODEL + b"\x00", "dataset": DATASET}, "not the size the request declares"),
         ({"model": MODEL[:-1], "dataset": DATASET}, "not the size the request declares"),
+        # The declared size, other bytes.
+        (
+            {"model": MODEL[:-1] + bytes([MODEL[-1] ^ 1]), "dataset": DATASET},
+            "not the content the request declares",
+        ),
     ],
 )
 def test_the_hand_over_takes_exactly_the_two_declared_inputs(

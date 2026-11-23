@@ -15,6 +15,7 @@ is contract-tested against a fixture recorded from a real ART run on a synthetic
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -30,7 +31,11 @@ REPORT_NAME = "art-results.jsonl"
 # ART attack family → framework ids (extends the core mapping table; ADR-0012). Only what is
 # curated here is read: a family without an entry fails the run instead of being guessed at.
 FAMILY_FRAMEWORKS = {
-    "evasion": [("atlas", "AML.T0015"), ("atlas", "AML.T0043"), ("nist-ai-rmf", "MEASURE-2.7")],
+    "evasion": [
+        ("atlas", "AML.T0015"),
+        ("atlas", "AML.T0043"),
+        ("nist-ai-rmf", "MEASURE-2.7"),
+    ],
 }
 # The ART package each family's attack classes live in.
 FAMILY_MODULE = {"evasion": "art.attacks.evasion"}
@@ -225,7 +230,8 @@ _NORMS = {1: 1, 2: 2, "inf": math.inf}
 # The attacks an operator may choose, and the parameters each takes: all of them ART's own
 # published classes and ART's own parameter names. Nothing here describes how an attack works.
 #   "number": a finite number above 0; "count": a positive integer up to MAX_COUNT;
-#   "norm": 1, 2 or "inf"; "flag": true or false.
+#   "norm": 1, 2 or "inf" ("norm2": 2 or "inf", where ART takes no other); "flag": true or
+#   false; "count0": a count that may be 0.
 ATTACKS: dict[str, dict[str, str]] = {
     "FastGradientMethod": {
         "eps": "number",
@@ -244,7 +250,7 @@ ATTACKS: dict[str, dict[str, str]] = {
         "batch_size": "count",
     },
     "HopSkipJump": {
-        "norm": "norm",
+        "norm": "norm2",
         "max_iter": "count",
         "max_eval": "count",
         "init_eval": "count",
@@ -277,15 +283,20 @@ def load_request(environ: dict[str, str], fallback: Path) -> dict:
 
 def _value(kind: str, name: str, value: object) -> object:
     """``value`` as ART takes it, or a RequestError naming the parameter."""
-    problem = RequestError(f"parameter {name!r} is not a valid {kind.rstrip('0')}: {value!r}")
+    shown = (
+        value if isinstance(value, (bool, float, str)) or value is None else type(value).__name__
+    )
+    problem = RequestError(f"parameter {name!r} is not a valid {kind.rstrip('02')}: {shown!r}")
     if kind == "flag":
         if not isinstance(value, bool):
             raise problem
         return value
-    if kind == "norm":
-        if isinstance(value, bool) or value not in _NORMS:
+    if kind in ("norm", "norm2"):
+        allowed = _NORMS if kind == "norm" else {2: 2, "inf": math.inf}
+        # The type first: an unhashable value cannot even be looked up.
+        if isinstance(value, bool) or not isinstance(value, (int, str)) or value not in allowed:
             raise problem
-        return _NORMS[value]  # type: ignore[index]
+        return allowed[value]
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise problem
     if kind in ("count", "count0"):
@@ -293,9 +304,13 @@ def _value(kind: str, name: str, value: object) -> object:
         if not isinstance(value, int) or not least <= value <= MAX_COUNT:
             raise problem
         return value
-    if not math.isfinite(value) or value <= 0:
+    try:
+        number = float(value)  # an integer too large for a float is no number ART can take
+    except OverflowError:
+        raise problem from None
+    if not math.isfinite(number) or number <= 0:
         raise problem
-    return float(value)
+    return number
 
 
 def chosen_attacks(params: dict) -> list[tuple[str, dict]]:
@@ -349,9 +364,13 @@ def read_inputs(stream: IO[bytes], request: dict, scratch: Path) -> dict[str, Pa
                 if source is None:
                     raise RequestError(f"input {name!r} cannot be read")
                 paths[name] = scratch / name
+                seen = hashlib.sha256()
                 with open(paths[name], "wb") as target:
                     while chunk := source.read(1024 * 1024):
+                        seen.update(chunk)
                         target.write(chunk)
+                if "sha256:" + seen.hexdigest() != declared[name].get("sha256"):
+                    raise RequestError(f"input {name!r} is not the content the request declares")
     except tarfile.TarError as exc:
         raise RequestError(f"the inputs are not a tar archive: {exc}") from exc
     if set(paths) != set(INPUT_NAMES):
@@ -367,8 +386,9 @@ def load_model(path: Path):
 
     try:
         return skops.io.load(path, trusted=[])
-    except UntrustedTypesFoundException as exc:
-        raise RequestError(f"the model needs types that are not trusted: {exc}") from exc
+    except UntrustedTypesFoundException:
+        # Not their names: they are text from the file, and this message is recorded.
+        raise RequestError("the model needs types that are not trusted; it is not loaded") from None
     except Exception as exc:  # skops raises many types for a file that is not a skops file
         raise RequestError(f"the model is not a skops file: {type(exc).__name__}") from exc
 
@@ -386,11 +406,18 @@ def load_dataset(path: Path, samples: int):
         raise
     except Exception as exc:  # not an .npz, or one that needs pickle
         raise RequestError(f"the dataset is not a plain .npz: {type(exc).__name__}") from exc
+    if not isinstance(x, np.ndarray) or not isinstance(y, np.ndarray):
+        raise RequestError("the dataset's 'x' and 'y' must be arrays")
     if x.ndim != 2 or y.ndim != 1 or len(x) != len(y) or len(x) == 0:
         raise RequestError("the dataset needs a 2-D 'x' and a 1-D 'y' of the same length")
-    if not np.issubdtype(x.dtype, np.number) or not np.isfinite(x).all():
-        raise RequestError("the dataset's 'x' must be finite numbers")
-    return x[:samples].astype(np.float32), y[:samples]
+    # Real numbers only: a complex 'x' would lose its imaginary part without a word.
+    if x.dtype.kind not in "iuf":
+        raise RequestError("the dataset's 'x' must be real numbers")
+    with np.errstate(over="ignore"):
+        rows = x[:samples].astype(np.float32)
+    if not np.isfinite(rows).all():  # after the cast: 1e300 is finite as float64 only
+        raise RequestError("the dataset's 'x' must be finite numbers that fit 32-bit floats")
+    return rows, y[:samples]
 
 
 def _plain(value: object) -> object:
@@ -430,9 +457,7 @@ def evaluate(request: dict, model_path: Path, dataset_path: Path) -> list[dict]:
     if not set(labels) <= known:
         raise RequestError("the dataset has labels the model does not know")
     try:
-        estimator = SklearnClassifier(
-            model=model, clip_values=(float(x.min()), float(x.max()))
-        )
+        estimator = SklearnClassifier(model=model, clip_values=(float(x.min()), float(x.max())))
     except Exception as exc:  # ART refuses estimators it has no wrapper for
         raise RequestError(f"ART does not accept this estimator: {type(exc).__name__}") from exc
     index = {label: position for position, label in enumerate(sorted(known))}
@@ -442,13 +467,27 @@ def evaluate(request: dict, model_path: Path, dataset_path: Path) -> list[dict]:
     def accuracy(samples) -> float:
         return float((np.argmax(estimator.predict(samples), axis=1) == positions).mean())
 
-    clean = accuracy(x)
+    def refused(what: str, exc: Exception) -> RequestError:
+        # The type only: the message of a library error can quote the data.
+        return RequestError(f"{what}: {type(exc).__name__}")
+
+    try:
+        clean = accuracy(x)
+    except Exception as exc:  # e.g. rows of another width than the model was fitted on
+        raise refused("the model cannot predict on this dataset", exc) from None
     results: list[dict] = []
     for name, given in attacks:
         cls = getattr(evasion, name)
         quiet = {"verbose": False} if "verbose" in cls.attack_params else {}
-        attack = cls(estimator, **given, **quiet)
-        adversarial = attack.generate(x=x)
+        try:
+            attack = cls(estimator, **given, **quiet)
+            adversarial = attack.generate(x=x)
+            adversarial_accuracy = accuracy(adversarial)
+            success = float(compute_success(estimator, x, one_hot, adversarial))
+        except Exception as exc:  # ART refuses a combination of estimator and parameters
+            raise refused(
+                f"ART could not run {name} on this model with these parameters", exc
+            ) from None
         results.append(
             {
                 "art_version": art.__version__,
@@ -463,10 +502,8 @@ def evaluate(request: dict, model_path: Path, dataset_path: Path) -> list[dict]:
                 "estimator": type(estimator).__name__,
                 "samples": int(len(x)),
                 "clean_accuracy": round(clean, 6),
-                "adversarial_accuracy": round(accuracy(adversarial), 6),
-                "success_rate": round(
-                    float(compute_success(estimator, x, one_hot, adversarial)), 6
-                ),
+                "adversarial_accuracy": round(adversarial_accuracy, 6),
+                "success_rate": round(success, 6),
             }
         )
     return results
