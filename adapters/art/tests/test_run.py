@@ -23,6 +23,7 @@ pytest.importorskip("art")
 skops_io = pytest.importorskip("skops.io")
 from sklearn.datasets import make_classification  # noqa: E402
 from sklearn.linear_model import LogisticRegression  # noqa: E402
+from sklearn.svm import LinearSVC  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 ADAPTER = HERE.parent
@@ -152,6 +153,13 @@ def test_the_chosen_attacks_and_parameters_reach_art(tmp_path):
     assert all(r["samples"] == 40 and r["params"]["targeted"] is False for r in results)
 
 
+def test_a_model_without_probabilities_is_measured_as_scikit_learn_measures_it(tmp_path):
+    """A LinearSVC on the labels 0 and 1: the clean accuracy ART reports is the model's own."""
+    model = LinearSVC().fit(X, Y)
+    results = _evaluate(tmp_path, _request(samples=len(X)), skops_io.dumps(model), DATASET)
+    assert results[0]["clean_accuracy"] == pytest.approx(model.score(X, Y), abs=1e-6)
+
+
 @pytest.mark.parametrize(
     "params",
     [
@@ -229,6 +237,12 @@ def _a_pipeline() -> bytes:
     return skops_io.dumps(pipeline.fit(X, Y))
 
 
+def _other_labels(model_class, low: int, high: int) -> tuple[bytes, bytes]:
+    """A classifier fitted on the labels ``low`` and ``high``, and data with the same labels."""
+    labels = np.where(Y == 1, high, low)
+    return skops_io.dumps(model_class().fit(X, labels)), _npz(x=X, y=labels)
+
+
 def _npz_with_a_text_member() -> bytes:
     import zipfile
 
@@ -258,6 +272,11 @@ def _npz_with_a_text_member() -> bytes:
         (MODEL, _npz(x=X.astype(np.float64) * 1e300, y=Y), "fit 32-bit floats"),
         (MODEL, _npz(x=X.astype(np.complex64) + 1j, y=Y), "real numbers"),
         (MODEL, _npz_with_a_text_member(), "must be arrays"),
+        # ART reads predictions of a model without probabilities as class indices: with these
+        # labels it would report an accuracy of 0.5 for a model that is right nine times in ten.
+        (*_other_labels(LinearSVC, -1, 1), "integers 0 to n-1"),
+        (*_other_labels(LinearSVC, 1, 2), "integers 0 to n-1"),
+        (*_other_labels(LogisticRegression, -1, 1), "integers 0 to n-1"),
     ],
 )
 def test_inputs_that_are_not_what_they_claim_are_refused(

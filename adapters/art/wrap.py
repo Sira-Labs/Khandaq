@@ -453,6 +453,13 @@ def evaluate(request: dict, model_path: Path, dataset_path: Path) -> list[dict]:
     if classes is None:
         raise RequestError("the model is not a fitted classifier")
     known = {label.item() if hasattr(label, "item") else label for label in classes}
+    # ART's scikit-learn wrapper reads a prediction as a class index wherever the model has no
+    # probabilities (a LinearSVC, for one). With other labels (-1 and 1, say) it would measure
+    # a different model than the one uploaded, silently: such a model is refused.
+    if any(isinstance(label, bool) or not isinstance(label, int) for label in known) or sorted(
+        known
+    ) != list(range(len(known))):
+        raise RequestError("the model's classes must be the integers 0 to n-1")
     labels = [label.item() if hasattr(label, "item") else label for label in y]
     if not set(labels) <= known:
         raise RequestError("the dataset has labels the model does not know")

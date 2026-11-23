@@ -47,7 +47,9 @@ Khandaq deployment, and I get the result in the same inbox as my other findings.
 - **Content formats** (what the wrapper loads; anything else fails the run):
   - model: a scikit-learn estimator saved with **skops** (`skops.io.dump`), loaded with
     `trusted=[]`, so a file that needs any type outside skops's default list is refused. Never
-    `pickle`. It must be an estimator ART's `SklearnClassifier` accepts.
+    `pickle`. It must be an estimator ART's `SklearnClassifier` accepts, and its classes must be
+    the integers `0` to `n-1`: ART reads the predictions of a model without probabilities as
+    class indices, so with other labels it would measure a different model.
   - dataset: a NumPy `.npz` (loaded with `allow_pickle=False`) holding `x` (2-D, finite real
     numbers that fit 32-bit floats) and `y` (1-D, class labels the model knows), of equal length.
 - **Run request** (`KHANDAQ_RUN_REQUEST`) gains `inputs`:
