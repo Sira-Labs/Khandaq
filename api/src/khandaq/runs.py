@@ -489,7 +489,9 @@ def execute_run(session: Session, run_id: str, *, actor: User | None = None, run
 
 
 def _execute(session: Session, run_id: str, *, actor: User | None, runner) -> Run:
-    run = session.get(Run, run_id)
+    # Read again now that the run is held: the session may have loaded the row before (the API
+    # creates and executes a built-in run in one session), and recovery may have ended it since.
+    run = session.get(Run, run_id, populate_existing=True)
     if run is None:  # pragma: no cover - the running row was committed before execution
         raise RuntimeError(f"run {run_id} does not exist")
     if run.state != "running":

@@ -376,6 +376,8 @@ def test_a_run_that_recovery_ended_before_the_worker_held_it_keeps_that_ending(e
             ),
             {"r": run["id"]},
         )
+    again = _queue(client, eng_id, tid)  # for the second half, while its adapter is still known
+    _running(db, again["id"])
     monkeypatch.setattr(runs, "get_manifest", lambda name: None)
     runner = _NeverRun()
     with Session(db) as session:
@@ -383,6 +385,27 @@ def test_a_run_that_recovery_ended_before_the_worker_held_it_keeps_that_ending(e
         assert after.state == "failed" and after.reject_reason == "the worker lost the run"
     assert runner.calls == 0
     assert _actions(db, run["id"]).count("run.failed") == 0
+
+    # The same when the session had the row loaded while it was still running (the API creates
+    # and executes a built-in run in one session): the state is read again under the hold.
+    from khandaq import models as m
+
+    with Session(db) as session:
+        # Held on to, as the API holds the run it has just created: the session keeps a row
+        # only while something refers to it.
+        loaded = session.get(m.Run, again["id"])
+        assert loaded.state == "running"
+        with db.begin() as conn:
+            conn.execute(
+                text(
+                    "UPDATE runs SET state = 'failed', ended_at = now(), "
+                    "reject_reason = 'the worker lost the run' WHERE id = :r"
+                ),
+                {"r": again["id"]},
+            )
+        after = runs.execute_run(session, again["id"], runner=runner)
+        assert after.state == "failed" and after.reject_reason == "the worker lost the run"
+    assert runner.calls == 0 and _actions(db, again["id"]).count("run.failed") == 0
 
 
 def test_a_run_that_is_not_ready_within_its_budget_fails_instead_of_starting(env, monkeypatch):
