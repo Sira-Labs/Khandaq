@@ -53,7 +53,22 @@ MCP_SCANNER = AdapterManifest(
     accepts_credential=True,
 )
 
-_REGISTRY = {m.name: m for m in (ECHO, GARAK, MCP_SCANNER)}
+# ART evaluates a stored model on stored data in a container without network (spec 035). It
+# sends nothing to anyone, so no request-rate limit can be exceeded.
+ART = AdapterManifest(
+    name="art",
+    version="1.20.1",
+    phases=["05-adversarial-ml"],
+    frameworks=["atlas", "nist-ai-rmf"],
+    severity_table={"high": "high", "medium": "medium", "low": "low"},
+    image="ghcr.io/sira-labs/khandaq-adapter-art:1.20.1",
+    entrypoint="/usr/local/bin/wrap.py",
+    resources={"cpu": "2", "memory": "4Gi"},
+    paces_requests=True,
+    offline=True,
+)
+
+_REGISTRY = {m.name: m for m in (ECHO, GARAK, MCP_SCANNER, ART)}
 
 
 def get_manifest(name: str) -> AdapterManifest | None:

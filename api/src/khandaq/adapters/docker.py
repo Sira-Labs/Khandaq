@@ -67,7 +67,12 @@ class DockerCli(Protocol):
     """Runs ``docker <args>``. ``timeout``/``stdout_limit`` raise RunnerError when exceeded."""
 
     def __call__(
-        self, args: list[str], *, timeout: float | None = None, stdout_limit: int | None = None
+        self,
+        args: list[str],
+        *,
+        timeout: float | None = None,
+        stdout_limit: int | None = None,
+        stdin: bytes | None = None,
     ) -> CliResult: ...
 
 
@@ -80,10 +85,27 @@ class SubprocessDockerCli:
         self.poll_seconds = poll_seconds
 
     def __call__(
-        self, args: list[str], *, timeout: float | None = None, stdout_limit: int | None = None
+        self,
+        args: list[str],
+        *,
+        timeout: float | None = None,
+        stdout_limit: int | None = None,
+        stdin: bytes | None = None,
     ) -> CliResult:
-        with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
-            proc = subprocess.Popen([self.binary, *args], stdout=out, stderr=err)
+        with (
+            tempfile.TemporaryFile() as out,
+            tempfile.TemporaryFile() as err,
+            tempfile.TemporaryFile() as source,
+        ):
+            if stdin is not None:  # from a file, so a full pipe can never block the worker
+                source.write(stdin)
+                source.seek(0)
+            proc = subprocess.Popen(
+                [self.binary, *args],
+                stdout=out,
+                stderr=err,
+                stdin=source if stdin is not None else subprocess.DEVNULL,
+            )
             deadline = None if timeout is None else time.monotonic() + timeout
             try:
                 while proc.poll() is None:
@@ -157,6 +179,21 @@ def read_output(data: bytes) -> dict[str, bytes]:
     except tarfile.TarError as exc:
         raise RunnerError(f"adapter output is not a tar archive: {exc}") from exc
     return files
+
+
+def inputs_tar(inputs: dict[str, bytes]) -> bytes:
+    """The hand-over of an offline run (spec 035): one uncompressed tar, one flat regular file
+    per input, read-only, in name order."""
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as tar:
+        for name, content in sorted(inputs.items()):
+            if not _NAME.fullmatch(name):
+                raise RunnerError(f"input {name!r} has an unsafe name")
+            member = tarfile.TarInfo(name)
+            member.size = len(content)
+            member.mode = 0o444
+            tar.addfile(member, io.BytesIO(content))
+    return buffer.getvalue()
 
 
 def _kind(name: str) -> str:
@@ -335,9 +372,23 @@ class DockerRunner:
 
     # --- execution --------------------------------------------------------------------------------
 
-    def run(self, request: dict, credential: str | None = None) -> dict:
+    def run(
+        self,
+        request: dict,
+        credential: str | None = None,
+        inputs: dict[str, bytes] | None = None,
+    ) -> dict:
         """Execute the run. ``credential`` (spec 028) reaches the adapter through the env file only
-        and is redacted from every file and error message that comes back."""
+        and is redacted from every file and error message that comes back. ``inputs`` (spec 035)
+        are the contents an offline adapter is handed on standard input."""
+        if self.manifest.offline:
+            if credential:
+                raise RunnerError(f"adapter {self.manifest.name} does not accept a credential")
+            if not inputs:
+                raise RunnerError(f"adapter {self.manifest.name} runs offline and got no inputs")
+            return self._run_offline(request, inputs)
+        if inputs:
+            raise RunnerError(f"adapter {self.manifest.name} takes no inputs")
         try:
             return self._run(request, credential)
         except RunnerError as exc:
@@ -400,6 +451,81 @@ class DockerRunner:
             raise RunnerError(f"adapter exited with {result.returncode}: {stderr[-_STDERR_TAIL:]}")
         files, redacted = redact_output(read_output(result.stdout), credential)
         return artifacts_from_output(files, request, redacted)
+
+    def offline_args(
+        self, name: str, env_file: str, labels: list[str], scratch_mb: int
+    ) -> list[str]:
+        """The container of an offline run (spec 035): the spec-012 sandbox with no network at
+        all, and standard input kept open for the inputs."""
+        if not self.manifest.image:
+            raise RunnerError(f"adapter {self.manifest.name} has no image")
+        resources = self.manifest.resources or {}
+        output_mb = self.settings.adapter_output_limit_mb
+        return [
+            "create",
+            "--name",
+            name,
+            *labels,
+            "--network",
+            "none",
+            "--interactive",
+            *_hardening(
+                docker_memory(str(resources.get("memory", "1Gi"))),
+                str(resources.get("cpu", "1")),
+                512,
+            ),
+            "--tmpfs",
+            f"/tmp:rw,noexec,nosuid,size={scratch_mb}m,mode=1777",
+            "--tmpfs",
+            f"/evidence:rw,noexec,nosuid,size={output_mb}m,mode=1777",
+            "--env",
+            "HOME=/tmp",
+            "--env-file",
+            env_file,
+            self.manifest.image,
+        ]
+
+    def _run_offline(self, request: dict, inputs: dict[str, bytes]) -> dict:
+        """One container, no network, no forwarder. The inputs go in as one tar on standard
+        input and the evidence comes out as one tar on standard output."""
+        run_id = request["run_id"]
+        adapter = f"khq-run-{run_id}"
+        labels = ["--label", f"khandaq.run={run_id}"]
+        line = "KHANDAQ_RUN_REQUEST=" + json.dumps(request, separators=(",", ":")) + "\n"
+        if len(line.encode("utf-8")) > MAX_REQUEST_BYTES:
+            raise RunnerError(f"the run request exceeds {MAX_REQUEST_BYTES} bytes")
+        payload = inputs_tar(inputs)
+        # Room for the inputs to be unpacked in the container's scratch space, and to work in.
+        scratch_mb = 256 + (len(payload) + 1024 * 1024 - 1) // (1024 * 1024)
+        fd, env_file = tempfile.mkstemp(prefix="khq-env-", text=True)  # created 0600
+        try:
+            with os.fdopen(fd, "w") as f:
+                f.write(line)
+            self._ok(self.offline_args(adapter, env_file, labels, scratch_mb), "create the adapter")
+            result = self.cli(
+                ["start", "--attach", "--interactive", adapter],
+                timeout=self.settings.adapter_timeout_seconds,
+                stdout_limit=self.settings.adapter_output_limit_mb * 1024 * 1024,
+                stdin=payload,
+            )
+        finally:
+            os.unlink(env_file)
+            self._remove_container(adapter)
+        if result.returncode != 0:
+            stderr = result.stderr.decode("utf-8", "replace")
+            raise RunnerError(f"adapter exited with {result.returncode}: {stderr[-_STDERR_TAIL:]}")
+        return artifacts_from_output(read_output(result.stdout), request)
+
+    def _remove_container(self, name: str) -> None:
+        try:
+            result = self.cli(["rm", "--force", name], timeout=60)
+        except RunnerError as exc:
+            log.error("cleanup of %s failed: %s", name, exc)
+            return
+        if result.returncode != 0:
+            log.error(
+                "cleanup of %s failed: %s", name, result.stderr.decode("utf-8", "replace").strip()
+            )
 
     def _ok(self, args: list[str], what: str, credential: str | None = None) -> CliResult:
         result = self.cli(args, timeout=120)
