@@ -592,13 +592,25 @@ def test_a_run_lost_on_another_docker_daemon_is_left_to_a_worker_there(env, monk
     def unknown() -> str:
         raise runs.RunnerError("could not ask the Docker daemon for its id: no daemon")
 
-    # A worker that cannot tell where it is tries the removal: here it would fail and be audited.
+    # A worker that cannot tell which daemon it talks to does not try: a removal that happens
+    # to succeed (on another daemon, which has no such objects) would end the run for nothing.
     recover(unknown)
-    assert run["id"] in asked and _run(client, eng_id, run["id"])["state"] == "failed"
+    assert run["id"] not in asked and _run(client, eng_id, run["id"])["state"] == "running"
+    assert _actions(db, run["id"]).count("run.cleanup_failed") == 1
+    recover(unknown)
+    assert _actions(db, run["id"]).count("run.cleanup_failed") == 1  # audited once
+    assert "run.failed" not in _actions(db, run["id"])
+
+    # Nor for a run from before the daemon was recorded (migration 0014's marker).
     with db.begin() as conn:
         conn.execute(
-            text("UPDATE runs SET state = 'running', ended_at = NULL WHERE id = :r"),
-            {"r": run["id"]},
+            text("UPDATE runs SET docker_daemon = 'unrecorded' WHERE id = :r"), {"r": run["id"]}
+        )
+    recover(lambda: "HOST-A")
+    assert run["id"] not in asked and _run(client, eng_id, run["id"])["state"] == "running"
+    with db.begin() as conn:
+        conn.execute(
+            text("UPDATE runs SET docker_daemon = 'HOST-A' WHERE id = :r"), {"r": run["id"]}
         )
     recover(lambda: "HOST-A")
     assert run["id"] in asked

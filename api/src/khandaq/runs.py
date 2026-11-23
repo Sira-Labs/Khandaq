@@ -592,25 +592,35 @@ def _leftovers_removed(run: Run) -> bool:
     return remove_run_leftovers(run.id)
 
 
+# What migration 0014 writes for a run that was already `running`: its containers are on some
+# daemon, and nothing recorded which.
+DAEMON_UNRECORDED = "unrecorded"
+_DAEMON_UNKNOWN = "it is not known which Docker daemon holds the lost run's containers"
+
+
 class _ThisDaemon:
-    """Whether a lost run's containers are on the Docker daemon this worker talks to. The daemon
-    is asked at most once per recovery, and only if a run names one."""
+    """Where a lost run's containers are, seen from this worker: ``True`` on the Docker daemon it
+    talks to, ``False`` on another one, ``None`` when that cannot be told. The daemon is asked at
+    most once per recovery, and only if a run names one."""
 
     def __init__(self) -> None:
         self._id: str | None = None
         self._asked = False
 
-    def __call__(self, run: Run) -> bool:
+    def __call__(self, run: Run) -> bool | None:
         if run.docker_daemon is None:
-            return True  # it never got as far as Docker, or it is from before the column
+            return True  # it never got as far as Docker: there is nothing anywhere
+        if run.docker_daemon == DAEMON_UNRECORDED:
+            return None
         if not self._asked:
             self._asked = True
             try:
                 self._id = daemon_id()
             except RunnerError as exc:
                 log.error("recovery cannot tell which Docker daemon this is: %s", exc)
-        # Unknown counts as "here": the removal is then tried, fails as well, and is audited.
-        return self._id is None or self._id == run.docker_daemon
+        if self._id is None:
+            return None
+        return self._id == run.docker_daemon
 
 
 def recover_stale_runs(
@@ -618,7 +628,7 @@ def recover_stale_runs(
     *,
     older_than: dt.timedelta,
     leftovers_removed: Callable[[Run], bool] = _leftovers_removed,
-    on_this_daemon: Callable[[Run], bool] | None = None,
+    on_this_daemon: Callable[[Run], bool | None] | None = None,
 ) -> int:
     """Worker start: fail runs left ``running`` longer than any run can take (a lost worker).
 
@@ -648,7 +658,16 @@ def recover_stale_runs(
             log.warning("run %s is past the cutoff but a worker still holds it", run.id)
             session.rollback()
             continue
-        if not here(run):
+        where = here(run)
+        if where is None:
+            # Not known to be here: a removal that found nothing would prove nothing. The run
+            # stays `running`, audited once, until the daemon can be told (or, for a run from
+            # before the daemon was recorded, until an operator has looked: see the spec).
+            log.error("run %s was lost and its Docker daemon is not known", run.id)
+            _audit_cleanup_failed_once(session, run, _DAEMON_UNKNOWN)
+            session.commit()
+            continue
+        if not where:
             # Its containers are on another Docker host. Looking here would find nothing and
             # call the run clean while its forwarder still relays there: it is left to a worker
             # on that host, and stays `running` (which holds the next paced run back) until then.

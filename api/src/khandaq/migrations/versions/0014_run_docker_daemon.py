@@ -26,6 +26,10 @@ def upgrade() -> None:
     columns = {c["name"] for c in sa.inspect(op.get_bind()).get_columns("runs")}
     if "docker_daemon" not in columns:
         op.add_column("runs", sa.Column("docker_daemon", sa.Text(), nullable=True))
+        # A run that is running right now has its containers on some daemon, and nothing says
+        # which. NULL means "never reached Docker" from here on, so these get a marker instead:
+        # recovery leaves them `running` rather than call them clean (spec 032 §7).
+        op.execute("UPDATE runs SET docker_daemon = 'unrecorded' WHERE state = 'running'")
 
 
 def downgrade() -> None:

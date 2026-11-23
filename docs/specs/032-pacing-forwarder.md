@@ -120,8 +120,15 @@ with `rate_per_minute: 60` and the run goes through, slower, without exceeding w
      lost run's leftovers only from a worker on that daemon: a worker on another Docker host
      would find nothing, call the run clean and free the next paced run while the first
      forwarder still relays. Such a run stays `running` until a worker on its own host recovers
-     it. A worker that cannot tell which daemon it talks to tries the removal, which then fails
-     and is audited like any other.
+     it. When it is not known where the containers are, recovery does nothing: a worker that
+     cannot ask its daemon for its id leaves the run `running` and audits `run.cleanup_failed`
+     once, and so does every worker for a run that was already `running` when migration 0014
+     ran (the migration marks it `unrecorded`). Such a run is released by hand: on the worker's
+     Docker host, `docker rm --force khq-run-<run id> khq-fwd-<run id>` and
+     `docker network rm khq-net-<run id>`, then `UPDATE runs SET docker_daemon = NULL WHERE
+     id = '<run id>'`; the next recovery ends it. Upgrading with no run in progress avoids this.
+     Workers are upgraded together with the API: a worker from before this change records no
+     daemon.
    - An object counts as gone only when the Docker daemon says that this very container or
      network does not exist. Any other failure (a missing Docker context, a daemon that cannot
      be reached) leaves the run `running`.

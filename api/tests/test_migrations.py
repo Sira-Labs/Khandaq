@@ -500,6 +500,8 @@ def test_0010_keeps_alerts_as_webhook_rows_and_allows_one_row_per_channel():
 
 
 def test_0014_adds_the_docker_daemon_column_an_upgraded_install_lacks():
+    from sqlalchemy.orm import Session
+
     from khandaq import migrate
 
     eng = create_engine(TEST_URL, future=True)
@@ -509,7 +511,23 @@ def test_0014_adds_the_docker_daemon_column_an_upgraded_install_lacks():
     migrate.upgrade(url=TEST_URL)
     migrate.downgrade(url=TEST_URL, revision="0013_target_artefacts")  # a spec 034 install
     assert "docker_daemon" not in {c["name"] for c in inspect(eng).get_columns("runs")}
+    with Session(eng) as s:
+        engagement_id = _alert_row(s)["engagement_id"]
+        s.execute(
+            text(
+                "INSERT INTO runs (id, engagement_id, adapter, state) VALUES "
+                "('run_live', :e, 'garak', 'running'), ('run_done', :e, 'garak', 'failed')"
+            ),
+            {"e": engagement_id},
+        )
+        s.commit()
     migrate.upgrade(url=TEST_URL)
+    with eng.connect() as conn:
+        marked = dict(
+            conn.execute(text("SELECT id, docker_daemon FROM runs WHERE id LIKE 'run\\_%'")).all()
+        )
+    # Running through the upgrade: on some daemon, and nothing says which. Not "nowhere".
+    assert marked["run_live"] == "unrecorded" and marked["run_done"] is None
     column = {c["name"]: c for c in inspect(eng).get_columns("runs")}["docker_daemon"]
     assert column["nullable"] is True  # runs from before it, and runs that never reached Docker
     eng.dispose()
