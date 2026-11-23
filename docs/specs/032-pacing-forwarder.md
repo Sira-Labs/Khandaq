@@ -115,6 +115,13 @@ with `rate_per_minute: 60` and the run goes through, slower, without exceeding w
      transaction of its own, so a run that is left alone keeps no lock while the others are
      cleaned up. A run that stays `running` this way is audited as `run.cleanup_failed` once,
      not on every attempt.
+   - A container run records the id of its Docker daemon (`runs.docker_daemon`, migration
+     `0014_run_docker_daemon`) before the first of its objects is created. Recovery removes a
+     lost run's leftovers only from a worker on that daemon: a worker on another Docker host
+     would find nothing, call the run clean and free the next paced run while the first
+     forwarder still relays. Such a run stays `running` until a worker on its own host recovers
+     it. A worker that cannot tell which daemon it talks to tries the removal, which then fails
+     and is audited like any other.
    - An object counts as gone only when the Docker daemon says that this very container or
      network does not exist. Any other failure (a missing Docker context, a daemon that cannot
      be reached) leaves the run `running`.
@@ -236,6 +243,14 @@ Integration (`api/tests/test_worker.py`):
 `test_a_run_that_leaves_containers_behind_stays_running_and_is_audited`,
 `test_leftovers_of_a_container_run_are_looked_for_whatever_the_settings`,
 `test_recovery_leaves_a_run_alone_while_a_worker_is_executing_it`,
+`test_recovery_keeps_no_lock_on_a_run_it_leaves_alone`,
+`test_a_hold_whose_release_fails_does_not_go_back_to_the_pool`,
+`test_a_run_that_recovery_ended_before_the_worker_held_it_keeps_that_ending`,
+`test_a_run_lost_on_another_docker_daemon_is_left_to_a_worker_there`,
+`test_what_changed_while_the_claim_waited_for_the_lock_is_decided_again`
+(`test_adapter_registry.py`), `test_the_daemon_is_identified_by_its_own_id` and
+`test_lookups_that_never_return_are_bounded` (`test_docker_runner.py`),
+`test_0014_adds_the_docker_daemon_column_an_upgraded_install_lacks` (`test_migrations.py`),
 `test_a_run_that_recovery_ended_while_it_was_prepared_is_not_started`,
 `test_a_run_that_is_not_ready_within_its_budget_fails_instead_of_starting`.
 Unit and integration (`api/tests/test_adapter_registry.py`): `test_adapter_refusal_for_a_rate_cap`

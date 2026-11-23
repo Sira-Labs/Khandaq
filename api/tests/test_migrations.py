@@ -421,10 +421,16 @@ def _alert_row(s, channel: str = "webhook"):
         interval_minutes=60,
         next_run_at=now,
     )
-    run = m.Run(engagement_id=eng.id, adapter="echo")
-    s.add_all([cmp, run])
+    s.add(cmp)
     s.flush()
-    diff = m.CampaignDiff(campaign_id=cmp.id, run_id=run.id, baseline=False)
+    # In SQL, with the columns every revision has: this helper also runs on downgraded schemas,
+    # which lack the columns later migrations add to `runs`.
+    run_id = m.new_id("run")
+    s.execute(
+        text("INSERT INTO runs (id, engagement_id, adapter) VALUES (:r, :e, 'echo')"),
+        {"r": run_id, "e": eng.id},
+    )
+    diff = m.CampaignDiff(campaign_id=cmp.id, run_id=run_id, baseline=False)
     s.add(diff)
     s.flush()
     return dict(
@@ -490,6 +496,22 @@ def test_0010_keeps_alerts_as_webhook_rows_and_allows_one_row_per_channel():
     # Email history cannot be dropped by a downgrade.
     with pytest.raises(RuntimeError, match="email alerts"):
         migrate.downgrade(url=TEST_URL, revision="0009_alert_outbox")
+    eng.dispose()
+
+
+def test_0014_adds_the_docker_daemon_column_an_upgraded_install_lacks():
+    from khandaq import migrate
+
+    eng = create_engine(TEST_URL, future=True)
+    with eng.begin() as conn:
+        conn.execute(text("DROP SCHEMA public CASCADE"))
+        conn.execute(text("CREATE SCHEMA public"))
+    migrate.upgrade(url=TEST_URL)
+    migrate.downgrade(url=TEST_URL, revision="0013_target_artefacts")  # a spec 034 install
+    assert "docker_daemon" not in {c["name"] for c in inspect(eng).get_columns("runs")}
+    migrate.upgrade(url=TEST_URL)
+    column = {c["name"]: c for c in inspect(eng).get_columns("runs")}["docker_daemon"]
+    assert column["nullable"] is True  # runs from before it, and runs that never reached Docker
     eng.dispose()
 
 

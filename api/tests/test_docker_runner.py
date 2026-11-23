@@ -682,6 +682,33 @@ REMOVALS = [
 ]
 
 
+def test_the_daemon_is_identified_by_its_own_id():
+    from khandaq.adapters.docker import daemon_id
+
+    class Info:
+        def __init__(self, answer):
+            self.answer, self.calls = answer, []
+
+        def __call__(self, args, *, timeout=None, stdout_limit=None):
+            self.calls.append(list(args))
+            if isinstance(self.answer, Exception):
+                raise self.answer
+            return self.answer
+
+    cli = Info(CliResult(0, b"7TRN:WDCD:3YNW\n", b""))
+    assert daemon_id(cli) == "7TRN:WDCD:3YNW"
+    assert cli.calls == [["info", "--format", "{{.ID}}"]]
+    for answer in (
+        CliResult(1, b"", b"Cannot connect to the Docker daemon"),
+        CliResult(0, b"\n", b""),  # a daemon that names none is not identified
+        CliResult(0, b"two words\n", b""),
+        FileNotFoundError("docker"),
+        RunnerError("adapter did not finish within 120s"),
+    ):
+        with pytest.raises(RunnerError):
+            daemon_id(Info(answer))
+
+
 def test_leftovers_of_a_lost_run_are_removed():
     cli = ScriptedCli()
     assert remove_run_leftovers("run_abc", cli) is True

@@ -42,7 +42,13 @@ from .adapters import (
     get_manifest,
     get_runner,
 )
-from .adapters.docker import LeftoversError, remove_run_leftovers
+from .adapters.docker import (
+    DockerRunner,
+    LeftoversError,
+    RunnerError,
+    daemon_id,
+    remove_run_leftovers,
+)
 from .campaign_diff import record_diff
 from .credential_values import CredentialError, redact
 from .deps import EngagementAccess
@@ -506,6 +512,10 @@ def _execute(session: Session, run_id: str, *, actor: User | None, runner) -> Ru
         # credential fails the run instead of running without one.
         credential = target_credentials.load_for_run(session, run, target, settings)
         active = runner or get_runner(manifest, settings)
+        if isinstance(active, DockerRunner):
+            # Before the first container exists: recovery must know on which daemon to look.
+            run.docker_daemon = daemon_id(active.cli)
+            session.commit()
         if not _may_still_start(session, run):
             return run  # recovery ended it meanwhile: its record stands, nothing is started
         if credential is None:
@@ -580,11 +590,33 @@ def _leftovers_removed(run: Run) -> bool:
     return remove_run_leftovers(run.id)
 
 
+class _ThisDaemon:
+    """Whether a lost run's containers are on the Docker daemon this worker talks to. The daemon
+    is asked at most once per recovery, and only if a run names one."""
+
+    def __init__(self) -> None:
+        self._id: str | None = None
+        self._asked = False
+
+    def __call__(self, run: Run) -> bool:
+        if run.docker_daemon is None:
+            return True  # it never got as far as Docker, or it is from before the column
+        if not self._asked:
+            self._asked = True
+            try:
+                self._id = daemon_id()
+            except RunnerError as exc:
+                log.error("recovery cannot tell which Docker daemon this is: %s", exc)
+        # Unknown counts as "here": the removal is then tried, fails as well, and is audited.
+        return self._id is None or self._id == run.docker_daemon
+
+
 def recover_stale_runs(
     session: Session,
     *,
     older_than: dt.timedelta,
     leftovers_removed: Callable[[Run], bool] = _leftovers_removed,
+    on_this_daemon: Callable[[Run], bool] | None = None,
 ) -> int:
     """Worker start: fail runs left ``running`` longer than any run can take (a lost worker).
 
@@ -596,6 +628,7 @@ def recover_stale_runs(
     cutoff = _now() - older_than
     stale = Run.state == "running", Run.started_at < cutoff
     candidates = session.scalars(select(Run.id).where(*stale).order_by(Run.started_at)).all()
+    here = on_this_daemon or _ThisDaemon()
     session.rollback()  # the list is only a hint: each run is judged again under its own lock
     failed = 0
     for run_id in candidates:
@@ -611,6 +644,17 @@ def recover_stale_runs(
             # Old enough to look lost, but its worker is alive and inside it: removing its
             # containers now would kill a live run, and failing it would let another start.
             log.warning("run %s is past the cutoff but a worker still holds it", run.id)
+            session.rollback()
+            continue
+        if not here(run):
+            # Its containers are on another Docker host. Looking here would find nothing and
+            # call the run clean while its forwarder still relays there: it is left to a worker
+            # on that host, and stays `running` (which holds the next paced run back) until then.
+            log.warning(
+                "run %s was lost on another Docker daemon (%s); a worker there must recover it",
+                run.id,
+                run.docker_daemon,
+            )
             session.rollback()
             continue
         if not leftovers_removed(run):

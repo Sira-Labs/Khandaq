@@ -374,6 +374,17 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
       of the tool: a run that recovery ended meanwhile, or that needed more than five minutes
       to get ready, does not start; and, as the real proof of life, a worker holds an advisory
       lock on the run while it executes it, which recovery respects, so recovery cannot remove a live run's containers.
+      Review round of 2026-11-23: a run records its Docker daemon before its first container
+      (`runs.docker_daemon`, migration 0014) and only a worker on that daemon recovers it; an
+      object counts as removed only when the daemon names it as missing ("not found" is also
+      what a missing Docker context says); the paced claim is decided again under the
+      engagement lock; a run that recovery ended first is not prepared again; recovery handles
+      one run per transaction; a hold whose release failed ends its backend; lookups that never
+      return are limited to four; a ClientHello with an incomplete last extension header is
+      refused. Decided against two suggestions, with the reason in the spec: a request whose
+      client has closed by the time its slot comes is still dropped (a half-closing client
+      cannot be told from one that gave up, and the paced adapters' clients do not half-close),
+      and recovery stays in the worker's own loop instead of a second thread beside a live run.
       **Owner:** review and merge the spec 032 PR. It changes how the rules of engagement's rate
       cap is enforced (a refusal becomes a paced run), so under ADR-0018 a nightly run does not
       merge it. It blocks garak on capped engagements; default: stays refused until merged.

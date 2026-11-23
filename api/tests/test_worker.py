@@ -529,6 +529,59 @@ def test_a_hold_whose_release_fails_does_not_go_back_to_the_pool(env, monkeypatc
         assert not runs._held_by_a_live_worker(probe, run["id"])
 
 
+def test_a_run_lost_on_another_docker_daemon_is_left_to_a_worker_there(env, monkeypatch):
+    """A run's containers are on the daemon that started it. A worker on another Docker host
+    would find none of them, call the run clean and free the engagement's next paced run while
+    the first forwarder still relays: it leaves the run alone, and a worker on the run's own
+    daemon recovers it (spec 032 §7)."""
+    from khandaq import runs
+
+    client, db, _ = env
+    eng_id, tid = _engagement(client, "two hosts")
+    run = _queue(client, eng_id, tid)
+    with db.begin() as conn:
+        conn.execute(
+            text(
+                "UPDATE runs SET state = 'running', started_at = :t, docker_daemon = 'HOST-A' "
+                "WHERE id = :r"
+            ),
+            {"t": dt.datetime.now(dt.UTC) - dt.timedelta(hours=3), "r": run["id"]},
+        )
+    asked: list[str] = []
+
+    def removed(lost) -> bool:
+        asked.append(lost.id)
+        return True
+
+    def recover(daemon) -> None:
+        asked.clear()
+        monkeypatch.setattr(runs, "daemon_id", daemon)
+        with Session(db) as session:
+            runs.recover_stale_runs(
+                session, older_than=dt.timedelta(hours=1), leftovers_removed=removed
+            )
+
+    recover(lambda: "HOST-B")
+    assert run["id"] not in asked
+    assert _run(client, eng_id, run["id"])["state"] == "running"
+    assert not {"run.failed", "run.cleanup_failed"} & set(_actions(db, run["id"]))
+
+    def unknown() -> str:
+        raise runs.RunnerError("could not ask the Docker daemon for its id: no daemon")
+
+    # A worker that cannot tell where it is tries the removal: here it would fail and be audited.
+    recover(unknown)
+    assert run["id"] in asked and _run(client, eng_id, run["id"])["state"] == "failed"
+    with db.begin() as conn:
+        conn.execute(
+            text("UPDATE runs SET state = 'running', ended_at = NULL WHERE id = :r"),
+            {"r": run["id"]},
+        )
+    recover(lambda: "HOST-A")
+    assert run["id"] in asked
+    assert _run(client, eng_id, run["id"])["state"] == "failed"
+
+
 def test_a_lost_run_whose_containers_cannot_be_removed_stays_running(env):
     """Its forwarder may still be relaying, so the run keeps holding back the engagement's next
     paced run (spec 032); once the leftovers are gone it is failed and audited."""

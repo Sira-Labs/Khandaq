@@ -275,6 +275,21 @@ _resolver_slots = threading.BoundedSemaphore(RESOLVER_SLOTS)
 _LEFTOVERS = "the run's containers or network could not be removed"
 
 
+def daemon_id(cli: DockerCli | None = None) -> str:
+    """The id of the Docker daemon this process talks to (``docker info``). It is stable across
+    restarts of the daemon, and it is what tells one Docker host from another (spec 032)."""
+    docker = cli or SubprocessDockerCli()
+    try:
+        result = docker(["info", "--format", "{{.ID}}"], timeout=SETUP_STEP_SECONDS)
+    except OSError as exc:
+        raise RunnerError(f"could not ask the Docker daemon for its id: {exc}") from None
+    found = result.stdout.decode("utf-8", "replace").strip()
+    if result.returncode != 0 or not found or len(found.split()) != 1:
+        detail = result.stderr.decode("utf-8", "replace").strip()
+        raise RunnerError(f"could not ask the Docker daemon for its id: {detail[-_STDERR_TAIL:]}")
+    return found
+
+
 def remove_run_leftovers(run_id: str, cli: DockerCli | None = None) -> bool:
     """Remove the containers and the network a lost run may have left behind (spec 032).
 
