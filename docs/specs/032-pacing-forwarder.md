@@ -143,6 +143,12 @@ with `rate_per_minute: 60` and the run goes through, slower, without exceeding w
   requests can therefore arrive closer together than the interval by that jitter; the number of
   requests the forwarder lets out per minute does not grow. The end-to-end figures below were
   measured at the target.
+- A request whose client has closed its side by the time its slot comes is not sent. The
+  forwarder cannot tell a client that gave up (a timeout, then a retry on a new connection) from
+  one that only closed its write side and still waits for the answer, and it decides for the
+  first: under a low cap, requests nobody waits for would otherwise take the slots of the retries
+  behind them. A client that half-closes before its answer gets none through a paced forwarder.
+  The HTTP clients of the adapters that are paced (garak) do not do that.
 - The guarantee rests on the adapter speaking HTTP/1.1 without pipelining or a protocol upgrade.
   The ALPN and preface tripwires catch a tool that starts to offer HTTP/2; pipelining inside TLS
   cannot be seen by anyone but the endpoints. `forwarder_paced` is therefore set per adapter,
@@ -186,8 +192,10 @@ with `rate_per_minute: 60` and the run goes through, slower, without exceeding w
 - [x] The runner passes `--pace-per-minute` exactly for paced runs and raises on an unusable rate.
 - [x] A second paced run of a capped engagement stays queued while the first is running and is
       claimed afterwards; a run of another engagement is claimed meanwhile.
-- [x] A real garak 0.17.0 run against the bundled demo target under a cap succeeds and the target
-      sees no two requests closer than the pace allows.
+- [x] A real garak 0.17.0 run against the bundled demo target under a cap succeeds and the
+      forwarder lets no two requests out closer than the pace allows. What the target sees can
+      differ by network jitter (see "Limits"): the closest pair measured there was 99.6 ms at a
+      100 ms slot.
 
 ## Test cases
 
