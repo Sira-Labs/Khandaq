@@ -25,6 +25,7 @@ EVIDENCE_KEY = "synthetic-test-evidence-key-0123456789"
 MODEL = b"synthetic model bytes \x00\x01 " * 40
 DATA = b"synthetic,evaluation,rows\n" * 30
 OTHER = b"another synthetic dataset\n" * 30
+MODEL_AT, DATA_AT = "s3://sow-bucket/model.skops", "s3://sow-bucket/eval.npz"
 LLM = {"base_url": "https://gw.acme.test/v1/chat/completions", "model": "assistant-v3"}
 
 
@@ -128,18 +129,27 @@ def _engagement(
         "dataset": _target(client, eng_id, "dataset", {"digest": _digest(DATA)}),
         "unlisted": _target(client, eng_id, "dataset", {"digest": _digest(OTHER)}),
         "llm": _target(client, eng_id, "llm_endpoint", LLM),
+        # The allowed locations, but another digest (and that digest's content).
+        "model_by_location": _target(
+            client, eng_id, "model_artifact", {"digest": _digest(OTHER), "location": MODEL_AT}
+        ),
+        "dataset_by_location": _target(
+            client, eng_id, "dataset", {"digest": _digest(OTHER), "location": DATA_AT}
+        ),
     }
+    _upload(client, eng_id, ids["model_by_location"], OTHER)
+    _upload(client, eng_id, ids["dataset_by_location"], OTHER)
     if upload_model:
         _upload(client, eng_id, ids["model"], MODEL)
     if upload_dataset:
         _upload(client, eng_id, ids["dataset"], DATA)
     _upload(client, eng_id, ids["unlisted"], OTHER)
     allow: dict = {
-        "model_artifact": [{"digest": _digest(MODEL)}],
+        "model_artifact": [{"digest": _digest(MODEL), "location": MODEL_AT}],
         "llm_endpoint": [{"host": "gw.acme.test", "models": ["assistant-v3"]}],
     }
     if allow_dataset:
-        allow["dataset"] = [{"digest": _digest(DATA)}]
+        allow["dataset"] = [{"digest": _digest(DATA), "location": DATA_AT}]
     scope = {"allow": allow, "deny": [], "roe": roe or {}}
     assert (
         client.put(f"/api/engagements/{eng_id}/scope", json=scope, headers=OWNER).status_code < 300
@@ -175,22 +185,20 @@ def _audit(db, eng_id: str, action: str) -> list[dict]:
 
 
 def _claim_and_execute(db, run_id: str, runner) -> str:
-    """As the worker does it, for this run only (other tests' runs may be queued too)."""
-    from khandaq import models as m
+    """The worker's own sequence for this run: ``claim_next_run``, then ``execute_run``. Runs
+    that other tests left queued are taken out of the way first, so the claim finds this one."""
     from khandaq import runs
 
+    with db.begin() as conn:
+        conn.execute(
+            text("UPDATE runs SET state = 'failed' WHERE state = 'queued' AND id <> :r"),
+            {"r": run_id},
+        )
     with Session(db) as session:
-        run = session.get(m.Run, run_id)
-        engagement = session.get(m.Engagement, run.engagement_id)
-        target = session.get(m.Target, run.target_id)
-        manifest = runs.get_manifest(run.adapter)
-        reason = runs.run_refusal(session, engagement, target, manifest, run.params or {})
-        if reason is not None:
-            runs._reject(session, run, reason, None, at="claim")
-            session.commit()
+        claimed = runs.claim_next_run(session)
+        if claimed is None:
             return "rejected"
-        runs._start(session, run, target, manifest, None, by="worker")
-        session.commit()
+        assert claimed == run_id
         return runs.execute_run(session, run_id, runner=runner).state
 
 
@@ -256,11 +264,35 @@ def test_adapters_must_fit_their_target(env):
     assert len(_audit(db, ids["eng"], "run.rejected")) == 3
 
 
-def test_a_rate_cap_does_not_refuse_an_adapter_that_sends_nothing(env):
+def test_under_a_rate_cap_an_offline_run_declares_a_rate_like_any_other(env):
+    """The scope lock is unchanged: under a cap it wants a declared rate from every run, also
+    from one that sends nothing. With one, the cap does not stand in the way."""
     client, _, _ = env
     ids = _engagement(client, "capped", roe={"max_requests_per_minute": 30})
+    without = _run(client, ids, dataset_target_id=ids["dataset"])
+    assert without["state"] == "rejected" and "rate_per_minute" in without["reject_reason"]
     run = _run(client, ids, dataset_target_id=ids["dataset"], rate_per_minute=10)
     assert run["state"] == "queued", run
+
+
+@pytest.mark.parametrize("which", ["model", "dataset"])
+def test_content_allowed_only_by_its_location_is_not_run(env, which):
+    """The lock lets a model or dataset in by `location` as well as by digest, and Khandaq never
+    fetches a location. A target that carries an allowed location and some other digest must not
+    bring that digest's content into a run: content runs only when a rule names its digest."""
+    client, db, _ = env
+    ids = _engagement(client, f"by location {which}")
+    ids[which] = ids[f"{which}_by_location"]  # in scope for the lock, by its location alone
+    run = _run(client, ids, dataset_target_id=ids["dataset"])
+    assert run["state"] == "rejected", run
+    assert f"{which}: " in run["reject_reason"] and "names its digest" in run["reject_reason"]
+    assert _audit(db, ids["eng"], "run.rejected")[-1]["run_id"] == run["id"]
+
+
+def test_the_builtin_adapter_still_runs_on_any_target_in_scope(env):
+    client, _, _ = env
+    ids = _engagement(client, "echo")
+    assert _run(client, ids, adapter="echo", target="model")["state"] in ("queued", "succeeded")
 
 
 def test_the_worker_hands_over_the_verified_contents_and_audits_their_digests(env):
@@ -284,24 +316,29 @@ def test_the_worker_hands_over_the_verified_contents_and_audits_their_digests(en
     assert started[0]["credential"] == "none"  # nothing to hold a credential for
 
 
-def test_the_claim_checks_the_dataset_again(env):
+@pytest.mark.parametrize(
+    ("change", "reason"),
+    [
+        ("DELETE FROM target_artefacts WHERE target_id = :t", "dataset: no content is stored"),
+        ("UPDATE scopes SET allow = allow - 'dataset' WHERE engagement_id = :e", "dataset: "),
+    ],
+)
+def test_the_claim_checks_the_dataset_again(env, change, reason):
     """Queued while everything was in order; by the time a worker takes it the dataset's content
-    record is gone. The same checks run again at the claim, and nothing is started."""
+    record is gone, or the scope no longer allows the dataset. The worker's claim runs the same
+    checks again, and nothing is started."""
     client, db, _ = env
     ids = _engagement(client, "claim")
     run = _run(client, ids, dataset_target_id=ids["dataset"])
     assert run["state"] == "queued"
     with db.begin() as conn:
-        conn.execute(
-            text("DELETE FROM target_artefacts WHERE target_id = :t"), {"t": ids["dataset"]}
-        )
+        conn.execute(text(change), {"t": ids["dataset"], "e": ids["eng"]})
     runner = RecordingRunner()
     assert _claim_and_execute(db, run["id"], runner) == "rejected"
     assert runner.calls == []
     rejected = _audit(db, ids["eng"], "run.rejected")
-    assert (
-        rejected[-1]["at"] == "claim" and "dataset: no content is stored" in rejected[-1]["reason"]
-    )
+    assert rejected[-1]["at"] == "claim" and reason in rejected[-1]["reason"]
+    assert _audit(db, ids["eng"], "run.started") == []
 
 
 @pytest.mark.parametrize("which", ["model", "dataset"])

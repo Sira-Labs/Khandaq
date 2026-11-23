@@ -160,7 +160,8 @@ def input_refusal(
     deny, with the same parameters. Stored content gives no permission; missing content refuses.
     """
     if not manifest.offline:
-        if target.type in _ARTEFACT_TYPES:
+        # A container adapter reaches its target over the network; stored content has none.
+        if target.type in _ARTEFACT_TYPES and not manifest.builtin:
             return f"adapter '{manifest.name}' needs a network target, not a {target.type}"
         return None
     if target.type != "model_artifact":
@@ -171,11 +172,22 @@ def input_refusal(
     reason = scope_refusal(session, engagement, dataset, params)
     if reason is not None:
         return f"dataset: {reason}"
+    scope_row = session.get(Scope, engagement.id)
+    allow = (scope_row.allow if scope_row is not None else None) or {}
     for name, wanted in (("model", target), ("dataset", dataset)):
         try:
-            artefacts.declared_digest(wanted)
+            digest = artefacts.declared_digest(wanted)
         except ArtefactError as exc:
             return f"{name}: {exc.detail}"
+        # The lock also lets a target in by its `location`, which Khandaq never fetches or
+        # checks. Content is run only if the scope names its digest: otherwise a target with an
+        # allowed location and any digest at all would bring that content into a run.
+        entries = allow.get(wanted.type) or []
+        if not any(isinstance(e, dict) and e.get("digest") == digest for e in entries):
+            return (
+                f"{name}: the scope allows {wanted.type} '{digest}' by no rule that names its "
+                "digest; content is run only when an allow rule names its digest"
+            )
         if artefacts.get(session, wanted.id) is None:
             return f"{name}: no content is stored for target {wanted.id}; upload it first"
     return None
