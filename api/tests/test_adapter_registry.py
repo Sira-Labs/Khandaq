@@ -467,6 +467,39 @@ def test_the_engagement_lock_makes_a_second_worker_wait_for_the_first(ctx, monke
 
 
 @needs_db
+def test_what_changed_while_the_claim_waited_for_the_lock_is_decided_again(ctx, monkeypatch):
+    """A paced run passes the scope check, then waits for the engagement lock. If the rules
+    changed during the wait (a window closed, the cap went down) the run is not started on the
+    earlier answer: the check runs again under the lock, and the run is rejected and audited."""
+    from khandaq import runs
+
+    client, eng = ctx
+    eng_id, target_id = _engagement(client, {"max_requests_per_minute": 60})
+    run = _garak_run(client, eng_id, target_id, 30)
+    assert run["state"] == "queued"
+    real_lock = runs.lock_engagement
+
+    def lock_after_a_wait(session, engagement_id):
+        with eng.begin() as conn:  # committed by someone else while this claim waited
+            conn.execute(
+                text(
+                    "UPDATE scopes SET roe = jsonb_set(roe, '{max_requests_per_minute}', '10') "
+                    "WHERE engagement_id = :e"
+                ),
+                {"e": engagement_id},
+            )
+        return real_lock(session, engagement_id)
+
+    monkeypatch.setattr(runs, "lock_engagement", lock_after_a_wait)
+    assert _claim(eng) is None
+    assert _state(eng, run["id"]) == "rejected"
+    audit = client.get(f"/api/engagements/{eng_id}/audit", headers=OWNER).json()
+    [rejected] = [a for a in audit if a["action"] == "run.rejected"]
+    assert rejected["detail"]["run_id"] == run["id"] and rejected["detail"]["at"] == "claim"
+    assert not [a for a in audit if a["action"] == "run.started"]
+
+
+@needs_db
 def test_uncapped_paced_runs_are_not_held_back(ctx):
     client, eng = ctx
     eng_id, target_id = _engagement(client, {})

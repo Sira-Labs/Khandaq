@@ -361,6 +361,14 @@ def _claim_one(session: Session, paced: list[str], held_back: list[str]) -> str 
         # queued runs at the same moment. Under the engagement lock only the first starts.
         lock_engagement(session, engagement.id)
         run_id = run.id
+        # The lock may have been waited for. What was decided before the wait is decided again
+        # on what is true now: an authorised window can have closed, the scope can have changed.
+        session.expire_all()
+        reason = run_refusal(session, engagement, target, manifest, run.params or {})
+        if reason is not None:
+            _reject(session, run, reason, None, at="claim")
+            session.commit()
+            return None
         if session.scalar(select(_other_paced_run_is_running(run.engagement_id, run_id, paced))):
             session.rollback()  # stays queued; taken once the running one has ended
             held_back.append(run_id)
@@ -478,6 +486,10 @@ def _execute(session: Session, run_id: str, *, actor: User | None, runner) -> Ru
     run = session.get(Run, run_id)
     if run is None:  # pragma: no cover - the running row was committed before execution
         raise RuntimeError(f"run {run_id} does not exist")
+    if run.state != "running":
+        # Recovery ended it before this worker held it. Its record stands: nothing is prepared,
+        # so nothing here can fail and write a second ending over the first.
+        return run
     eng_id = run.engagement_id
     credential: str | None = None
     try:

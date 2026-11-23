@@ -359,6 +359,32 @@ def test_a_run_that_recovery_ended_while_it_was_prepared_is_not_started(env, mon
     assert _actions(db, run["id"]).count("run.failed") == 0  # recovery's record, not a second one
 
 
+def test_a_run_that_recovery_ended_before_the_worker_held_it_keeps_that_ending(env, monkeypatch):
+    """Recovery failed the run before the worker got to it, and preparing it would fail as well
+    (its adapter is no longer registered). The worker writes no second ending over the first."""
+    from khandaq import runs
+
+    client, db, _ = env
+    eng_id, tid = _engagement(client, "ended first")
+    run = _queue(client, eng_id, tid)
+    _running(db, run["id"])
+    with db.begin() as conn:  # what recover_stale_runs commits
+        conn.execute(
+            text(
+                "UPDATE runs SET state = 'failed', ended_at = now(), "
+                "reject_reason = 'the worker lost the run' WHERE id = :r"
+            ),
+            {"r": run["id"]},
+        )
+    monkeypatch.setattr(runs, "get_manifest", lambda name: None)
+    runner = _NeverRun()
+    with Session(db) as session:
+        after = runs.execute_run(session, run["id"], runner=runner)
+        assert after.state == "failed" and after.reject_reason == "the worker lost the run"
+    assert runner.calls == 0
+    assert _actions(db, run["id"]).count("run.failed") == 0
+
+
 def test_a_run_that_is_not_ready_within_its_budget_fails_instead_of_starting(env, monkeypatch):
     """The cutoff recovery works with allows START_BUDGET before the tool starts. A run that
     needed longer fails at the fence, so no run starts that recovery could take for a lost one."""
