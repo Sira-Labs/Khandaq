@@ -57,7 +57,7 @@ sandbox.
 | `pyrit` | 1.1.0 | ✅ | ❌ **pending** | Sandbox-execution wrapper not completed — see §6. |
 | `promptfoo` | 0.118.0 | ✅ | ❌ **pending** | Sandbox-execution wrapper not completed — see §6. |
 | `mcp-scanner` | 4.8.5 | ✅ | ✅ (spec 031) | Manual e2e verified 2026-11-14 against a local scratch MCP server. |
-| `art` | 1.20.1 | ✅ (spec 033) | ❌ **pending** | Phase 05. Parser for ART's evasion results; not registered. Running it needs the model in the sandbox: the content can be uploaded and is digest-checked (spec 034); the hand-over into a sandbox without network is spec 035. |
+| `art` | 1.20.1 | ✅ (spec 033) | ✅ (spec 035) — **not yet run in a real container** | Phase 05. Registered as an offline adapter: runs on an uploaded, digest-checked `model_artifact` and `dataset` (spec 034) in a container with `--network none`; scikit-learn classifiers saved with skops, untargeted evasion attacks from a fixed table. Verified with the pinned ART through the runner's hand-over, without Docker; the first run on a Docker host is still to do. |
 
 garak is the reference implementation of the spec-012 contract v2. The remaining three follow the
 **same pattern** — read the run request from `KHANDAQ_RUN_REQUEST`, invoke the tool against the one
@@ -185,8 +185,8 @@ feature is off until the key is set on the api and the worker.
 - Auto staging deploy after merge.
 - An operator guide.
 
-**Further out (R2/R3 forecast):** ART in the sandbox (spec 035; the adapter is spec 033, done 2026-11-18,
-and the intake of model and dataset content is spec 034, done 2026-11-21); supply-chain
+**Further out (R2/R3 forecast):** ART on a Docker host end to end (spec 035 is done, 2026-11-23, but
+its image has not run in a real container yet); more estimators and ART's other families; supply-chain
 (ModelAudit/ModelScan consensus + AI-BOM); guardrail-regression harness; IR/forensics trace import;
 findings → detections; SSO/SCIM and multi-node adapter runners for production.
 

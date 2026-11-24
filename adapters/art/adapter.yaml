@@ -19,3 +19,8 @@ severity_table:
 resources:
   cpu: "2"
   memory: 4Gi
+# It reaches no network (spec 035): the sandbox gives it none, and it takes the stored content of
+# a model_artifact target and a dataset target on standard input. It sends nothing, so there is
+# no request rate to hold.
+offline: true
+paces_requests: true

@@ -446,6 +446,42 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
       **Owner:** uploaded content (a client's model or data) stays stored after the engagement
       closes, as evidence does, because the store has no delete. Say if it should be deleted on
       close or after a period; it blocks nothing; default: kept.
+- [x] S8-4 — spec 035 ART runs on stored content, offline (nightly run of 2026-11-23, UTC):
+      `art` is registered with the new manifest flag `offline`. A run names its model as the
+      target and its evaluation data as `dataset_target_id`; the unchanged scope lock decides
+      both, at creation and again at the claim, and both must have stored content. The worker
+      reads both through `read_artefact` and hands them to a container created with
+      `--network none` as one tar on standard input; `run.started` records the two digests.
+      Decisions: the dataset is a second target of the engagement, not a parameter with a
+      digest, so the lock judges it by its own allow rules and a model in scope does not pull in
+      data that is not. Standard input instead of a volume or `docker cp`: the worker needs no
+      shared path with the Docker host and nothing of the content outlives the container (it is
+      unpacked into the tmpfs scratch, sized from the hand-over). An adapter must fit its
+      target: offline only on `model_artifact`, network adapters never on stored content (such a
+      run used to be queued and fail in the runner). An offline adapter sends nothing, so it
+      counts as pacing (`paces_requests`); the lock is unchanged and under a rate cap still wants
+      a declared `rate_per_minute` from it, as from every run. An independent review before the
+      merge found that the lock also lets a model or dataset in by its `location`, which Khandaq
+      never fetches: a target with an allowed location and another digest would have brought
+      that digest's content into a run. An offline run now needs an allow rule that names the
+      digest of the model and of the dataset (an added refusal in `runs.py`, `scope.py`
+      untouched). From the same review: the wrapper answers every bad input with exit 2 and a
+      message that carries no text from the model or the data (not a traceback), checks each
+      input's SHA-256 as well as its size, and takes only real numbers that fit 32-bit floats;
+      the hand-over's standard input is a memory file, so decrypted content is never on the
+      worker's disk; the tests use the worker's real `claim_next_run`. Models are scikit-learn classifiers saved
+      with skops and loaded with no trusted types: a pickle is refused, because loading one
+      runs the file's code. Data is an `.npz` read with `allow_pickle=False`. The wrapper has a
+      fixed table of three ART evasion classes with typed, bounded parameters, untargeted
+      only; it names ART classes and passes numbers, and has no attack code of its own. The
+      image's packages are pinned in `adapters/art/requirements.txt`, which CI installs, so the
+      run tests use the real tool and CI fails if any of them is skipped. The model and the data
+      are not copied into the evidence. `scope.py`, `audit.py` and the ledger are untouched.
+      Not done: the image was not built or run in a real container (no Docker in the nightly
+      sandbox); checked instead by running the real wrapper with the pinned ART behind the
+      runner's hand-over on synthetic data. Follow-ups: first run on a Docker host; a console
+      form for the upload and the `art` parameters; other estimators; after PR #86 merges, the
+      forwarder must stay off for offline runs.
 
 ### Dependency maintenance (nightly runs, ADR-0018)
 

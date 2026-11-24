@@ -23,15 +23,33 @@ from .manifest import AdapterManifest
 
 
 def build_run_request(
-    run_id: str, engagement_id: str, target_type: str, target_spec: dict, params: dict
+    run_id: str,
+    engagement_id: str,
+    target_type: str,
+    target_spec: dict,
+    params: dict,
+    inputs: dict[str, bytes] | None = None,
 ) -> dict:
-    """The JSON contract handed to an adapter: one target, the params, and the run identity."""
-    return {
+    """The JSON contract handed to an adapter: one target, the params, and the run identity.
+
+    For an offline adapter (spec 035) it also names the contents it is handed on standard input,
+    by digest and size, never the bytes themselves."""
+    request: dict = {
         "run_id": run_id,
         "engagement_id": engagement_id,
         "target": {"type": target_type, "spec": target_spec},
         "params": params,
     }
+    if inputs is not None:
+        request["inputs"] = {
+            name: {"sha256": _sha256_bytes(content), "bytes": len(content)}
+            for name, content in sorted(inputs.items())
+        }
+    return request
+
+
+def _sha256_bytes(content: bytes) -> str:
+    return "sha256:" + hashlib.sha256(content).hexdigest()
 
 
 def _sha256(text: str) -> str:

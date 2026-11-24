@@ -44,6 +44,7 @@ def test_container_manifests_match_their_adapter_yaml(manifest):
     assert manifest.paces_requests == disk.get("paces_requests", False)
     assert manifest.forwarder_paced == disk.get("forwarder_paced", False)
     assert manifest.accepts_credential == disk.get("accepts_credential", False)
+    assert manifest.offline == disk.get("offline", False)
     assert manifest.problems() == []
 
 
@@ -61,12 +62,14 @@ def test_mcp_scanner_is_a_registered_container_adapter():
     assert scanner.paces_requests is False and scanner.accepts_credential is True
 
 
-def test_art_is_not_runnable_yet():
-    """Spec 033: the ART adapter has a parser and an image, but nothing brings a model artefact
-    into the sandbox yet, so no run can be queued for it (the registry lists only adapters whose
-    image really runs the tool)."""
-    assert get_manifest("art") is None
-    assert (REPO / "adapters/art/adapter.yaml").is_file()
+def test_art_is_a_registered_offline_adapter():
+    """Spec 035: ART runs on stored content in a container without network. It sends nothing,
+    so there is no request rate it could exceed, and it takes no credential."""
+    art = get_manifest("art")
+    assert art is not None and not art.builtin and art.offline is True
+    assert art.image == "ghcr.io/sira-labs/khandaq-adapter-art:1.20.1"
+    assert art.paces_requests is True and art.accepts_credential is False
+    assert [m.name for m in all_manifests() if m.offline] == ["art"]
 
 
 CAP = {"max_requests_per_minute": 60}
