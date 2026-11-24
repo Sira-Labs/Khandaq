@@ -113,7 +113,8 @@ own numbers as evidence.
 Contract (`adapters/art/tests/test_contract.py`): `test_fixture_findings_are_schema_valid`,
 `test_severity_follows_the_success_rate`, `test_an_attack_without_effect_is_skipped`,
 `test_the_same_attack_is_one_rule_whatever_its_parameters`, `test_fail_closed` (the table of
-Behaviour 5), `test_only_the_evasion_family_is_read`, `test_main_writes_findings_or_exits_2`,
+Behaviour 5), `test_only_the_evasion_family_is_read`, `test_translate_writes_findings_or_exits_2` (`main`
+until spec 035 made it the sandbox entry point),
 `test_the_target_is_named_by_its_digest`.
 Unit (`api/tests/test_mapping_drift.py`): the ART family joins the drift cases;
 `test_an_uncurated_art_family_is_unmapped`.

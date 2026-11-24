@@ -31,8 +31,9 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
-from . import audit, target_credentials
+from . import artefacts, audit, target_credentials
 from .adapters import AdapterManifest, build_run_request, get_manifest, get_runner
+from .artefacts import ArtefactError
 from .campaign_diff import record_diff
 from .credential_values import CredentialError, redact
 from .deps import EngagementAccess
@@ -42,7 +43,7 @@ from .ledger import lock_engagement, seal_evidence
 from .mapping_overlay import current_overlay, provenance
 from .models import Engagement, Finding, Run, Scope, Target, User
 from .scope import evaluate
-from .settings import get_settings
+from .settings import Settings, get_settings
 
 NOTIFY_CHANNEL = "khandaq_runs"
 
@@ -123,7 +124,73 @@ def run_refusal(
     if reason is not None:
         return reason
     scope_row = session.get(Scope, engagement.id)
-    return adapter_refusal(manifest, scope_row.roe if scope_row is not None else None)
+    reason = adapter_refusal(manifest, scope_row.roe if scope_row is not None else None)
+    if reason is not None or target is None:
+        return reason
+    return input_refusal(session, engagement, target, manifest, params)
+
+
+_ARTEFACT_TYPES = ("model_artifact", "dataset")
+
+
+def dataset_target(session: Session, engagement_id: str, params: dict) -> Target | None:
+    """The `dataset` target an offline run names in ``dataset_target_id``, if it is one of this
+    engagement's dataset targets."""
+    target_id = (params or {}).get("dataset_target_id")
+    if not isinstance(target_id, str) or not target_id:
+        return None
+    target = session.get(Target, target_id)
+    if target is None or target.engagement_id != engagement_id or target.type != "dataset":
+        return None
+    return target
+
+
+def input_refusal(
+    session: Session,
+    engagement: Engagement,
+    target: Target,
+    manifest: AdapterManifest,
+    params: dict,
+) -> str | None:
+    """Why this adapter cannot run on this target with the content it would need, or ``None``
+    (spec 035).
+
+    An offline adapter runs on a stored model and a stored dataset. The dataset is a second
+    target of the run, so the scope lock decides it exactly as it decided the first: default
+    deny, with the same parameters. Stored content gives no permission; missing content refuses.
+    """
+    if not manifest.offline:
+        # A container adapter reaches its target over the network; stored content has none.
+        if target.type in _ARTEFACT_TYPES and not manifest.builtin:
+            return f"adapter '{manifest.name}' needs a network target, not a {target.type}"
+        return None
+    if target.type != "model_artifact":
+        return f"adapter '{manifest.name}' runs on a model_artifact target, not a {target.type}"
+    dataset = dataset_target(session, engagement.id, params)
+    if dataset is None:
+        return "dataset: 'dataset_target_id' must name a dataset target of this engagement"
+    reason = scope_refusal(session, engagement, dataset, params)
+    if reason is not None:
+        return f"dataset: {reason}"
+    scope_row = session.get(Scope, engagement.id)
+    allow = (scope_row.allow if scope_row is not None else None) or {}
+    for name, wanted in (("model", target), ("dataset", dataset)):
+        try:
+            digest = artefacts.declared_digest(wanted)
+        except ArtefactError as exc:
+            return f"{name}: {exc.detail}"
+        # The lock also lets a target in by its `location`, which Khandaq never fetches or
+        # checks. Content is run only if the scope names its digest: otherwise a target with an
+        # allowed location and any digest at all would bring that content into a run.
+        entries = allow.get(wanted.type) or []
+        if not any(isinstance(e, dict) and e.get("digest") == digest for e in entries):
+            return (
+                f"{name}: the scope allows {wanted.type} '{digest}' by no rule that names its "
+                "digest; content is run only when an allow rule names its digest"
+            )
+        if artefacts.get(session, wanted.id) is None:
+            return f"{name}: no content is stored for target {wanted.id}; upload it first"
+    return None
 
 
 def _reject(session: Session, run: Run, reason: str, actor: User | None, **detail) -> None:
@@ -151,6 +218,13 @@ def _start(
     run.state = "running"
     run.started_at = _now()
     detail["credential"] = target_credentials.planned_use(session, target, manifest)
+    if manifest.offline:
+        # Which bytes this run is about: the digests the two targets declare (spec 035).
+        dataset = dataset_target(session, run.engagement_id, run.params or {})
+        detail["inputs"] = {
+            "model": target.spec.get("digest"),
+            "dataset": dataset.spec.get("digest") if dataset is not None else None,
+        }
     audit.record(
         session,
         action="run.started",
@@ -289,6 +363,21 @@ def claim_next_run(session: Session) -> str | None:
     return run.id
 
 
+def _offline_inputs(
+    session: Session, run: Run, target: Target, manifest: AdapterManifest, settings: Settings
+) -> dict[str, bytes] | None:
+    """The verified contents an offline run is handed, or ``None`` for any other adapter."""
+    if not manifest.offline:
+        return None
+    dataset = dataset_target(session, run.engagement_id, run.params or {})
+    if dataset is None:
+        raise ArtefactError(409, "the run's dataset target is gone")
+    return {
+        "model": artefacts.read_artefact(session, target, settings),
+        "dataset": artefacts.read_artefact(session, dataset, settings),
+    }
+
+
 def execute_run(session: Session, run_id: str, *, actor: User | None = None, runner=None) -> Run:
     """Execute a ``running`` run and record the outcome; every failure ends in ``failed``."""
     run = session.get(Run, run_id)
@@ -303,17 +392,26 @@ def execute_run(session: Session, run_id: str, *, actor: User | None = None, run
         if target is None or manifest is None:
             raise ValueError("the target or the adapter is gone")
         settings = get_settings()
+        # An offline adapter gets the stored content of its two targets, each returned only if
+        # it still matches the digest its target declares (specs 034 and 035).
+        inputs = _offline_inputs(session, run, target, manifest, settings)
         # The request never carries the credential (spec 028 §7): runners and adapters may log it.
-        request = build_run_request(run_id, eng_id, target.type, target.spec, run.params or {})
+        request = build_run_request(
+            run_id, eng_id, target.type, target.spec, run.params or {}, inputs
+        )
         target_id = target.id
         # Only this run's own target, only if run.started recorded `injected`; an unusable
         # credential fails the run instead of running without one.
         credential = target_credentials.load_for_run(session, run, target, settings)
         active = runner or get_runner(manifest, settings)
-        if credential is None:
+        if inputs is not None:
+            artifacts = active.run(request, inputs=inputs)
+        elif credential is None:
             artifacts = active.run(request)
         else:
             artifacts = active.run(request, credential=credential)
+    except ArtefactError as exc:
+        return _fail(session, eng_id, run_id, f"stored content unusable: {exc.detail}", actor)
     except CredentialError as exc:
         return _fail(session, eng_id, run_id, f"target credential unusable: {exc.detail}", actor)
     except Exception as exc:  # third-party tool execution: every failure is recorded, never lost

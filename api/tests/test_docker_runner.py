@@ -430,3 +430,146 @@ def test_a_setup_error_is_redacted_before_it_is_cut_and_cleanup_logs_are_redacte
     assert KEY not in caplog.text and "[REDACTED:target-credential]" in caplog.text
     # A container that could not be removed still holds the key: that is an error, not a warning.
     assert any(r.levelname == "ERROR" and "cleanup" in r.message for r in caplog.records)
+
+
+# --- offline runs (spec 035) ----------------------------------------------------------------------
+
+OFFLINE = AdapterManifest(
+    name="art",
+    version="1.20.1",
+    phases=["05-adversarial-ml"],
+    severity_table={"high": "high"},
+    image="ghcr.io/sira-labs/khandaq-adapter-art:1.20.1",
+    resources={"cpu": "2", "memory": "4Gi"},
+    paces_requests=True,
+    offline=True,
+)
+INPUTS = {"model": b"synthetic model bytes", "dataset": b"synthetic,rows\n"}
+
+
+class OfflineCli(FakeCli):
+    """FakeCli that also records what a call was given on standard input."""
+
+    def __init__(self, start: CliResult | Exception, rm_fails: bool = False) -> None:
+        super().__init__(start)
+        self.stdin: dict[str, bytes | None] = {}
+        self.rm_fails = rm_fails
+
+    def __call__(self, args, *, timeout=None, stdout_limit=None, stdin=None):
+        self.stdin[args[0]] = stdin
+        if args[0] == "rm" and self.rm_fails:
+            self.calls.append(list(args))
+            return CliResult(1, b"", b"permission denied")
+        return super().__call__(args, timeout=timeout, stdout_limit=stdout_limit)
+
+
+def _offline_request() -> dict:
+    return {
+        "run_id": "run_abc",
+        "engagement_id": "eng_1",
+        "target": {"type": "model_artifact", "spec": {"digest": "sha256:" + "ab" * 32}},
+        "params": {"dataset_target_id": "tgt_data"},
+        "inputs": {"model": {"bytes": 21}, "dataset": {"bytes": 15}},
+    }
+
+
+def test_an_offline_run_has_no_network_and_takes_its_inputs_on_stdin():
+    cli = OfflineCli(CliResult(0, GOOD_OUTPUT, b""))
+    result = DockerRunner(OFFLINE, SETTINGS, cli=cli).run(_offline_request(), inputs=INPUTS)
+    assert result["findings"]
+
+    # One container and nothing else: no per-run network, no forwarder, no target resolution.
+    assert [c[0] for c in cli.calls] == ["create", "start", "rm"]
+    assert not any(c[0] == "network" or c[0] == "run" for c in cli.calls)
+    create = cli.find("create")
+    assert _value(create, "--network") == "none"
+    assert "--interactive" in create and "--read-only" in create
+    assert _value(create, "--user") == "65534:65534" and _value(create, "--cap-drop") == "ALL"
+    assert _value(create, "--memory") == "4g" and _value(create, "--cpus") == "2"
+    assert not any(arg in ("-v", "--volume", "--mount") for arg in create)
+    assert create[-1] == OFFLINE.image
+    assert cli.find("start") == ["start", "--attach", "--interactive", "khq-run-run_abc"]
+    assert cli.start_kwargs["timeout"] == SETTINGS.adapter_timeout_seconds
+
+    # The hand-over: one tar with exactly the two inputs, on the start call only.
+    assert cli.stdin["create"] is None and cli.stdin["rm"] is None
+    with tarfile.open(fileobj=io.BytesIO(cli.stdin["start"]), mode="r:") as tar:
+        members = {m.name: (tar.extractfile(m).read(), m.isfile(), m.mode) for m in tar}
+    assert members == {
+        "dataset": (INPUTS["dataset"], True, 0o444),
+        "model": (INPUTS["model"], True, 0o444),
+    }
+    # The request reaches the adapter through the env file, without the bytes.
+    assert cli.env_file[1].startswith("KHANDAQ_RUN_REQUEST=")
+    assert "synthetic model bytes" not in cli.env_file[1]
+    assert not os.path.exists(cli.env_file[0])
+
+
+@pytest.mark.parametrize(
+    "start",
+    [
+        RunnerError("adapter did not finish within 600s"),
+        CliResult(2, b"", b"art adapter: the model is not a skops file: BadZipFile"),
+        CliResult(0, GOOD_OUTPUT, b""),
+    ],
+)
+def test_an_offline_run_is_cleaned_up_whatever_happened(start):
+    cli = OfflineCli(start)
+    runner = DockerRunner(OFFLINE, SETTINGS, cli=cli)
+    if isinstance(start, CliResult) and start.returncode == 0:
+        runner.run(_offline_request(), inputs=INPUTS)
+    else:
+        with pytest.raises(RunnerError) as exc:
+            runner.run(_offline_request(), inputs=INPUTS)
+        if isinstance(start, CliResult):
+            assert "not a skops file" in str(exc.value)
+    assert cli.calls[-1] == ["rm", "--force", "khq-run-run_abc"]
+    assert not os.path.exists(cli.env_file[0])
+
+
+def test_an_offline_container_that_cannot_be_created_or_removed():
+    # Not created: the run fails, and the removal is still attempted (a half-made container).
+    cli = OfflineCli(CliResult(0, GOOD_OUTPUT, b""))
+    cli.fail_on = "create --name"
+    with pytest.raises(RunnerError, match="could not create the adapter"):
+        DockerRunner(OFFLINE, SETTINGS, cli=cli).run(_offline_request(), inputs=INPUTS)
+    assert [c[0] for c in cli.calls] == ["create", "rm"]
+    assert not os.path.exists(cli.env_file[0])
+
+    # Not removed: an offline container relays nothing and holds no credential, so the run's
+    # result stands; the failure is logged.
+    cli = OfflineCli(CliResult(0, GOOD_OUTPUT, b""), rm_fails=True)
+    result = DockerRunner(OFFLINE, SETTINGS, cli=cli).run(_offline_request(), inputs=INPUTS)
+    assert result["findings"] and cli.calls[-1] == ["rm", "--force", "khq-run-run_abc"]
+
+
+def test_the_real_cli_feeds_standard_input_without_a_file_on_disk(tmp_path, monkeypatch):
+    """``SubprocessDockerCli`` with a stand-in binary: what it is given reaches the process's
+    standard input whole, a process without input reads none, and the input is not written to
+    the temporary directory."""
+    from khandaq.adapters import docker
+
+    monkeypatch.setattr(docker.tempfile, "tempdir", str(tmp_path))
+    payload = os.urandom(3 * 1024 * 1024)
+    cli = docker.SubprocessDockerCli(binary="cat", poll_seconds=0.01)
+    assert cli([], timeout=30, stdin=payload).stdout == payload
+    assert cli([], timeout=30).stdout == b""  # no input: standard input is empty, not inherited
+    assert list(tmp_path.iterdir()) == []  # only unnamed files were ever there
+    if hasattr(os, "memfd_create"):
+        with docker._memory_file() as source:  # and the input's file is not a file on a disk
+            assert os.readlink(f"/proc/self/fd/{source.fileno()}").startswith("/memfd:")
+
+
+def test_an_offline_adapter_without_inputs_is_refused():
+    cli = OfflineCli(CliResult(0, GOOD_OUTPUT, b""))
+    runner = DockerRunner(OFFLINE, SETTINGS, cli=cli)
+    with pytest.raises(RunnerError, match="got no inputs"):
+        runner.run(_offline_request())
+    with pytest.raises(RunnerError, match="does not accept a credential"):
+        runner.run(_offline_request(), credential="synthetic-key-0123456789", inputs=INPUTS)
+    with pytest.raises(RunnerError, match="unsafe name"):
+        runner.run(_offline_request(), inputs={"../model": b"x"})
+    # And a network adapter takes none: nothing is started for either mistake.
+    with pytest.raises(RunnerError, match="takes no inputs"):
+        _runner(cli).run(_request(), inputs=INPUTS)
+    assert cli.calls == []
