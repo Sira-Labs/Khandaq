@@ -15,6 +15,7 @@ is contract-tested against a fixture recorded from a real ART run on a synthetic
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import math
@@ -539,17 +540,23 @@ def main(
 ) -> int:
     """Sandbox entrypoint: read the request and the inputs, run ART, translate its results, and
     emit the evidence tar on standard output (only on success)."""
-    try:
-        request = load_request(dict(os.environ), request_path)
-        inputs = read_inputs(stdin or sys.stdin.buffer, request, scratch)
-        results = evaluate(request, inputs["model"], inputs["dataset"])
-    except RequestError as exc:
-        print(f"art adapter: {exc}", file=sys.stderr)
-        return 2
-    write_results(results, evidence)
-    code = translate(request, evidence)
+    # Standard output carries the evidence tar and nothing else. Whatever a library prints while
+    # the model is loaded and evaluated (a model stored with `verbose` set reports its progress
+    # there) goes to standard error instead; the tar is written to the real stream afterwards.
+    archive = out or sys.stdout.buffer
+    source = stdin or sys.stdin.buffer
+    with contextlib.redirect_stdout(sys.stderr):
+        try:
+            request = load_request(dict(os.environ), request_path)
+            inputs = read_inputs(source, request, scratch)
+            results = evaluate(request, inputs["model"], inputs["dataset"])
+        except RequestError as exc:
+            print(f"art adapter: {exc}", file=sys.stderr)
+            return 2
+        write_results(results, evidence)
+        code = translate(request, evidence)
     if code == 0:
-        write_tar(evidence, out or sys.stdout.buffer)
+        write_tar(evidence, archive)
     return code
 
 

@@ -115,6 +115,52 @@ def test_main_reads_stdin_and_writes_the_evidence_tar(tmp_path, monkeypatch):
     assert findings[0]["target_ref"] == _digest(MODEL)
 
 
+def test_what_a_model_prints_stays_out_of_the_evidence_stream(tmp_path, monkeypatch, capsys):
+    """Standard output is the evidence tar. A forest with `verbose` set reports its progress
+    there on every prediction: with the real stream as the archive's destination, the stream
+    must hold the tar from its first byte, and the chatter must be on standard error.
+
+    skops with no trusted types does not load a forest today, so the chatty model is handed to
+    the wrapper in place of the loaded one: the guarantee is about whatever a library prints."""
+    from sklearn.ensemble import RandomForestClassifier
+
+    forest = RandomForestClassifier(n_estimators=3, verbose=100, random_state=0).fit(X, Y)
+    monkeypatch.setattr(wrap, "load_model", lambda path: forest)
+    attack = {
+        "name": "HopSkipJump",
+        "params": {"max_iter": 1, "max_eval": 10, "init_eval": 5, "init_size": 5},
+    }
+    request = _request(samples=20, attacks=[attack])
+    monkeypatch.setenv("KHANDAQ_RUN_REQUEST", json.dumps(request))
+
+    class RealStream:
+        """Stands in for the process's standard output: text written through ``sys.stdout``
+        and bytes written to its buffer land in the same place, in order."""
+
+        def __init__(self) -> None:
+            self.buffer = io.BytesIO()
+
+        def write(self, text: str) -> int:
+            return self.buffer.write(text.encode())
+
+        def flush(self) -> None:
+            pass
+
+    stream = RealStream()
+    monkeypatch.setattr(wrap.sys, "stdout", stream)
+    code = wrap.main(
+        tmp_path / "none.json",
+        tmp_path / "evidence",
+        tmp_path / "scratch",
+        stdin=_tar({"model": MODEL, "dataset": DATASET}),
+    )
+    monkeypatch.undo()
+    assert code == 0
+    assert set(_files(stream.buffer.getvalue())) == {"art-results.jsonl", "findings.jsonl"}
+    assert b"Parallel" not in stream.buffer.getvalue()
+    assert "Parallel" in capsys.readouterr().err  # it did report, and it went here
+
+
 def test_a_synthetic_model_is_evaluated_and_translated(tmp_path):
     """What the wrapper writes is what the spec-033 parser reads, with ART's own numbers."""
     results = _evaluate(tmp_path, _request(samples=120))

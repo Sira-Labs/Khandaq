@@ -101,6 +101,8 @@ Khandaq deployment, and I get the result in the same inbox as my other findings.
      and `art.utils.compute_success`, and writes one result line per attack and the completion
      record (the spec-033 format);
    - translates the results with the spec-033 parser and writes the evidence tar only on success.
+     Standard output carries the tar and nothing else: what a library prints while the model
+     is loaded and evaluated goes to standard error.
 7. **Evidence** is `art-results.jsonl`. The model and the data are not copied into the evidence:
    they are already stored, named by digest in the audit entry and the findings' `target_ref`.
 8. **Invariants.** The wrapper contains no attack, perturbation or payload of its own: it names
