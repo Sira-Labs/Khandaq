@@ -231,6 +231,8 @@ class Run(Base):
     params: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default="{}")
     state: Mapped[str] = mapped_column(Text, nullable=False, server_default="queued")
     reject_reason: Mapped[str | None] = mapped_column(Text)
+    # The Docker daemon a container run's objects are on (spec 032); set before any is created.
+    docker_daemon: Mapped[str | None] = mapped_column(Text)
     started_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
     ended_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[dt.datetime] = _created_at()

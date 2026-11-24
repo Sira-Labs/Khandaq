@@ -322,7 +322,7 @@ def scope_check(
         manifest = get_manifest(body.adapter)
         if manifest is None:
             raise HTTPException(422, f"unknown adapter '{body.adapter}'")
-        reason = adapter_refusal(manifest, scope_row.roe)
+        reason = adapter_refusal(manifest, scope_row.roe, body.params)
         if reason is not None:
             return ScopeCheckOut(allowed=False, reason=reason)
     return ScopeCheckOut(allowed=decision.allowed, reason=decision.reason)

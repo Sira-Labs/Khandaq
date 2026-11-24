@@ -22,17 +22,33 @@ their hash is sealed (spec 014, ADR-0016).
 
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import json
+import logging
+from collections.abc import Callable, Iterator
 
 import khandaq_core as kc
-from sqlalchemy import select, text
+from sqlalchemy import and_, exists, not_, select, text
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 from sqlalchemy.orm.attributes import flag_modified
 
-from . import artefacts, audit, target_credentials
-from .adapters import AdapterManifest, build_run_request, get_manifest, get_runner
+from . import artefacts, audit, egress_forwarder, target_credentials
+from .adapters import (
+    AdapterManifest,
+    all_manifests,
+    build_run_request,
+    get_manifest,
+    get_runner,
+)
+from .adapters.docker import (
+    DockerRunner,
+    LeftoversError,
+    RunnerError,
+    daemon_id,
+    remove_run_leftovers,
+)
 from .artefacts import ArtefactError
 from .campaign_diff import record_diff
 from .credential_values import CredentialError, redact
@@ -41,11 +57,12 @@ from .evidence_crypto import Keyring
 from .evidence_store import EvidenceStore, retain, store_from_settings
 from .ledger import lock_engagement, seal_evidence
 from .mapping_overlay import current_overlay, provenance
-from .models import Engagement, Finding, Run, Scope, Target, User
+from .models import AuditLog, Engagement, Finding, Run, Scope, Target, User
 from .scope import evaluate
 from .settings import Settings, get_settings
 
 NOTIFY_CHANNEL = "khandaq_runs"
+log = logging.getLogger("khandaq.runs")
 
 
 def _now() -> dt.datetime:
@@ -98,18 +115,50 @@ def scope_refusal(
     return None if decision.allowed else decision.reason
 
 
-def adapter_refusal(manifest: AdapterManifest, roe: dict | None) -> str | None:
-    """Why this adapter cannot honour the engagement's rules of engagement, or ``None`` (spec 027).
+def forwarder_pace(manifest: AdapterManifest, params: dict | None) -> object | None:
+    """The declared ``rate_per_minute`` the run's egress forwarder will hold, or ``None`` when the
+    run is not paced by it (spec 032 §4). Not yet validated: see ``usable_pace``."""
+    if not manifest.forwarder_paced:
+        return None
+    return (params or {}).get("rate_per_minute")
+
+
+def usable_pace(value: object) -> bool:
+    """Whether the forwarder can pace at this rate: a finite number above 0 whose interval
+    (``60 / rate``) is finite too. It is the forwarder's own rule, so the two agree."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    return egress_forwarder.usable_pace(value)
+
+
+def _capped(roe: dict | None) -> bool:
+    return (roe or {}).get("max_requests_per_minute") is not None
+
+
+def adapter_refusal(
+    manifest: AdapterManifest, roe: dict | None, params: dict | None = None
+) -> str | None:
+    """Why this adapter cannot honour the engagement's rules of engagement, or ``None``
+    (specs 027 and 032).
 
     The scope lock checks the requested ``rate_per_minute`` against the cap; this checks that the
-    adapter can actually hold a rate. One that cannot is refused rather than trusted to stay under.
+    rate will actually be held: by the adapter itself (``paces_requests``) or by the run's egress
+    forwarder (``forwarder_paced``). An adapter with neither is refused rather than trusted to
+    stay under the cap.
     """
-    if (roe or {}).get("max_requests_per_minute") is not None and not manifest.paces_requests:
+    pace = forwarder_pace(manifest, params)
+    if pace is not None and not usable_pace(pace):
+        # Also without a cap: a declared rate is kept, and this one cannot be.
         return (
-            f"adapter '{manifest.name}' cannot hold the rules of engagement's request-rate limit;"
-            " use an adapter that paces its requests, or an engagement without a rate limit"
+            f"adapter '{manifest.name}' is paced by the run's forwarder, which needs a"
+            f" rate_per_minute above 0, got {pace!r}: a rate of 0/min lets the run send nothing"
         )
-    return None
+    if not _capped(roe) or manifest.paces_requests or pace is not None:
+        return None
+    return (
+        f"adapter '{manifest.name}' cannot hold the rules of engagement's request-rate limit;"
+        " use an adapter that paces its requests, or an engagement without a rate limit"
+    )
 
 
 def run_refusal(
@@ -124,7 +173,7 @@ def run_refusal(
     if reason is not None:
         return reason
     scope_row = session.get(Scope, engagement.id)
-    reason = adapter_refusal(manifest, scope_row.roe if scope_row is not None else None)
+    reason = adapter_refusal(manifest, scope_row.roe if scope_row is not None else None, params)
     if reason is not None or target is None:
         return reason
     return input_refusal(session, engagement, target, manifest, params)
@@ -218,6 +267,9 @@ def _start(
     run.state = "running"
     run.started_at = _now()
     detail["credential"] = target_credentials.planned_use(session, target, manifest)
+    pace = forwarder_pace(manifest, run.params)
+    if pace is not None:
+        detail["paced_per_minute"] = pace  # the rate the run's forwarder holds (spec 032)
     if manifest.offline:
         # Which bytes this run is about: the digests the two targets declare (spec 035).
         dataset = dataset_target(session, run.engagement_id, run.params or {})
@@ -334,10 +386,35 @@ def claim_next_run(session: Session) -> str | None:
     Returns the id of a run that is now ``running`` (committed), or ``None`` when the queue is
     empty or the claimed run was rejected. ``SKIP LOCKED`` makes concurrent workers take
     different runs.
+
+    A forwarder-paced run of an engagement with a rate cap waits (stays ``queued``) while another
+    such run of that engagement is running: each forwarder holds its own run's rate, so two side
+    by side would exceed the engagement's cap together (spec 032 §6).
     """
+    paced = [m.name for m in all_manifests() if m.forwarder_paced]
+    held_back: list[str] = []  # runs another worker's paced run got in front of, this call
+    while len(held_back) <= _MAX_HELD_BACK:
+        claimed = _claim_one(session, paced, held_back)
+        if claimed is not _HELD_BACK:
+            return claimed
+    return None
+
+
+_HELD_BACK = "held back"
+_MAX_HELD_BACK = 20
+
+
+def _claim_one(session: Session, paced: list[str], held_back: list[str]) -> str | None:
+    """One attempt of ``claim_next_run``. Returns ``_HELD_BACK`` (and notes the run) when the
+    oldest claimable run has to wait after all, so the caller goes on to the next one instead of
+    reporting an empty queue."""
     run = session.scalars(
         select(Run)
-        .where(Run.state == "queued")
+        .where(
+            Run.state == "queued",
+            Run.id.not_in(held_back),
+            not_(_waits_for_paced_run(paced)),
+        )
         .order_by(Run.created_at, Run.id)
         .with_for_update(skip_locked=True)
         .limit(1)
@@ -358,9 +435,123 @@ def claim_next_run(session: Session) -> str | None:
         _reject(session, run, reason or "the target or the adapter is gone", None, at="claim")
         session.commit()
         return None
+    scope_row = session.get(Scope, engagement.id)
+    if manifest.forwarder_paced and scope_row is not None and _capped(scope_row.roe):
+        # The query above skips a run that has to wait, but two workers can each pick one of two
+        # queued runs at the same moment. Under the engagement lock only the first starts.
+        lock_engagement(session, engagement.id)
+        run_id = run.id
+        # The lock may have been waited for. What was decided before the wait is decided again
+        # on what is true now: an authorised window can have closed, the scope can have changed.
+        session.expire_all()
+        reason = run_refusal(session, engagement, target, manifest, run.params or {})
+        if reason is not None:
+            _reject(session, run, reason, None, at="claim")
+            session.commit()
+            return None
+        if session.scalar(select(_other_paced_run_is_running(run.engagement_id, run_id, paced))):
+            session.rollback()  # stays queued; taken once the running one has ended
+            held_back.append(run_id)
+            return _HELD_BACK
     _start(session, run, target, manifest, None, by="worker")
     session.commit()
     return run.id
+
+
+def _other_paced_run_is_running(engagement_id, run_id, paced: list[str]):
+    other = aliased(Run)
+    return exists().where(
+        other.engagement_id == engagement_id,
+        other.id != run_id,
+        other.state == "running",
+        other.adapter.in_(paced),
+    )
+
+
+def _waits_for_paced_run(paced: list[str]):
+    """SQL condition: this queued run is forwarder-paced, its engagement has a rate cap, and
+    another forwarder-paced run of that engagement is running."""
+    capped = exists().where(
+        Scope.engagement_id == Run.engagement_id,
+        Scope.roe["max_requests_per_minute"].astext.is_not(None),
+    )
+    return and_(
+        Run.adapter.in_(paced),
+        capped,
+        _other_paced_run_is_running(Run.engagement_id, Run.id, paced),
+    )
+
+
+# How long after its claim a run may still start its tool. Everything from here on is bounded
+# (the runner's own limits and the adapter timeout), and recovery's cutoff allows for this budget
+# on top of them, so a run that starts is never taken for a lost one while it is running.
+START_BUDGET = dt.timedelta(minutes=5)
+
+
+class StartedTooLate(Exception):
+    """The run did not reach the start of its tool within ``START_BUDGET`` of its claim."""
+
+
+def _may_still_start(session: Session, run: Run) -> bool:
+    """The fence in front of the tool (spec 032 §7). The steps before it (reloading the target,
+    reading a credential) have no deadline of their own. If they took so long that recovery has
+    already ended the run, nothing may start now: the engagement's next paced run may be running.
+    ``False`` when the run is no longer ``running``; raises ``StartedTooLate`` when it still is
+    but its budget is spent, so that it fails here instead of racing recovery."""
+    session.refresh(run)
+    if run.state != "running":
+        log.error("run %s was ended while it was being prepared; it is not started", run.id)
+        return False
+    if run.started_at is not None and _now() - run.started_at > START_BUDGET:
+        raise StartedTooLate(
+            f"the run was not ready to start within {START_BUDGET.total_seconds():.0f}s "
+            "of its claim"
+        )
+    return True
+
+
+_RUN_HOLD = "SELECT {call}(hashtextextended(:key, 0))"
+
+
+def _hold_key(run_id: str) -> dict[str, str]:
+    return {"key": f"khandaq.run:{run_id}"}
+
+
+@contextlib.contextmanager
+def _holding(session: Session, run_id: str) -> Iterator[None]:
+    """Hold the run for as long as a worker is executing it (spec 032 §7).
+
+    A session-level advisory lock on a connection of its own: it survives the commits of the
+    execution and is released when this block ends, or by the database when the worker's process
+    or connection is gone. Recovery tries the same lock and leaves a run alone while it is held,
+    so no step of a live run, however long it blocks, can be mistaken for a lost worker.
+    """
+    connection = session.get_bind().engine.connect()
+    try:
+        connection.execute(text(_RUN_HOLD.format(call="pg_advisory_lock")), _hold_key(run_id))
+        connection.commit()  # the lock belongs to the connection, not to this transaction
+        yield
+    finally:
+        try:
+            connection.execute(text(_RUN_HOLD.format(call="pg_advisory_unlock")), _hold_key(run_id))
+            connection.commit()
+        except SQLAlchemyError:
+            # The release did not go through. If the backend is still alive it still has the
+            # lock, and back in the pool it would keep the run held for good: a rollback does
+            # not release a session-level lock. Ending the backend does.
+            log.warning("run %s: the hold's connection was lost before its release", run_id)
+            connection.invalidate()
+        finally:
+            connection.close()
+
+
+def _held_by_a_live_worker(session: Session, run_id: str) -> bool:
+    """Whether a worker is executing the run right now. Takes the hold for the rest of this
+    transaction when nobody has it, so a worker cannot begin while recovery ends the run."""
+    free = session.execute(
+        text(_RUN_HOLD.format(call="pg_try_advisory_xact_lock")), _hold_key(run_id)
+    ).scalar_one()
+    return not free
 
 
 def _offline_inputs(
@@ -379,10 +570,23 @@ def _offline_inputs(
 
 
 def execute_run(session: Session, run_id: str, *, actor: User | None = None, runner=None) -> Run:
-    """Execute a ``running`` run and record the outcome; every failure ends in ``failed``."""
-    run = session.get(Run, run_id)
+    """Execute a ``running`` run and record the outcome; every failure ends in ``failed``, except
+    a run whose containers could not be removed, which stays ``running`` (``_keep_running``).
+    The run is held for the whole execution, so recovery leaves it alone (``_holding``)."""
+    with _holding(session, run_id):
+        return _execute(session, run_id, actor=actor, runner=runner)
+
+
+def _execute(session: Session, run_id: str, *, actor: User | None, runner) -> Run:
+    # Read again now that the run is held: the session may have loaded the row before (the API
+    # creates and executes a built-in run in one session), and recovery may have ended it since.
+    run = session.get(Run, run_id, populate_existing=True)
     if run is None:  # pragma: no cover - the running row was committed before execution
         raise RuntimeError(f"run {run_id} does not exist")
+    if run.state != "running":
+        # Recovery ended it before this worker held it. Its record stands: nothing is prepared,
+        # so nothing here can fail and write a second ending over the first.
+        return run
     eng_id = run.engagement_id
     credential: str | None = None
     try:
@@ -404,6 +608,12 @@ def execute_run(session: Session, run_id: str, *, actor: User | None = None, run
         # credential fails the run instead of running without one.
         credential = target_credentials.load_for_run(session, run, target, settings)
         active = runner or get_runner(manifest, settings)
+        if isinstance(active, DockerRunner):
+            # Before the first container exists: recovery must know on which daemon to look.
+            run.docker_daemon = daemon_id(active.cli)
+            session.commit()
+        if not _may_still_start(session, run):
+            return run  # recovery ended it meanwhile: its record stands, nothing is started
         if inputs is not None:
             artifacts = active.run(request, inputs=inputs)
         elif credential is None:
@@ -414,6 +624,10 @@ def execute_run(session: Session, run_id: str, *, actor: User | None = None, run
         return _fail(session, eng_id, run_id, f"stored content unusable: {exc.detail}", actor)
     except CredentialError as exc:
         return _fail(session, eng_id, run_id, f"target credential unusable: {exc.detail}", actor)
+    except LeftoversError as exc:
+        return _keep_running(session, eng_id, run_id, str(exc), actor)
+    except StartedTooLate as exc:
+        return _fail(session, eng_id, run_id, str(exc), actor)
     except Exception as exc:  # third-party tool execution: every failure is recorded, never lost
         # The runner redacts what the adapter returned; this covers any other text on the way out.
         return _fail(session, eng_id, run_id, redact(f"adapter failed: {exc}", credential), actor)
@@ -442,15 +656,131 @@ def execute_run(session: Session, run_id: str, *, actor: User | None = None, run
     return run
 
 
-def recover_stale_runs(session: Session, *, older_than: dt.timedelta) -> int:
-    """Worker start: fail runs left ``running`` longer than any run can take (a lost worker)."""
+_LEFTOVERS_AT_RECOVERY = "the lost run's containers or network could not be removed"
+
+
+def _audit_cleanup_failed_once(session: Session, run: Run, error: str) -> None:
+    """Audit ``run.cleanup_failed`` for this run unless it already is: recovery comes back every
+    few minutes, and the trail should say that the run is stuck, not how often it was looked at."""
+    already = session.scalar(
+        select(
+            exists().where(
+                AuditLog.engagement_id == run.engagement_id,
+                AuditLog.action == "run.cleanup_failed",
+                AuditLog.detail["run_id"].astext == run.id,
+            )
+        )
+    )
+    if not already:
+        audit.record(
+            session,
+            action="run.cleanup_failed",
+            engagement_id=run.engagement_id,
+            detail={"run_id": run.id, "error": error},
+        )
+
+
+def _leftovers_removed(run: Run) -> bool:
+    """Whether nothing of a lost container run is left on the Docker host."""
+    manifest = get_manifest(run.adapter)
+    if manifest is not None and manifest.builtin:
+        return True  # ran in-process, left nothing
+    # Whatever this deployment is configured to start now: the run was started by a worker that
+    # could, and removal needs only the names derived from the run id.
+    return remove_run_leftovers(run.id)
+
+
+# What migration 0014 writes for a run that was already `running`: its containers are on some
+# daemon, and nothing recorded which.
+DAEMON_UNRECORDED = "unrecorded"
+_DAEMON_UNKNOWN = "it is not known which Docker daemon holds the lost run's containers"
+
+
+class _ThisDaemon:
+    """Where a lost run's containers are, seen from this worker: ``True`` on the Docker daemon it
+    talks to, ``False`` on another one, ``None`` when that cannot be told. The daemon is asked at
+    most once per recovery, and only if a run names one."""
+
+    def __init__(self) -> None:
+        self._id: str | None = None
+        self._asked = False
+
+    def __call__(self, run: Run) -> bool | None:
+        if run.docker_daemon is None:
+            return True  # it never got as far as Docker: there is nothing anywhere
+        if run.docker_daemon == DAEMON_UNRECORDED:
+            return None
+        if not self._asked:
+            self._asked = True
+            try:
+                self._id = daemon_id()
+            except RunnerError as exc:
+                log.error("recovery cannot tell which Docker daemon this is: %s", exc)
+        if self._id is None:
+            return None
+        return self._id == run.docker_daemon
+
+
+def recover_stale_runs(
+    session: Session,
+    *,
+    older_than: dt.timedelta,
+    leftovers_removed: Callable[[Run], bool] = _leftovers_removed,
+    on_this_daemon: Callable[[Run], bool | None] | None = None,
+) -> int:
+    """Worker start: fail runs left ``running`` longer than any run can take (a lost worker).
+
+    The lost worker never cleaned up, so the run's containers are removed first (spec 032): its
+    forwarder could otherwise keep relaying beside the next paced run of the engagement. A run
+    whose leftovers cannot be removed stays ``running``, which keeps holding that next run back,
+    is audited once as ``run.cleanup_failed`` and is tried again at the next recovery.
+    """
     cutoff = _now() - older_than
-    stale = session.scalars(
-        select(Run)
-        .where(Run.state == "running", Run.started_at < cutoff)
-        .with_for_update(skip_locked=True)
-    ).all()
-    for run in stale:
+    stale = Run.state == "running", Run.started_at < cutoff
+    candidates = session.scalars(select(Run.id).where(*stale).order_by(Run.started_at)).all()
+    here = on_this_daemon or _ThisDaemon()
+    session.rollback()  # the list is only a hint: each run is judged again under its own lock
+    failed = 0
+    for run_id in candidates:
+        # One run per transaction, so a run that is left alone keeps no row lock while the
+        # containers of the others are removed: its live worker can record its result at once.
+        run = session.scalars(
+            select(Run).where(Run.id == run_id, *stale).with_for_update(skip_locked=True)
+        ).first()
+        if run is None:  # ended meanwhile, or another worker is at it
+            session.rollback()
+            continue
+        if _held_by_a_live_worker(session, run.id):
+            # Old enough to look lost, but its worker is alive and inside it: removing its
+            # containers now would kill a live run, and failing it would let another start.
+            log.warning("run %s is past the cutoff but a worker still holds it", run.id)
+            session.rollback()
+            continue
+        where = here(run)
+        if where is None:
+            # Not known to be here: a removal that found nothing would prove nothing. The run
+            # stays `running`, audited once, until the daemon can be told (or, for a run from
+            # before the daemon was recorded, until an operator has looked: see the spec).
+            log.error("run %s was lost and its Docker daemon is not known", run.id)
+            _audit_cleanup_failed_once(session, run, _DAEMON_UNKNOWN)
+            session.commit()
+            continue
+        if not where:
+            # Its containers are on another Docker host. Looking here would find nothing and
+            # call the run clean while its forwarder still relays there: it is left to a worker
+            # on that host, and stays `running` (which holds the next paced run back) until then.
+            log.warning(
+                "run %s was lost on another Docker daemon (%s); a worker there must recover it",
+                run.id,
+                run.docker_daemon,
+            )
+            session.rollback()
+            continue
+        if not leftovers_removed(run):
+            log.error("run %s was lost and its containers could not be removed", run.id)
+            _audit_cleanup_failed_once(session, run, _LEFTOVERS_AT_RECOVERY)
+            session.commit()
+            continue
         run.state = "failed"
         run.ended_at = _now()
         run.reject_reason = "the worker lost the run (still running past the timeout)"
@@ -460,8 +790,9 @@ def recover_stale_runs(session: Session, *, older_than: dt.timedelta) -> int:
             engagement_id=run.engagement_id,
             detail={"run_id": run.id, "error": run.reject_reason},
         )
-    session.commit()
-    return len(stale)
+        session.commit()
+        failed += 1
+    return failed
 
 
 _ERROR_CHARS, _ERROR_HEAD = 500, 140
@@ -491,6 +822,30 @@ def _fail(session: Session, engagement_id: str, run_id: str, error: str, actor: 
         actor=actor,
         engagement_id=engagement_id,
         detail={"run_id": run_id, "error": brief},
+    )
+    session.commit()
+    session.refresh(run)
+    return run
+
+
+def _keep_running(
+    session: Session, engagement_id: str, run_id: str, error: str, actor: User | None
+) -> Run:
+    """The run is over but its containers could not be removed (spec 032): its forwarder may
+    still be relaying, so the run stays ``running``, which keeps holding back the engagement's
+    next paced run, and whatever it returned is dropped. Recovery removes the leftovers and fails
+    the run once it is past the timeout. Audited, in a fresh transaction."""
+    session.rollback()
+    run = session.get(Run, run_id)
+    if run is None:  # pragma: no cover - the running row was committed before execution
+        raise RuntimeError(f"run {run_id} vanished before its state could be recorded")
+    log.error("run %s: %s; it stays running until they are removed", run_id, error)
+    audit.record(
+        session,
+        action="run.cleanup_failed",
+        actor=actor,
+        engagement_id=engagement_id,
+        detail={"run_id": run_id, "error": error},
     )
     session.commit()
     session.refresh(run)

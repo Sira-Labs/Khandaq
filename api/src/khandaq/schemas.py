@@ -106,6 +106,7 @@ class AdapterOut(BaseModel):
     frameworks: list[str]
     builtin: bool
     paces_requests: bool
+    forwarder_paced: bool
     accepts_credential: bool
 
 

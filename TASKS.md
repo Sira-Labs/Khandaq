@@ -328,8 +328,66 @@ in `docs/specs/`; the sprint plan is `docs/roadmap/sprints.md`.
       for `make demo`; the scanner's prompts/resources/instructions scans (no raw report in
       4.8.5); refusing an adapter that does not fit the target type before the run is queued.
 
-### Sprint 8 — ART (phase 05)
+### Sprint 8 — pacing, then ART
 
+- [~] S8-1 — spec 032 a pacing forwarder lets capped engagements run garak (nightly run of
+      2026-11-16, UTC): implemented, tested and e2e-verified; the PR is open and **not merged**.
+      The per-run egress forwarder takes `--pace-per-minute` and lets one *turn* through per
+      `60 / rate` seconds (a turn: the first bytes a client sends on a connection, or after the
+      target has answered), shared by all connections of the run. New manifest flag
+      `forwarder_paced` (garak: true; mcp-scanner: false). `adapter_refusal` lets a capped
+      engagement run a `forwarder_paced` adapter with a declared rate above 0; `run.started`
+      records `paced_per_minute`. 577 api tests. Manual e2e on 2026-11-16 (pinned garak 0.17.0
+      image, bundled demo target, all synthetic): 256 requests, closest two 100.1 ms apart at
+      600/min against 3 ms unpaced. Decisions: the forwarder counts turns instead of requests,
+      because it must not terminate TLS (ADR-0009), and over-counts rather than under-counts (a
+      TLS handshake costs up to three turns); with pacing on it refuses a ClientHello that offers
+      anything but `http/1.1` (or carries ECH, or cannot be parsed) and the HTTP/2 preface,
+      because several requests in one turn would slip through; no burst, so a quiet spell earns
+      nothing; while an engagement has a cap only one `forwarder_paced` run of it runs at a time
+      (the next stays `queued`, checked under the engagement lock), because each forwarder holds
+      only its own run's rate; a declared rate is paced without a cap too; an unusable rate
+      refuses the run instead of falling back to an unpaced forwarder; `paces_requests` keeps its
+      meaning and stays false for garak. Known limits (in the spec): pipelining inside TLS cannot
+      be seen, so the flag is set per pinned tool version; very low rates can run into garak's
+      request timeout. `scope.py`, `audit.py` and the ledger are untouched; the scope lock's
+      rate rule decides first, as before. An independent review before the PR was left for the owner (CodeRabbit was
+      over its hourly limit) led to: the target is connected to only at the slot; a request
+      whose client gave up while waiting is dropped; a 30 s limit on a paced connection's
+      opening; a run held back at the claim no longer reads as an empty queue. Follow-ups:
+      pacing for mcp-scanner (its client holds event streams); a console hint that a capped
+      garak run is paced and slower. CodeRabbit's review then led to: turns are let through one at
+      a time and the interval counts from the real release, so late wakeups cannot bunch them;
+      a run's first turn waits one interval after its forwarder started (the boundary to the
+      previous run); a run whose containers cannot be removed, after the run or at recovery,
+      stays `running` (audited as `run.cleanup_failed`) and keeps holding the next paced run
+      back; removal is one object per call, and recovery now also runs every five minutes. A
+      second CodeRabbit pass (2026-11-18): the turn is held while the target connection opens
+      and until the first bytes are written, so a slow connect cannot bring two first requests
+      closer (10 s connect limit while pacing); leftovers are looked for whatever the settings
+      say now; a failed removal at recovery is audited once per run. A third pass (2026-11-21):
+      a rate whose interval is infinite (`1e-308`) is refused at admission and by the forwarder,
+      by one shared rule; an ALPN extension that names no protocol is refused; a request whose
+      client left while the target connection opened is not sent; a run counts as lost only
+      after the adapter timeout plus the limits of the runner's own steps (690 s: resolving the
+      target now has a 30 s limit, then the Docker calls) plus ten minutes, and a fence in front
+      of the tool: a run that recovery ended meanwhile, or that needed more than five minutes
+      to get ready, does not start; and, as the real proof of life, a worker holds an advisory
+      lock on the run while it executes it, which recovery respects, so recovery cannot remove a live run's containers.
+      Review round of 2026-11-23: a run records its Docker daemon before its first container
+      (`runs.docker_daemon`, migration 0014) and only a worker on that daemon recovers it; an
+      object counts as removed only when the daemon names it as missing ("not found" is also
+      what a missing Docker context says); the paced claim is decided again under the
+      engagement lock; a run that recovery ended first is not prepared again; recovery handles
+      one run per transaction; a hold whose release failed ends its backend; lookups that never
+      return are limited to four; a ClientHello with an incomplete last extension header is
+      refused. Decided against two suggestions, with the reason in the spec: a request whose
+      client has closed by the time its slot comes is still dropped (a half-closing client
+      cannot be told from one that gave up, and the paced adapters' clients do not half-close),
+      and recovery stays in the worker's own loop instead of a second thread beside a live run.
+      **Owner:** review and merge the spec 032 PR. It changes how the rules of engagement's rate
+      cap is enforced (a refusal becomes a paced run), so under ADR-0018 a nightly run does not
+      merge it. It blocks garak on capped engagements; default: stays refused until merged.
 - [x] S8-2 — spec 033 ART adapter (nightly run of 2026-11-18, UTC): `adapters/art/` wraps the
       Adversarial Robustness Toolbox 1.20.1 (MIT) with a parser for evasion-robustness results,
       a pinned image (published by the release run), a fixture recorded from a real ART run and

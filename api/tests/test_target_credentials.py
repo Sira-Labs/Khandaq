@@ -640,6 +640,8 @@ class EchoingCli:
         self.calls.append(list(args))
         if "--env-file" in args:
             self.env_file = open(args[args.index("--env-file") + 1]).read()
+        if args[0] == "info":
+            return CliResult(0, b"SYNTHETIC-DAEMON-ID\n", b"")
         if args[0] != "start":
             return CliResult(0, b"", b"")
         stderr = f"401 from target; request carried Authorization: Bearer {self.key}".encode()
@@ -694,6 +696,11 @@ def test_a_secret_sweep_finds_the_key_in_no_record_after_a_full_keyed_run(env, c
     request_line = cli.env_file.splitlines()[0]
     assert request_line.startswith("KHANDAQ_RUN_REQUEST=") and KEY_B not in request_line
     assert all(KEY_B not in arg and KEY_A not in arg for call in cli.calls for arg in call)
+    # The run's Docker daemon is on record before the first of its objects is created.
+    assert cli.calls[0][0] == "info"
+    with db.connect() as conn:
+        daemons = conn.execute(text("SELECT DISTINCT docker_daemon FROM runs")).scalars().all()
+    assert "SYNTHETIC-DAEMON-ID" in daemons
 
     assert _run(client, eng_id, ok["id"])["state"] == "succeeded"
     failed = _run(client, eng_id, failing["id"])

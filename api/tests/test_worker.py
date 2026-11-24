@@ -274,9 +274,388 @@ def test_runs_a_lost_worker_left_running_are_failed_at_start(env):
             {"r": fresh["id"]},
         )
     with Session(db) as session:
-        assert recover_stale_runs(session, older_than=dt.timedelta(hours=1)) == 1
+        recovered = recover_stale_runs(
+            session, older_than=dt.timedelta(hours=1), leftovers_removed=lambda lost: True
+        )
+        assert recovered == 1
     assert _run(client, eng_id, run["id"])["state"] == "failed"
     assert _run(client, eng_id, fresh["id"])["state"] == "running"  # a live run is left alone
+    assert _actions(db, run["id"])[-1] == "run.failed"
+
+
+def test_a_run_that_leaves_containers_behind_stays_running_and_is_audited(env):
+    """The worker is alive but could not remove the run's containers (spec 032): the run is not
+    recorded as ended, so the engagement's next paced run stays held back."""
+    from khandaq.adapters.docker import LeftoversError
+    from khandaq.runs import execute_run
+
+    class Stuck:
+        def run(self, request):
+            raise LeftoversError("the run's containers or network could not be removed")
+
+    client, db, _ = env
+    eng_id, tid = _engagement(client, "leftovers")
+    run = _queue(client, eng_id, tid)
+    with db.begin() as conn:  # as the claim leaves it (other tests' runs may be queued too)
+        conn.execute(
+            text("UPDATE runs SET state = 'running', started_at = now() WHERE id = :r"),
+            {"r": run["id"]},
+        )
+    with Session(db) as session:
+        after = execute_run(session, run["id"], runner=Stuck())
+        assert after.state == "running" and after.ended_at is None
+    actions = _actions(db, run["id"])
+    assert actions[-1] == "run.cleanup_failed" and "run.failed" not in actions
+    with db.begin() as conn:  # leave no running run behind for the tests that follow
+        conn.execute(text("UPDATE runs SET state = 'failed' WHERE id = :r"), {"r": run["id"]})
+
+
+class _NeverRun:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def run(self, request, credential=None):
+        self.calls += 1
+        raise AssertionError("the tool must not be started")
+
+
+def _running(db, run_id: str) -> None:
+    with db.begin() as conn:  # as the claim leaves it (other tests' runs may be queued too)
+        conn.execute(
+            text("UPDATE runs SET state = 'running', started_at = now() WHERE id = :r"),
+            {"r": run_id},
+        )
+
+
+def test_a_run_that_recovery_ended_while_it_was_prepared_is_not_started(env, monkeypatch):
+    """Reading the credential has no deadline. If it blocks until recovery has failed the run,
+    the engagement's next paced run may already be running: the first must not start its tool
+    after all, and its record stays as recovery left it (spec 032 §7)."""
+    from khandaq import runs, target_credentials
+
+    client, db, _ = env
+    eng_id, tid = _engagement(client, "fenced")
+    run = _queue(client, eng_id, tid)
+    _running(db, run["id"])
+
+    def blocks_until_recovery_came(session, the_run, target, settings):
+        with db.begin() as conn:  # what recover_stale_runs commits
+            conn.execute(
+                text(
+                    "UPDATE runs SET state = 'failed', ended_at = now(), "
+                    "reject_reason = 'the worker lost the run' WHERE id = :r"
+                ),
+                {"r": the_run.id},
+            )
+        return None
+
+    monkeypatch.setattr(target_credentials, "load_for_run", blocks_until_recovery_came)
+    runner = _NeverRun()
+    with Session(db) as session:
+        after = runs.execute_run(session, run["id"], runner=runner)
+        assert after.state == "failed" and after.reject_reason == "the worker lost the run"
+    assert runner.calls == 0
+    assert "run.succeeded" not in _actions(db, run["id"])
+    assert _actions(db, run["id"]).count("run.failed") == 0  # recovery's record, not a second one
+
+
+def test_a_run_that_recovery_ended_before_the_worker_held_it_keeps_that_ending(env, monkeypatch):
+    """Recovery failed the run before the worker got to it, and preparing it would fail as well
+    (its adapter is no longer registered). The worker writes no second ending over the first."""
+    from khandaq import runs
+
+    client, db, _ = env
+    eng_id, tid = _engagement(client, "ended first")
+    run = _queue(client, eng_id, tid)
+    _running(db, run["id"])
+    with db.begin() as conn:  # what recover_stale_runs commits
+        conn.execute(
+            text(
+                "UPDATE runs SET state = 'failed', ended_at = now(), "
+                "reject_reason = 'the worker lost the run' WHERE id = :r"
+            ),
+            {"r": run["id"]},
+        )
+    again = _queue(client, eng_id, tid)  # for the second half, while its adapter is still known
+    _running(db, again["id"])
+    monkeypatch.setattr(runs, "get_manifest", lambda name: None)
+    runner = _NeverRun()
+    with Session(db) as session:
+        after = runs.execute_run(session, run["id"], runner=runner)
+        assert after.state == "failed" and after.reject_reason == "the worker lost the run"
+    assert runner.calls == 0
+    assert _actions(db, run["id"]).count("run.failed") == 0
+
+    # The same when the session had the row loaded while it was still running (the API creates
+    # and executes a built-in run in one session): the state is read again under the hold.
+    from khandaq import models as m
+
+    with Session(db) as session:
+        # Held on to, as the API holds the run it has just created: the session keeps a row
+        # only while something refers to it.
+        loaded = session.get(m.Run, again["id"])
+        assert loaded.state == "running"
+        with db.begin() as conn:
+            conn.execute(
+                text(
+                    "UPDATE runs SET state = 'failed', ended_at = now(), "
+                    "reject_reason = 'the worker lost the run' WHERE id = :r"
+                ),
+                {"r": again["id"]},
+            )
+        after = runs.execute_run(session, again["id"], runner=runner)
+        assert after.state == "failed" and after.reject_reason == "the worker lost the run"
+    assert runner.calls == 0 and _actions(db, again["id"]).count("run.failed") == 0
+
+
+def test_a_run_that_is_not_ready_within_its_budget_fails_instead_of_starting(env, monkeypatch):
+    """The cutoff recovery works with allows START_BUDGET before the tool starts. A run that
+    needed longer fails at the fence, so no run starts that recovery could take for a lost one."""
+    from khandaq import runs, target_credentials
+
+    client, db, _ = env
+    eng_id, tid = _engagement(client, "late")
+    run = _queue(client, eng_id, tid)
+    _running(db, run["id"])
+
+    def took_too_long(session, the_run, target, settings):
+        with db.begin() as conn:
+            conn.execute(
+                text("UPDATE runs SET started_at = :t WHERE id = :r"),
+                {
+                    "t": dt.datetime.now(dt.UTC) - runs.START_BUDGET - dt.timedelta(seconds=5),
+                    "r": the_run.id,
+                },
+            )
+        return None
+
+    monkeypatch.setattr(target_credentials, "load_for_run", took_too_long)
+    runner = _NeverRun()
+    with Session(db) as session:
+        after = runs.execute_run(session, run["id"], runner=runner)
+        assert after.state == "failed" and "not ready to start" in after.reject_reason
+    assert runner.calls == 0
+    assert _actions(db, run["id"])[-1] == "run.failed"
+
+
+def test_recovery_leaves_a_run_alone_while_a_worker_is_executing_it(env):
+    """However long a step of a live run blocks, and however old the run looks: while its worker
+    holds it, recovery neither removes its containers nor fails it (spec 032 §7). Once the
+    worker is done, the hold is gone."""
+    from khandaq import runs
+
+    client, db, _ = env
+    eng_id, tid = _engagement(client, "held")
+    run = _queue(client, eng_id, tid)
+    _running(db, run["id"])
+    asked: list[str] = []
+    seen: dict = {}
+
+    def removed(lost) -> bool:
+        asked.append(lost.id)
+        return True
+
+    class Slow(FakeRunner):
+        def run(self, request: dict) -> dict:
+            # The tool is running, and so much time has passed that the run looks lost.
+            with db.begin() as conn:
+                conn.execute(
+                    text("UPDATE runs SET started_at = :t WHERE id = :r"),
+                    {"t": dt.datetime.now(dt.UTC) - dt.timedelta(hours=3), "r": run["id"]},
+                )
+            with Session(db) as recovery:
+                seen["recovered"] = runs.recover_stale_runs(
+                    recovery, older_than=dt.timedelta(hours=1), leftovers_removed=removed
+                )
+            seen["state"] = _run(client, eng_id, run["id"])["state"]
+            return super().run(request)
+
+    with Session(db) as session:
+        after = runs.execute_run(session, run["id"], runner=Slow())
+        assert after.state == "succeeded"
+    assert seen == {"recovered": 0, "state": "running"} and asked == []
+    assert "run.failed" not in _actions(db, run["id"])
+
+    # The hold ends with the execution, also when it ends in an error.
+    for outcome in (FakeRunner(), FakeRunner(error=RuntimeError("tool crashed"))):
+        again = _queue(client, eng_id, tid)
+        _running(db, again["id"])
+        with Session(db) as session:
+            runs.execute_run(session, again["id"], runner=outcome)
+        with Session(db) as probe:
+            assert not runs._held_by_a_live_worker(probe, again["id"])
+
+
+def test_recovery_keeps_no_lock_on_a_run_it_leaves_alone(env):
+    """Two runs past the cutoff: one a live worker holds, one that is lost. While the lost one's
+    containers are removed, the held one's row is not locked, so its worker can record its result
+    without waiting for the cleanup of other runs (one run per transaction)."""
+    from khandaq import runs
+
+    client, db, _ = env
+    eng_id, tid = _engagement(client, "one at a time")
+    held, lost = _queue(client, eng_id, tid), _queue(client, eng_id, tid)
+    old = dt.datetime.now(dt.UTC) - dt.timedelta(hours=3)
+    for at, run in enumerate((held, lost)):
+        _running(db, run["id"])
+        with db.begin() as conn:
+            conn.execute(
+                text("UPDATE runs SET started_at = :t WHERE id = :r"),
+                {"t": old + dt.timedelta(seconds=at), "r": run["id"]},  # the held one is first
+            )
+    asked: list[str] = []
+
+    def removed(run) -> bool:
+        asked.append(run.id)
+        with db.connect() as other:  # as the held run's worker would, to record its result
+            other.execute(
+                text("SELECT id FROM runs WHERE id = :r FOR UPDATE NOWAIT"), {"r": held["id"]}
+            )
+            other.rollback()
+        return True
+
+    with Session(db) as worker, runs._holding(worker, held["id"]), Session(db) as recovery:
+        assert (
+            runs.recover_stale_runs(
+                recovery, older_than=dt.timedelta(hours=1), leftovers_removed=removed
+            )
+            == 1
+        )
+    assert asked == [lost["id"]]
+    assert _run(client, eng_id, held["id"])["state"] == "running"
+    assert _run(client, eng_id, lost["id"])["state"] == "failed"
+
+
+def test_a_hold_whose_release_fails_does_not_go_back_to_the_pool(env, monkeypatch):
+    """If the unlock statement fails while the backend lives, the connection would return to the
+    pool still holding the run. It is discarded instead, which ends the backend and the hold."""
+    from sqlalchemy.exc import OperationalError
+
+    from khandaq import runs
+
+    client, db, _ = env
+    eng_id, tid = _engagement(client, "release fails")
+    run = _queue(client, eng_id, tid)
+    real_text = runs.text
+
+    def failing_unlock(statement: str):
+        if "pg_advisory_unlock" in statement:
+            raise OperationalError(statement, {}, Exception("canceling statement"))
+        return real_text(statement)
+
+    with Session(db) as session:
+        monkeypatch.setattr(runs, "text", failing_unlock)
+        with runs._holding(session, run["id"]):
+            pass
+        monkeypatch.setattr(runs, "text", real_text)
+    with Session(db) as probe:
+        assert not runs._held_by_a_live_worker(probe, run["id"])
+
+
+def test_a_run_lost_on_another_docker_daemon_is_left_to_a_worker_there(env, monkeypatch):
+    """A run's containers are on the daemon that started it. A worker on another Docker host
+    would find none of them, call the run clean and free the engagement's next paced run while
+    the first forwarder still relays: it leaves the run alone, and a worker on the run's own
+    daemon recovers it (spec 032 §7)."""
+    from khandaq import runs
+
+    client, db, _ = env
+    eng_id, tid = _engagement(client, "two hosts")
+    run = _queue(client, eng_id, tid)
+    with db.begin() as conn:
+        conn.execute(
+            text(
+                "UPDATE runs SET state = 'running', started_at = :t, docker_daemon = 'HOST-A' "
+                "WHERE id = :r"
+            ),
+            {"t": dt.datetime.now(dt.UTC) - dt.timedelta(hours=3), "r": run["id"]},
+        )
+    asked: list[str] = []
+
+    def removed(lost) -> bool:
+        asked.append(lost.id)
+        return True
+
+    def recover(daemon) -> None:
+        asked.clear()
+        monkeypatch.setattr(runs, "daemon_id", daemon)
+        with Session(db) as session:
+            runs.recover_stale_runs(
+                session, older_than=dt.timedelta(hours=1), leftovers_removed=removed
+            )
+
+    recover(lambda: "HOST-B")
+    assert run["id"] not in asked
+    assert _run(client, eng_id, run["id"])["state"] == "running"
+    assert not {"run.failed", "run.cleanup_failed"} & set(_actions(db, run["id"]))
+
+    def unknown() -> str:
+        raise runs.RunnerError("could not ask the Docker daemon for its id: no daemon")
+
+    # A worker that cannot tell which daemon it talks to does not try: a removal that happens
+    # to succeed (on another daemon, which has no such objects) would end the run for nothing.
+    recover(unknown)
+    assert run["id"] not in asked and _run(client, eng_id, run["id"])["state"] == "running"
+    assert _actions(db, run["id"]).count("run.cleanup_failed") == 1
+    recover(unknown)
+    assert _actions(db, run["id"]).count("run.cleanup_failed") == 1  # audited once
+    assert "run.failed" not in _actions(db, run["id"])
+
+    # Nor for a run from before the daemon was recorded (migration 0014's marker).
+    with db.begin() as conn:
+        conn.execute(
+            text("UPDATE runs SET docker_daemon = 'unrecorded' WHERE id = :r"), {"r": run["id"]}
+        )
+    recover(lambda: "HOST-A")
+    assert run["id"] not in asked and _run(client, eng_id, run["id"])["state"] == "running"
+    with db.begin() as conn:
+        conn.execute(
+            text("UPDATE runs SET docker_daemon = 'HOST-A' WHERE id = :r"), {"r": run["id"]}
+        )
+    recover(lambda: "HOST-A")
+    assert run["id"] in asked
+    assert _run(client, eng_id, run["id"])["state"] == "failed"
+
+
+def test_a_lost_run_whose_containers_cannot_be_removed_stays_running(env):
+    """Its forwarder may still be relaying, so the run keeps holding back the engagement's next
+    paced run (spec 032); once the leftovers are gone it is failed and audited."""
+    from khandaq.runs import recover_stale_runs
+
+    client, db, _ = env
+    eng_id, tid = _engagement(client, "stale leftovers")
+    run = _queue(client, eng_id, tid)
+    long_ago = dt.datetime.now(dt.UTC) - dt.timedelta(hours=3)
+    with db.begin() as conn:
+        conn.execute(
+            text("UPDATE runs SET state = 'running', started_at = :t WHERE id = :r"),
+            {"t": long_ago, "r": run["id"]},
+        )
+    asked: list[str] = []
+
+    def stuck(lost) -> bool:
+        asked.append(lost.id)
+        return False
+
+    with Session(db) as session:
+        recovered = recover_stale_runs(
+            session, older_than=dt.timedelta(hours=1), leftovers_removed=stuck
+        )
+    assert recovered == 0 and run["id"] in asked
+    assert _run(client, eng_id, run["id"])["state"] == "running"
+    assert "run.failed" not in _actions(db, run["id"])
+    # Audited, and only once however often recovery comes back to it.
+    assert _actions(db, run["id"]).count("run.cleanup_failed") == 1
+    with Session(db) as session:
+        recover_stale_runs(session, older_than=dt.timedelta(hours=1), leftovers_removed=stuck)
+    assert _actions(db, run["id"]).count("run.cleanup_failed") == 1
+
+    with Session(db) as session:
+        recovered = recover_stale_runs(
+            session, older_than=dt.timedelta(hours=1), leftovers_removed=lambda lost: True
+        )
+    assert recovered >= 1
+    assert _run(client, eng_id, run["id"])["state"] == "failed"
     assert _actions(db, run["id"])[-1] == "run.failed"
 
 
@@ -451,3 +830,18 @@ def test_an_unreachable_evidence_store_is_a_503_not_a_crash(env, monkeypatch):
     assert r.status_code == 503
     assert r.json()["detail"] == "evidence store unavailable; try again later"
     assert _audit(db, eng_id, "evidence.downloaded") == []
+
+
+def test_leftovers_of_a_container_run_are_looked_for_whatever_the_settings(monkeypatch):
+    """Spec 032: a run started while container runs were enabled may have left a forwarder
+    behind even if they are disabled now. Only an in-process adapter is known to leave nothing."""
+    from khandaq import runs
+    from khandaq.models import Run
+
+    asked: list[str] = []
+    monkeypatch.setattr(runs, "remove_run_leftovers", lambda run_id: asked.append(run_id) or False)
+    assert runs.get_settings().forwarder_image == ""  # container runs are off in this test setup
+    assert runs._leftovers_removed(Run(id="run_c", adapter="garak")) is False
+    assert runs._leftovers_removed(Run(id="run_gone", adapter="no-longer-registered")) is False
+    assert runs._leftovers_removed(Run(id="run_e", adapter="echo")) is True
+    assert asked == ["run_c", "run_gone"]

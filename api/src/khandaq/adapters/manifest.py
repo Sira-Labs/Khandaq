@@ -25,6 +25,10 @@ class AdapterManifest:
     # True when the adapter holds a requests-per-minute limit itself (spec 027). One that cannot is
     # refused when the rules of engagement cap the rate, rather than risk exceeding it.
     paces_requests: bool = False
+    # True when the adapter speaks plain request/response HTTP/1.1 to its target (no HTTP/2, no
+    # pipelining, no upgrade), so the egress forwarder can hold the rate for it (spec 032). Set per
+    # pinned tool version and reviewed when the pin moves.
+    forwarder_paced: bool = False
     # True when the adapter consumes KHANDAQ_TARGET_CREDENTIAL (spec 028). A target's credential is
     # handed only to an adapter that declares it, never to one that would ignore or mishandle it.
     accepts_credential: bool = False

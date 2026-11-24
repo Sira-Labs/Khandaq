@@ -30,6 +30,7 @@ import socket
 import subprocess
 import tarfile
 import tempfile
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -50,6 +51,16 @@ _NOBODY = "65534:65534"
 _STDERR_TAIL = 2000
 # Docker reads an env file line by line with a 64 KiB scanner; stay well below it.
 MAX_REQUEST_BYTES = 60_000
+
+
+# What a run can take outside its adapter's own timeout: resolving the target, four setup calls
+# (network, forwarder, attach, create) and three removals (adapter, forwarder, network), each
+# under its own limit. Stale-run recovery adds this to the adapter timeout, so it never takes a
+# run whose worker is still inside one of these steps for a lost one.
+RESOLVE_SECONDS = 30
+SETUP_STEP_SECONDS = 120
+REMOVE_STEP_SECONDS = 60
+OVERHEAD_SECONDS = RESOLVE_SECONDS + 4 * SETUP_STEP_SECONDS + 3 * REMOVE_STEP_SECONDS
 
 
 class RunnerError(Exception):
@@ -290,6 +301,86 @@ def docker_memory(value: str) -> str:
     raise ValueError(f"unsupported memory limit {value!r}")
 
 
+class LeftoversError(RunnerError):
+    """The run is over but its containers or network could not be removed: its forwarder may
+    still be relaying. The run must not be recorded as ended while that is so (spec 032)."""
+
+
+def _names(run_id: str) -> tuple[str, str, str]:
+    """(network, forwarder, adapter): the Docker objects of one run."""
+    return f"khq-net-{run_id}", f"khq-fwd-{run_id}", f"khq-run-{run_id}"
+
+
+# What the Docker daemon answers for an object that is not there, with the object's name filled
+# in. Only such an answer proves absence: "not found" alone is also what the CLI says of a missing
+# context, and then nothing was asked of any daemon.
+_ABSENT = ("no such container: {name}", "no such network: {name}", "network {name} not found")
+# Lookups that never returned (``_resolve``). Each keeps a thread until its resolver call comes
+# back, so their number is bounded: beyond it a run fails instead of starting another.
+RESOLVER_SLOTS = 4
+_resolver_slots = threading.BoundedSemaphore(RESOLVER_SLOTS)
+_LEFTOVERS = "the run's containers or network could not be removed"
+
+
+def daemon_id(cli: DockerCli | None = None) -> str:
+    """The id of the Docker daemon this process talks to (``docker info``). It is stable across
+    restarts of the daemon, and it is what tells one Docker host from another (spec 032)."""
+    docker = cli or SubprocessDockerCli()
+    try:
+        result = docker(["info", "--format", "{{.ID}}"], timeout=SETUP_STEP_SECONDS)
+    except OSError as exc:
+        raise RunnerError(f"could not ask the Docker daemon for its id: {exc}") from None
+    found = result.stdout.decode("utf-8", "replace").strip()
+    if result.returncode != 0 or not found or len(found.split()) != 1:
+        detail = result.stderr.decode("utf-8", "replace").strip()
+        raise RunnerError(f"could not ask the Docker daemon for its id: {detail[-_STDERR_TAIL:]}")
+    return found
+
+
+def remove_run_leftovers(run_id: str, cli: DockerCli | None = None) -> bool:
+    """Remove the containers and the network a lost run may have left behind (spec 032).
+
+    A worker that died mid-run never ran its own cleanup, so the run's forwarder can still be
+    relaying. Returns ``True`` when nothing of the run is left: an object that is already gone
+    counts as removed. ``False`` means something may still be running.
+    """
+    return _remove(cli or SubprocessDockerCli(), run_id, None)
+
+
+def _says_absent(detail: str, name: str) -> bool:
+    """Whether a failed removal's message is the daemon saying that ``name`` does not exist."""
+    said = detail.lower()
+    return any(text.format(name=name.lower()) in said for text in _ABSENT)
+
+
+def _remove(docker: DockerCli, run_id: str, credential: str | None) -> bool:
+    """Remove the run's adapter, forwarder and network; ``True`` when none of them is left.
+
+    Every object is tried even if an earlier one failed. One object per call: in a combined call
+    "no such container" for one of them would hide a failure to remove the other. A container
+    that could not be removed still holds the run's environment, the credential included, in its
+    configuration on the Docker host, so what is logged is redacted.
+    """
+    network, forwarder, adapter = _names(run_id)
+    gone = True
+    for args in (
+        ["rm", "--force", adapter],
+        ["rm", "--force", forwarder],
+        ["network", "rm", network],
+    ):
+        try:
+            result = docker(args, timeout=REMOVE_STEP_SECONDS)
+        except (RunnerError, OSError) as exc:
+            log.error("removing %s failed: %s", args[-1], redact(str(exc), credential))
+            gone = False
+            continue
+        detail = redact(result.stderr.decode("utf-8", "replace").strip(), credential)
+        if result.returncode != 0 and not _says_absent(detail, args[-1]):
+            log.error("removing %s failed: %s", args[-1], detail)
+            gone = False
+    return gone
+
+
 class DockerRunner:
     """Run a pinned adapter image in a per-run sandbox whose only exit is the in-scope target."""
 
@@ -304,6 +395,7 @@ class DockerRunner:
         self.settings = settings
         self.cli = cli or SubprocessDockerCli()
         self.resolver = resolver
+        self.resolve_seconds: float = RESOLVE_SECONDS
 
     # --- pieces, exposed for tests --------------------------------------------------------------
 
@@ -316,16 +408,71 @@ class DockerRunner:
             raise RunnerError(f"target has no usable network endpoint: {exc}") from exc
         if _is_ip_literal(host):
             raise RunnerError("IP-literal targets are not supported for container runs")
-        addresses = self.resolver(host, port)
+        addresses = self._resolve(host, port)
         if not addresses:
             raise RunnerError(f"target host {host!r} resolves to no address")
         checked = [check_address(a) for a in addresses]  # any forbidden address refuses the run
         return host, port, checked[0]
 
-    def forwarder_args(self, name: str, port: int, address: str, labels: list[str]) -> list[str]:
+    def pace(self, request: dict) -> float | None:
+        """The requests-per-minute rate the forwarder holds for this run, or ``None`` (spec 032).
+
+        A ``forwarder_paced`` adapter with a declared ``rate_per_minute`` is paced. A rate the
+        forwarder cannot hold refuses the run: nothing falls back to an unpaced forwarder.
+        """
+        rate = (request.get("params") or {}).get("rate_per_minute")
+        if not self.manifest.forwarder_paced or rate is None:
+            return None
+        problem = RunnerError(f"the run cannot be paced at {str(rate)[:40]!r} requests per minute")
+        if isinstance(rate, bool) or not isinstance(rate, (int, float)):
+            raise problem
+        try:
+            return egress_forwarder.parse_pace(repr(float(rate)))
+        except (ValueError, OverflowError) as exc:
+            raise problem from exc
+
+    def _resolve(self, host: str, port: int) -> list[str]:
+        """The resolver's answer within ``RESOLVE_SECONDS``. ``getaddrinfo`` has no deadline of
+        its own, and a run that hung here would still be ``running`` when recovery came for it."""
+        answer: list[list[str] | BaseException] = []
+        if not _resolver_slots.acquire(blocking=False):
+            raise RunnerError(
+                f"{RESOLVER_SLOTS} earlier lookups of a target host have not returned; "
+                "no further one is started"
+            )
+
+        def ask() -> None:
+            try:
+                answer.append(self.resolver(host, port))
+            except BaseException as exc:  # handed to the caller's thread, re-raised there
+                answer.append(exc)
+            finally:
+                # Only here: a lookup that timed out for its run still occupies its thread.
+                _resolver_slots.release()
+
+        # A daemon thread: one that never returns must not keep the worker from exiting.
+        thread = threading.Thread(target=ask, name="khq-resolve", daemon=True)
+        try:
+            thread.start()
+        except RuntimeError:  # no thread could be started: nothing will give the slot back
+            _resolver_slots.release()
+            raise RunnerError(f"could not start the lookup of target host {host!r}") from None
+        thread.join(self.resolve_seconds)
+        if not answer:
+            raise RunnerError(
+                f"resolving target host {host!r} took longer than {self.resolve_seconds:.0f}s"
+            )
+        if isinstance(answer[0], BaseException):
+            raise answer[0]
+        return answer[0]
+
+    def forwarder_args(
+        self, name: str, port: int, address: str, labels: list[str], pace: float | None = None
+    ) -> list[str]:
         if not self.settings.forwarder_image:
             raise RunnerError("KHANDAQ_FORWARDER_IMAGE is not set; container runs are disabled")
         connect = f"[{address}]:{port}" if ":" in address else f"{address}:{port}"
+        pacing = [] if pace is None else ["--pace-per-minute", repr(pace)]
         return [
             "run",
             "--detach",
@@ -347,6 +494,7 @@ class DockerRunner:
             str(port),
             "--connect",
             connect,
+            *pacing,
         ]
 
     def adapter_args(self, name: str, network: str, env_file: str, labels: list[str]) -> list[str]:
@@ -401,6 +549,8 @@ class DockerRunner:
             raise RunnerError(f"adapter {self.manifest.name} takes no inputs")
         try:
             return self._run(request, credential)
+        except LeftoversError:
+            raise  # carries no adapter text, and its type decides what happens to the run
         except RunnerError as exc:
             if not credential:
                 raise
@@ -411,7 +561,8 @@ class DockerRunner:
     def _run(self, request: dict, credential: str | None) -> dict:
         run_id = request["run_id"]
         host, port, address = self.endpoint(request)
-        network, forwarder, adapter = f"khq-net-{run_id}", f"khq-fwd-{run_id}", f"khq-run-{run_id}"
+        pace = self.pace(request)  # before anything starts: an unusable pace refuses the run
+        network, forwarder, adapter = _names(run_id)
         labels = ["--label", f"khandaq.run={run_id}"]
         # Compact JSON has no raw newline, so it is one env-file line.
         line = "KHANDAQ_RUN_REQUEST=" + json.dumps(request, separators=(",", ":")) + "\n"
@@ -423,37 +574,51 @@ class DockerRunner:
             # A second line of the same 0600 file: never the request JSON, never a docker argument.
             line += f"{CREDENTIAL_ENV}={credential}\n"
         fd, env_file = tempfile.mkstemp(prefix="khq-env-", text=True)  # created 0600
+        removed = True
         try:
-            with os.fdopen(fd, "w") as f:
-                f.write(line)
-            self._ok(
-                ["network", "create", "--internal", *labels, network],
-                "create the network",
-                credential,
-            )
-            self._ok(
-                self.forwarder_args(forwarder, port, address, labels),
-                "start the forwarder",
-                credential,
-            )
-            self._ok(
-                ["network", "connect", "--alias", host, network, forwarder],
-                "attach the forwarder",
-                credential,
-            )
-            self._ok(
-                self.adapter_args(adapter, network, env_file, labels),
-                "create the adapter",
-                credential,
-            )
-            result = self.cli(
-                ["start", "--attach", adapter],
-                timeout=self.settings.adapter_timeout_seconds,
-                stdout_limit=self.settings.adapter_output_limit_mb * 1024 * 1024,
-            )
-        finally:
-            os.unlink(env_file)
-            self._cleanup(network, forwarder, adapter, credential)
+            try:
+                with os.fdopen(fd, "w") as f:
+                    f.write(line)
+                self._ok(
+                    ["network", "create", "--internal", *labels, network],
+                    "create the network",
+                    credential,
+                )
+                self._ok(
+                    self.forwarder_args(forwarder, port, address, labels, pace),
+                    "start the forwarder",
+                    credential,
+                )
+                self._ok(
+                    ["network", "connect", "--alias", host, network, forwarder],
+                    "attach the forwarder",
+                    credential,
+                )
+                self._ok(
+                    self.adapter_args(adapter, network, env_file, labels),
+                    "create the adapter",
+                    credential,
+                )
+                result = self.cli(
+                    ["start", "--attach", adapter],
+                    timeout=self.settings.adapter_timeout_seconds,
+                    stdout_limit=self.settings.adapter_output_limit_mb * 1024 * 1024,
+                )
+            finally:
+                try:
+                    os.unlink(env_file)
+                finally:
+                    # Even if the env file could not be deleted: whether the run's containers
+                    # are gone decides what may be recorded about the run.
+                    removed = _remove(self.cli, run_id, credential)
+        except Exception:
+            if not removed:
+                # `from None`: the run's own error may hold the credential, and what matters now
+                # is that something of the run is still there.
+                raise LeftoversError(_LEFTOVERS) from None
+            raise
+        if not removed:
+            raise LeftoversError(_LEFTOVERS)
         if result.returncode != 0:
             # Redact before cutting the tail: a cut through the credential would leave a part of it
             # that no longer matches.
@@ -538,27 +703,9 @@ class DockerRunner:
             )
 
     def _ok(self, args: list[str], what: str, credential: str | None = None) -> CliResult:
-        result = self.cli(args, timeout=120)
+        result = self.cli(args, timeout=SETUP_STEP_SECONDS)
         if result.returncode != 0:
             # Redacted before the cut, as for the adapter's own stderr.
             detail = redact(result.stderr.decode("utf-8", "replace"), credential)
             raise RunnerError(f"could not {what}: {detail[-_STDERR_TAIL:]}")
         return result
-
-    def _cleanup(
-        self, network: str, forwarder: str, adapter: str, credential: str | None = None
-    ) -> None:
-        """Remove everything the run created; each step runs even if an earlier one failed.
-
-        A container that could not be removed still holds the run's environment, the credential
-        included, in its configuration on the Docker host: that failure is logged as an error.
-        """
-        for args in (["rm", "--force", adapter, forwarder], ["network", "rm", network]):
-            try:
-                result = self.cli(args, timeout=60)
-            except RunnerError as exc:
-                log.error("cleanup %s failed: %s", args, redact(str(exc), credential))
-                continue
-            if result.returncode != 0:
-                detail = redact(result.stderr.decode("utf-8", "replace").strip(), credential)
-                log.error("cleanup %s failed: %s", args, detail)
